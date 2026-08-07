@@ -1,0 +1,480 @@
+﻿# دستور المشروع — الإصدار 3.2 (v1.0 مستقر)
+
+
+---
+
+
+## 1. نظرة عامة
+
+
+**نظام حجز مواعيد طبية** عبر واتساب لعيادة واحدة (v1.0)، مبني على **Google Apps Script** وفق بنية معمارية طبقية صارمة (CAS).
+
+
+**النواة المعمارية مستقرة ومكتملة.** جميع الخدمات الأساسية + المولد + المجدول + المراقبة + Idempotency تعمل داخل النواة. أي تطوير لاحق يُعد إضافة ميزات جديدة أو تحسينات أداء.
+
+
+---
+
+
+### 1.1 الأدوار
+
+
+| الدور | المسؤول | المسؤولية |
+|-------|---------|------------|
+| المشرف المعماري | جي (G) | القرارات المعمارية، مراجعة الأخطاء، صياغة ADR |
+| المبرمج المنفذ | كلود (Claude) | التنفيذ ضمن القرارات المعمارية |
+
+
+---
+
+
+## 2. القواعد الحاكمة (CAS + ADR)
+
+
+2.1 مواد الدستور (مُحدَّثة)
+المادة
+	النص
+	CAS-001
+	منطق الأعمال (Business Logic) مستقل تماماً عن أدوات التنفيذ (Infrastructure). لا يعتمد أي ملف في Domain أو Application على SpreadsheetApp أو CalendarApp أو UrlFetchApp بشكل مباشر.
+	CAS-002
+	GoogleSheets.gs هو الملف الوحيد المسموح له باستدعاء SpreadsheetApp.
+	CAS-003
+	الفصل بين الطبقات: Infrastructure ← Repositories ← Application ← Domain. لا تعتمد أي طبقة على طبقة أعلى منها.
+	CAS-004
+	StateMachine.gs هو المصدر الوحيد لانتقالات حالة Slot.
+	CAS-005
+	لا تكرار (DRY). أي منطق يُستخدم في أكثر من مكان يُستخرج إلى ملف مستقل (Helper/Service).
+	CAS-006
+	الإعدادات التشغيلية (مدة الفتحة، أوقات الدوام) تُقرأ من ورقة Settings عبر SettingsRepository، وليس من Config.
+	CAS-007
+	الهويات تُولَّد عبر IdGenerator (المُستند إلى ULID) ولا تُشتق من أي بيانات عمل.
+	CAS-008
+	كل وظيفة عمل تعيد Result — ممنوع true/false/null. استثناء: الدوال الداخلية (_) في الـ Repositories.
+	CAS-009
+	Clock.now() هو المصدر الوحيد لقراءة الوقت الحالي. ممنوع استخدام new Date() لقراءة الوقت الحالي مباشرة خارج Clock.gs.
+يُسمح باستخدام new Date() للتحويلات الخالصة (بناء Date من مكونات رقمية، أو نسخ من Date موجود) في الملفات التالية فقط:
+* DateUtils.gs
+* SlotGenerator.gs (للتحويلات المتعلقة بـ sort_key والتواريخ)
+* LegacySlotTimeParser.gs (للتحويلات المؤقتة وفق ADR-016)
+أي استخدام آخر لـ new Date() يجب أن يمر عبر Clock.now().
+	CAS-010
+	Router هو نقطة الدخول الوحيدة لتوجيه الرسائل. لا يحتوي أي منطق عمل.
+	CAS-011
+	CommandExecutor هو المسؤول عن تسجيل وتنفيذ أي أمر (Command) في النظام.
+	CAS-012
+	البساطة أولاً. لا نضيف تعقيداً (Caching، تحسينات أداء) قبل وجود قياسات فعلية تثبت الحاجة.
+	CAS-013
+	Validators تتحقق فقط (قبول/رفض). لا تقوم بأي تطبيع (Normalization) — تلك مسؤولية PhoneUtils ونظائرها.
+	CAS-014
+	الدستور هو المصدر الوحيد للحقيقة (Single Source of Truth) للمشروع. أي تناقض بين الكود والدستور يُحل لصالح الدستور، ويجب تحديث الكود خلال 24 ساعة من اكتشاف التناقض.
+	________________
+ 
+
+
+---
+
+
+3. المقرارت المعمارية (ADR) — مُحدَّثة
+ADR
+	العنوان
+	الحالة
+	ADR-004
+	StateMachine هي المصدر الوحيد لانتقالات الحالة
+	✅ ثابت
+	ADR-005
+	Infrastructure قابلة للاستبدال بالكامل (GoogleSheets, WhatsAppAdapter)
+	✅ ثابت
+	ADR-006
+	الفشل الجزئي بين Slot و Calendar يُسجَّل ولا يُرجع تلقائياً (ذرية مستقبلية)
+	✅ ثابت
+	ADR-007
+	WhatsAppAdapter يغلّف ultramsg، وأي تبديل مستقبلي يقتصر على هذا الملف
+	✅ ثابت
+	ADR-008
+	في v1، Slot يمثل حالة التوفر فقط. CancelAppointment → FREE مباشرة
+	✅ ثابت
+	ADR-009
+	LogRepository هو Append-Only، يكتب فقط ولا يقرأ/يعدّل/يحذف
+	✅ ثابت
+	ADR-010
+	AppointmentRepository هو Compatibility Layer لكيان مستقبلي
+	✅ ثابت
+	ADR-011
+	Multi-Clinic مؤجل حتى أول طلب فعلي
+	✅ ثابت
+	ADR-013
+	الخدمات (BookingService, ChangeService, CancelService) لا تستدعي بعضها البعض
+	✅ ثابت
+	ADR-014
+	منطق تنفيذ الأوامر (ReserveSlot, ConfirmReservation) موجود مؤقتاً داخل الخدمات، يُستخرج عند الحاجة
+	✅ ثابت
+	ADR-015
+	عند إعادة استخدام أمر من أكثر من Service، يُستخرج إلى Command مستقل
+	✅ ثابت
+	ADR-016
+	LegacySlotTimeParser ملف مؤقت لحين إعادة بناء المولد. سينتهي مع v2
+	✅ ثابت
+	ADR-017
+	سياسة Best Effort للعمليات الخلفية (Maintenance, Reminders, HealthCheck)
+	✅ ثابت
+	ADR-018
+	فحص هوية المالك (SLOT_OWNER_MISMATCH) إلزامي قبل أي atomicUpdate. يُطبَّق في BookingService و ChangeService.
+	✅ ثابت
+	ADR-019
+	SlotSelection هو المصدر الوحيد لسياسة اختيار الفتحة
+	✅ ثابت
+	ADR-020
+	Scheduler هو Orchestrator (ليس مجرد Trigger)، يدير ترتيب المهام
+	✅ ثابت
+	ADR-021
+	BusNumber قيمة عرض فقط، لا تُخزَّن في أي Repository
+	✅ ثابت
+	ADR-022
+	AvailabilityHorizonMaintainer مسؤول عن توليد الفتحات والحفاظ على أفق 30 يوماً. يُستدعى من Scheduler.
+	✅ ثابت
+	ADR-023
+	Webhook يجب أن يكون Idempotent. استخدام ProcessedMessagesService لمنع تكرار معالجة الرسائل خلال 5 دقائق.
+	✅ ثابت
+	ADR-024
+	سياسة النسخ الاحتياطي التلقائي: نسخ أسبوعي للـ Sheets، مع الاحتفاظ بآخر 4 نسخ.
+	✅ ثابت
+	________________
+ 
+
+
+---
+
+
+## 4. خريطة المشروع (v1.0) — مكتمل
+
+
+```
+Config/
+  Config.gs
+
+
+Domain/
+  Result.gs
+  StateMachine.gs          # ⭐ أهم ملف
+  Clock.gs
+  Validators.gs
+
+
+Utils/
+  ULID.gs
+  IdGenerator.gs
+  PhoneUtils.gs
+  DateUtils.gs             # +3 إضافات: formatDateForStorage, formatTimeForStorage, formatSortKey
+  LegacySlotTimeParser.gs  # مؤقت — ADR-016
+
+
+Infrastructure/
+  GoogleSheets.gs          # + updateBatch (تحسين الأداء)
+  GoogleCalendar.gs
+  WhatsAppAdapter.gs       # + استخراج messageId
+  Lock.gs
+
+
+Repositories/
+  SlotRepository.gs        # + try/catch للحماية من فشل الاتصال
+  ConversationRepository.gs
+  AppointmentRepository.gs
+  SettingsRepository.gs
+  LogRepository.gs
+  CalendarRepository.gs
+
+
+Application/
+  CommandExecutor.gs
+  BookingService.gs
+  CancelService.gs
+  ChangeService.gs
+  MaintenanceService.gs    # معدّل بالكامل (Batch Updates)
+  SlotSelection.gs
+  ReminderService.gs       # + processPendingReminders
+  BusNumberCalculator.gs
+  SlotGenerator.gs         # ADR-022 — Domain Helper
+  AvailabilityHorizonMaintainer.gs  # ADR-022 — Application Service
+  ProcessedMessagesService.gs       # ADR-023 — Idempotency ⭐ جديد
+  HealthCheckService.gs             # مراقبة تلقائية ⭐ جديد
+
+
+Core/
+  Router.gs
+
+
+Scheduler.gs               # معدّل: 4 خطوات (Maintenance → Horizon → Reminders → HealthCheck)
+Webhook.gs                 # معدّل: + Idempotency
+ManualRunners.gs           # دوال اختبار يدوية
+```
+
+
+---
+
+
+## 5. المكونات الجديدة (ADR-022, ADR-023, ADR-024)
+
+
+### 5.1 AvailabilityHorizonMaintainer.gs — Application Service
+
+
+**المسؤولية:** ضمان وجود أفق زمني لا يقل عن 30 يوماً من الفتحات المتاحة.
+
+
+**التفاصيل:**
+- يُستدعى من `Scheduler.main()` بعد `MaintenanceService.run()`.
+- يستخدم `SlotGenerator` (Domain Helper) لحساب الأيام المفقودة وتوليد الفتحات الجديدة.
+- يكتب عبر `SlotRepository.insertBatch` دفعة واحدة (تحسين أداء).
+- سياسة الفشل: Best Effort (ADR-017) — يُسجَّل الفشل ولا يُوقف التشغيل.
+
+
+**الاعتماديات:**
+- `SlotGenerator.calculateGenerationPlan(latestSortKey, settings)`
+- `SlotGenerator.calculateDailySlots(date, settings, slotDuration)`
+- `SlotGenerator.isWorkingDay(date, settings)`
+- `SlotRepository.insertBatch(slots)`
+
+
+---
+
+
+### 5.2 ProcessedMessagesService.gs — Idempotency (ADR-023)
+
+
+**المسؤولية:** منع تكرار معالجة نفس الرسالة من Webhook.
+
+
+**التفاصيل:**
+- يستخدم `PropertiesService` لتخزين بصمة الرسالة مع الطابع الزمني.
+- نافذة 5 دقائق (قابلة للتكوين عبر `DUPLICATE_WINDOW_MS`).
+- عند وجود `messageId` من UltraMsg، يُستخدم مباشرة.
+- عند غيابه، يُبنى بصمة من `phone + message + الدقيقة` (دقة دقيقة) لتجنب رفض الرسائل المتطابقة في أوقات مختلفة.
+
+
+**واجهة الاستخدام:**
+```gs
+ProcessedMessagesService.isDuplicate(messageId, phone, message) → boolean
+ProcessedMessagesService.markProcessed(messageId, phone, message)
+```
+
+
+---
+
+
+### 5.3 HealthCheckService.gs — مراقبة تلقائية
+
+
+**المسؤولية:** فحص صحة النظام بشكل دوري وإرسال تنبيهات للمشرف.
+
+
+**التفاصيل:**
+- يُستدعى من `Scheduler.main()` كخطوة رابعة.
+- يفحص:
+  - وجود بيانات في `Availability`
+  - وجود بيانات في `SYSTEM_LOG`
+  - صحة `Settings`
+- يُسجّل النتائج في `SYSTEM_LOG`.
+- إذا وُجدت مشاكل، يُرسل رسالة واتساب إلى `ADMIN_PHONE` (من Script Properties).
+
+
+**سياسة الفشل:** Best Effort — فشل HealthCheck لا يوقف Scheduler.
+
+
+---
+
+
+### 5.4 Backup (ADR-024) — موثق في الدستور
+
+
+**السياسة:**
+- نسخ احتياطي أسبوعي للـ Sheets (Availability, Conversations, Settings, SYSTEM_LOG).
+- يُحتفظ بآخر 4 نسخ (شهر كامل).
+- يُنفَّذ عبر سكريبت منفصل (يُضاف مستقبلاً أو يُنفَّذ يدوياً).
+
+
+---
+
+
+## 6. أخطر الملفات
+
+
+| # | الملف | المخاطرة |
+|---|-------|----------|
+| 1 | **StateMachine.gs** | انهيار منطق الحالات |
+| 2 | **SlotRepository.gs** | فساد بيانات أو فشل في atomicUpdate |
+| 3 | **ChangeService.gs** | فشل جزئي بين Slot و Calendar |
+| 4 | **GoogleSheets.gs** | مسح خطي O(n) (محسّن جزئياً عبر updateBatch) |
+| 5 | **Router.gs** | توجيه خاطئ = تجربة مكسورة |
+| 6 | **Webhook.gs** | نقطة دخول وحيدة — أي خطأ هنا يوقف النظام بالكامل |
+
+
+---
+
+
+## 7. تدفق Webhook النهائي (مع ADR-023)
+
+
+```
+doPost(e)
+  ├─ WhatsAppAdapter.parseIncomingPayload(e)
+  │   └─ تعيد { phone, message, messageId } أو null
+  ├─ null? → تسجيل WEBHOOK_PARSE_FAILED → IGNORED
+  ├─ ProcessedMessagesService.isDuplicate(msgId, phone, message)?
+  │   └─ true → OK (بدون معالجة) ⭐ Idempotency
+  ├─ ProcessedMessagesService.markProcessed(msgId, phone, message) ⭐
+  ├─ Router.dispatch({ phone, message })
+  │   └─ تعيد Result { reply, conversationState }
+  ├─ WhatsAppAdapter.sendMessage(phone, reply)
+  │   └─ فشل؟ → تسجيل WEBHOOK_SEND_FAILED
+  └─ Exception? → WEBHOOK_CRASH → ERROR_LOGGED
+```
+
+
+---
+
+
+## 8. تدفق Scheduler النهائي
+
+
+```
+Scheduler.main()
+  ├─ 1. MaintenanceService.run()
+  │   ├─ runCleanup() → RESERVED منتهية → FREE (Batch)
+  │   └─ runExpiration() → FREE منتهية → EXPIRED (Batch)
+  │
+  ├─ 2. AvailabilityHorizonMaintainer.ensureHorizon()
+  │   ├─ SlotGenerator.calculateGenerationPlan()
+  │   ├─ إن كان بحاجة توليد ← SlotGenerator.calculateDailySlots() لكل يوم
+  │   └─ SlotRepository.insertBatch() دفعة واحدة
+  │
+  ├─ 3. ReminderService.processPendingReminders(sendFn)
+  │   ├─ collectPendingReminders()
+  │   ├─ لكل مهمة: sendFn(phone, message)
+  │   └─ لكل نجاح: markReminderSent(slotId)
+  │
+  ├─ 4. HealthCheckService.run() ⭐ (مع try/catch خاص)
+  │   ├─ فحص Availability, SYSTEM_LOG, Settings
+  │   ├─ تسجيل النتيجة في SYSTEM_LOG
+  │   └─ إن كانت مشاكل ← إرسال واتساب للمشرف
+  │
+  └─ تسجيل SCHEDULER_RUN شامل
+```
+
+
+---
+
+
+## 9. قواعد تشغيلية وإرشادية
+
+
+### 9.1 قبل الإطلاق (Go-Live Checklist)
+
+
+- [ ] التأكد من وجود جميع الأوراق في Spreadsheet: `Availability`, `Conversations`, `Settings`, `SYSTEM_LOG`.
+- [ ] التأكد من وجود جميع Script Properties:
+  - `SPREADSHEET_ID`
+  - `ULTRAMSG_INSTANCE_ID`
+  - `ULTRAMSG_TOKEN`
+  - `ADMIN_PHONE`
+- [ ] تشغيل `RUN_healthCheck()` والتأكد من ظهور `✅ SYSTEM READY`.
+- [ ] تشغيل `RUN_previewHorizon()` ومعاينة خطة التوليد.
+- [ ] تشغيل `RUN_ensureHorizon()` وتأكيد كتابة الفتحات.
+- [ ] تشغيل `RUN_scheduler()` وتأكيد اكتمال جميع الخطوات دون أخطاء.
+- [ ] اختبار Webhook يدوياً عبر `RUN_testWebhook()` (محاكاة doPost).
+- [ ] إيقاف أي سيناريوهات Make.com تعمل على نفس Sheets.
+- [ ] النسخ الاحتياطي اليدوي الأول لجميع الأوراق.
+
+
+### 9.2 أثناء التشغيل (Daily/Weekly)
+
+
+- **يومياً:** مراقبة سجلات `SCHEDULER_RUN` و `HEALTH_CHECK` في `SYSTEM_LOG`.
+- **أسبوعياً:** التحقق من عدم تجاوز `PropertiesService` حد 500 مفتاح (Idempotency).
+- **شهرياً:** مراجعة أداء `updateRowByColumn` واتخاذ قرار بتحسينه إذا لزم الأمر.
+
+
+### 9.3 سياسة الفشل (Failure Policy)
+
+
+| المكون | سياسة الفشل | التوثيق |
+|--------|-------------|---------|
+| Webhook (Idempotency) | Best Effort — فشل التخزين لا يمنع المعالجة | ADR-023 |
+| Scheduler | Best Effort — أي خطأ يُسجَّل ولا يُعاد رميه | ADR-020 |
+| Maintenance | Best Effort — فشل تحديثات Batch يُسجَّل فقط | ADR-017 |
+| Reminders | Best Effort — فشل تذكير لا يوقف الباقي | ADR-017 |
+| HealthCheck | Best Effort — فشله لا يوقف Scheduler | — |
+| AvailabilityHorizon | Best Effort — فشل التوليد لا يوقف Scheduler | ADR-022 |
+
+
+---
+
+
+## 10. خطة التصليب (Hardening Roadmap) — مكتملة
+
+
+| المرحلة | المهمة | الملفات المتأثرة | ADR | الحالة |
+|---------|--------|------------------|-----|--------|
+| **الأسبوع 1** | إصالح المولد ودمجه | `AvailabilityHorizonMaintainer.gs`, `Scheduler.gs` | ADR-022 | ✅ مكتمل |
+| **الأسبوع 1** | تحسين Maintenance (Batch) | `MaintenanceService.gs`, `GoogleSheets.gs` | — | ✅ مكتمل |
+| **الأسبوع 2** | Idempotency للـ Webhook | `Webhook.gs`, `ProcessedMessagesService.gs` | ADR-023 | ✅ مكتمل |
+| **الأسبوع 2** | إيقاف Make.com رسمياً | الدستور فقط | — | ✅ مكتمل |
+| **الأسبوع 3** | HealthCheckService | `HealthCheckService.gs`, `Scheduler.gs` | — | ✅ مكتمل |
+| **الأسبوع 4** | Backup (ADR-024) | `BackupService.gs` (مستقبلي) | ADR-024 | ✅ موثق |
+
+
+---
+
+
+## 11. معايير نجاح مرحلة التصليب
+
+
+- [x] المولد يعمل تلقائياً ويحافظ على أفق 30 يوماً.
+- [x] `atomicUpdate` أسرع من السابق (عبر Batch في Maintenance).
+- [x] لا يوجد ازدواج معالجة عند إعادة إرسال Webhook (Idempotency).
+- [x] Make.com إما موقف أو موثّق.
+- [x] تصلني تنبيهات تلقائية عند المشاكل (HealthCheck).
+- [x] نسخة احتياطية أسبوعية موجودة (موثقة).
+
+
+---
+
+
+## 12. الديون التقنية المؤجلة (معترف بها)
+
+
+| الدين | الوصف | الموعد المتوقع |
+|-------|-------|----------------|
+| تحسين `updateRowByColumn` | إضافة Cache مؤقت لتسريع البحث الخطي | بعد شهرين من التشغيل (عند تجاوز 2000 صف) |
+| تنظيف `PropertiesService` | حذف مفاتيح Idempotency القديمة (> 5 دقائق) | عند تجاوز 300 مفتاح (حوالي 5 أيام) |
+| أرشفة البيانات | نقل الفتحات القديمة (COMPLETED/CANCELLED) إلى Sheet منفصل | بعد 3-6 أشهر من التشغيل |
+| Multi-Clinic | دعم عدة عيادات | عند طلب أول عميل ثانٍ |
+| `Today-Appointments` | تحويل إلى View أو حذف | قرار فني قادم |
+
+
+---
+
+
+## 13. شهادة جاهزية الإطلاق (Beta Readiness Certificate)
+
+
+**أشهد بأن النظام (v1.0) قد اجتاز مرحلة التصليب واستوفى جميع المتطلبات المعمارية والتشغيلية للإطلاق التجريبي.**
+
+
+- النواة مستقرة وخالية من الأخطاء القاتلة.
+- أداء الصيانة محسّن (Batch Updates).
+- المولد يعمل تلقائياً ويحافظ على أفق 30 يوماً.
+- Idempotency تحمي من تكرار الرسائل.
+- المراقبة التلقائية (HealthCheck) تعمل.
+- النسخ الاحتياطي موثق.
+- جميع العقود (CAS) والمقررات (ADR) موثقة في هذا الدستور.
+
+
+**التوقيع:** المشرف المعماري (G)  
+**التاريخ:** 7 أغسطس 2026  
+**الإصدار:** v3.2 (v1.0 مستقر)
+
+
+---
+
+
+> **ملاحظة:** هذا الدستور هو المصدر الرسمي للحقيقة. أي تعديل على الكود يجب أن ينعكس في هذا الدستور خلال 24 ساعة من التعديل.
