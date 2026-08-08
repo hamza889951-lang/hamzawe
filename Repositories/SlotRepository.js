@@ -22,7 +22,10 @@ const SlotRepository = {
   findAvailableByDate: function(dateStr) {
     try {
       return GoogleSheets.queryRows(Config.VOCABULARY.SHEETS.AVAILABILITY, function(row) {
-        return row.date === dateStr && row.status === Config.VOCABULARY.STATUS.FREE;
+        if (row.date !== dateStr) return false;
+        if (row.status !== Config.VOCABULARY.STATUS.FREE) return false;
+        if (!SlotRepository._isAvailable(row.is_available)) return false;
+        return true;
       });
     } catch (e) {
       return [];
@@ -80,6 +83,15 @@ const SlotRepository = {
     );
     GoogleSheets.appendRow(Config.VOCABULARY.SHEETS.AVAILABILITY, record);
     return Result.ok(record);
+  },
+
+  _isAvailable: function(value) {
+    if (value === true) return true;
+    if (typeof value === 'string') {
+      var trimmed = value.trim().toUpperCase();
+      if (trimmed === 'TRUE') return true;
+    }
+    return false;
   }
 };
 
@@ -109,4 +121,3 @@ SlotRepository.insertBatch = function(slots) {
 
   return GoogleSheets.appendRows(Config.VOCABULARY.SHEETS.AVAILABILITY, rows);
 };
-
