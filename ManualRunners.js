@@ -25,11 +25,18 @@ function RUN_previewHorizon() {
   return result;
 }
 
-/**
- * Test 2 & 3: التوليد الفعلي
- */
-function RUN_ensureHorizon() {
-  var result = AvailabilityHorizonMaintainer.ensureHorizon();
+--- a/ManualRunners.js
++++ b/ManualRunners.js
+@@ ... @@
+ /**
++ * ⚠️ تحذير: هذا الاستدعاء اليدوي يستخدم نفس ScriptLock الذي
++ * يستخدمه Scheduler.main(). تشغيله أثناء دورة Scheduler
++ * سيؤدي إلى انتظار (LOCK_TIMEOUT بعد 5 ثوانٍ).
++ * يُستخدم فقط للتشغيل الطارئ خارج أوقات Scheduler.
++ *
+  * Test 2 & 3: التوليد الفعلي
+  */
+ function RUN_ensureHorizon() {  var result = AvailabilityHorizonMaintainer.ensureHorizon();
   Logger.log('═══════════════════════════════════════');
   Logger.log('ENSURE HORIZON RESULT:');
   Logger.log('═══════════════════════════════════════');
