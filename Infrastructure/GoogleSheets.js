@@ -1,11 +1,26 @@
 const GoogleSheets = {
-  _getSheet: function(sheetName) {
+  _openSpreadsheet: function() {
     var sheetId = PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID');
-    var spreadsheet = sheetId
+    return sheetId
       ? SpreadsheetApp.openById(sheetId)
       : SpreadsheetApp.getActiveSpreadsheet();
-    var sheet = spreadsheet.getSheetByName(sheetName);
+  },
+
+  _getSheet: function(sheetName) {
+    var sheet = this._openSpreadsheet().getSheetByName(sheetName);
     if (!sheet) throw new Error('SHEET_NOT_FOUND: ' + sheetName);
+    return sheet;
+  },
+
+  getOrCreateSheet: function(sheetName, headers) {
+    var spreadsheet = this._openSpreadsheet();
+    var sheet = spreadsheet.getSheetByName(sheetName);
+    if (sheet) return sheet;
+
+    sheet = spreadsheet.insertSheet(sheetName);
+    if (headers && headers.length > 0) {
+      sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+    }
     return sheet;
   },
 
@@ -13,7 +28,7 @@ const GoogleSheets = {
     var obj = { _rowNumber: rowNumber };
     headers.forEach(function(h, i) { obj[h] = row[i]; });
     return obj;
-  },
+
 
   findRowByColumn: function(sheetName, columnName, value) {
     var rows = this.queryRows(sheetName, function(row) {
@@ -129,4 +144,30 @@ GoogleSheets.appendRows = function(sheetName, rows) {
   sheet.getRange(lastRow + 1, 1, rows.length, rows[0].length).setValues(rows);
 
   return Result.ok({ inserted: rows.length });
+};
+
+GoogleSheets.deleteRowsByNumbers = function(sheetName, rowNumbers) {
+  var sheet = this._getSheet(sheetName);
+  if (!rowNumbers || rowNumbers.length === 0) return Result.ok({ deleted: 0 });
+
+  var sorted = rowNumbers.slice().sort(function(a, b) { return a - b; });
+
+  var ranges = [];
+  var i = 0;
+  while (i < sorted.length) {
+    var start = sorted[i];
+    var count = 1;
+    while (i + 1 < sorted.length && sorted[i + 1] === start + count) {
+      count++;
+      i++;
+    }
+    ranges.push({ start: start, count: count });
+    i++;
+  }
+
+  for (var r = ranges.length - 1; r >= 0; r--) {
+    sheet.deleteRows(ranges[r].start, ranges[r].count);
+  }
+
+  return Result.ok({ deleted: sorted.length });
 };
