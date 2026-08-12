@@ -28,7 +28,7 @@ Entry           Webhook (doPost) + ManualRunners (manual test functions)
 ```
 
 Confirmed rules from constitution:
-- CAS-002: `Infrastructure/GoogleSheets.js` is the ONLY file allowed to call `SpreadsheetApp`. (Currently violated by `ArchiveService.js` — see §15; fix approved as Phase A.)
+- CAS-002: `Infrastructure/GoogleSheets.js` is the ONLY file allowed to call `SpreadsheetApp`. (Enforced — Phase A removed the last violation from `ArchiveService.js`; see §15.)
 - CAS-004: `StateMachine.js` is the only source of slot state transitions.
 - CAS-008: every working function returns `Result` (no true/false/null); exception: internal `_` functions in Repositories.
 - CAS-009: `Clock.now()` is the only way to read current time. `new Date()` only for pure conversions (in `DateUtils.js`, `SlotGenerator.js`, `LegacySlotTimeParser.js`).
@@ -46,7 +46,9 @@ StateMachine.js                   Slot state transitions (root level, despite Do
 Clock.js                          Clock.now() — single time source
 Webhook.js                        doPost entry → parse → idempotency → Router → reply
 Scheduler.js                      Daily orchestrator (Archive→Maintenance→Horizon→Reminders→HealthCheck) + Liveness
-ArchiveService.js                 SYSTEM_LOG archive policy (90d). ⚠️ Currently leaks storage (Phase A fix)
+ArchiveService.js                 SYSTEM_LOG archive policy (90d) only — no storage details (Phase A done)
+LogArchiveRepository.js           Storage for log archiving: findOlderThan / appendToArchive(+verify) / deleteRecords (Phase A, new)
+ArchiveTestHarness.js             TEST-ONLY harness for Phase A (in-memory GoogleSheets mock; deletable)
 ManualRunners.js                  RUN_* manual test functions
 AppointmentRepository.js          Compatibility layer for future Appointment entity (ADR-010)
 LogRepository.js                  Append-only SYSTEM_LOG writer (contract: never add read/delete)
@@ -108,7 +110,7 @@ Columns written by `LogRepository.write`: `timestamp`, `command`, `phone`, `slot
 Commands logged: `WEBHOOK_*`, `SCHEDULER_*`, `HEALTH_CHECK`, `MAINTENANCE_RUN`, `GENERATE_AVAILABILITY`, `ARCHIVE_RUN`, and `Config.VOCABULARY.COMMANDS` values.
 
 ### SYSTEM_LOG_ARCHIVE
-Created automatically by archive (headers copied from SYSTEM_LOG). Same columns.
+Created automatically by `LogArchiveRepository.appendToArchive` (headers copied from SYSTEM_LOG). Same columns. Sheet name (`SYSTEM_LOG_ARCHIVE`) lives only in `LogArchiveRepository`.
 
 ### Slot Statuses & Transitions (StateMachine.js)
 ```
@@ -125,7 +127,7 @@ COMPLETED / NO_SHOW / EXPIRED / CANCELLED = terminal (no transitions)
 |---|---|---|
 | WhatsApp (UltraMsg) | `Infrastructure/WhatsAppAdapter.js` | POST `https://api.ultramsg.com/{instance}/messages/chat` (form-encoded: token, to, body). Incoming webhook payload: `{ data: { from, body, id } }`. |
 | Google Calendar | `Infrastructure/GoogleCalendar.js` | `CalendarApp.getDefaultCalendar()` (no calendarId set in app code). `createEvent`, `getEventById/deleteEvent`. |
-| Google Sheets | `Infrastructure/GoogleSheets.js` | `SpreadsheetApp.openById(SPREADSHEET_ID)` or `getActiveSpreadsheet()`. |
+| Google Sheets | `Infrastructure/GoogleSheets.js` | `SpreadsheetApp.openById(SPREADSHEET_ID)` or `getActiveSpreadsheet()` (both routed through `_openSpreadsheet()`; `SPREADSHEET_ID` wins when set). Generics: `getAllRows`, `getHeaders`, `appendRows`, `updateBatch`, `appendRow`, `getOrCreateSheet`, `deleteRowsByNumbers`. |
 | Script Properties | many | `SPREADSHEET_ID`, `ULTRAMSG_INSTANCE_ID`, `ULTRAMSG_TOKEN`, `ADMIN_PHONE`; runtime: `LAST_SCHEDULER_SUCCESS_MS`, `LAST_LIVENESS_ALERT_MS`. |
 
 **Auth flow:** Web app deployment `executeAs: USER_DEPLOYING`, `access: ANYONE_ANONYMOUS` (ultramsg POSTs to the webapp URL with no auth). WhatsApp replies use the ultramsg token. No OAuth is handled in code (Google services run as the deploying user).
@@ -215,7 +217,7 @@ Vocabulary in `Config.VOCABULARY.CONVERSATION_STATE`. Router dispatch table is d
 - Archive retention: 90 days (`ArchiveService.RETENTION_MS`).
 - Bus number = `floor((slotMinutes − workStartMinutes) / slotDuration) + 1`; **display only, never stored** (ADR-021).
 - `is_available=false` → not bookable. Meaning: slot validity/doctor presence. Do NOT change (future doctor vacation dashboard plan).
-- `duplicate archive record` is acceptable; `data loss` is not. Copy must be verified before delete.
+- `duplicate archive record` is acceptable; `data loss` is not. Copy must be verified before delete. Delete requires **identity safety**: a record is deletable only if it has exactly one full-content match in the source (0 or >1 matches → fail, no delete). No stable unique ID exists in SYSTEM_LOG (no `log_id`); identity is content-based.
 - WhatsApp send failure never causes appointment loss (booking is committed in Sheets before any message).
 - Single active appointment per phone (findActiveByPhone returns first CONFIRMED).
 
@@ -236,6 +238,7 @@ Vocabulary in `Config.VOCABULARY.CONVERSATION_STATE`. Router dispatch table is d
 - `Lock.runExclusive` distinguishes `LOCK_TIMEOUT` from inner failures; releases lock in `finally`.
 - `SlotRepository` query methods swallow read exceptions and return `[]`/`null` (silent-failure risk on read; acknowledged design — reads are best-effort, writes are strict).
 - Partial-failure patterns (documented in file headers): ADR-006 (Slot↔Calendar not atomic; logged, no auto-rollback), Patient-retention-first in ChangeService, Calendar-delete-before-slot-free in CancelService.
+- Archive data safety (Phase A): strict READ→COPY→VERIFY→DELETE; `LogArchiveRepository.appendToArchive` verifies by read-back (not just `inserted === length`); failed copy/verify blocks delete; `LogArchiveRepository.deleteRecords` requires exactly one identity match per record, otherwise `Result.fail` and no delete. (Note: if the source sheet is missing, `GoogleSheets._getSheet` throws — surfaced as an exception, per the codebase's read path contract.)
 - `GoogleSheets.updateBatch` writes from a single snapshot per call (safe for non-overlapping row targets).
 - Webhook: any exception → `WEBHOOK_CRASH` log → `ERROR_LOGGED`; parse failure → `IGNORED`.
 
@@ -243,13 +246,13 @@ Vocabulary in `Config.VOCABULARY.CONVERSATION_STATE`. Router dispatch table is d
 
 Ranked by severity (P0=worst). All confirmed by code inspection.
 
-- **P1 — `ArchiveService.js` architectural leakage (CAS-002 violation):** calls `SpreadsheetApp.getActiveSpreadsheet()` directly (lines 50, 66), uses `getSheetByName`, `deleteRow` loop, and `_rowNumber`. If `SPREADSHEET_ID` ever differs from the bound spreadsheet, reads and deletes could target different documents (data-loss risk). Fix approved as **Phase A** (create `LogArchiveRepository`; ArchiveService keeps only policy). Also: `deleteRow` in a loop = N API calls (first archive after 90 days may be slow).
+- **P1 — ~~`ArchiveService.js` architectural leakage (CAS-002 violation)~~ RESOLVED (Phase A).** No longer calls `SpreadsheetApp`/`getSheetByName`/`deleteRow`/`_rowNumber`; storage moved to `LogArchiveRepository` (read-only tested). Remaining related observation: `deleteRowsByNumbers` still does one `getRange`-backed API call per contiguous row-range (small constant), and the first archive after 90 days may still be large/slow.
 - **P1 — Scheduler archive ordering:** Archive runs FIRST (before operational stages). A slow/large archive can consume the execution budget and starve operational stages, contradicting "archive must not block operational work". Archive-order fix is a separate approved-future task.
 - **P1 — SlotSelection optimistic read:** `findEarliestBookable()` reads outside the lock; on race the loser gets a misleading "no appointments available" reply with no retry to the next slot.
 - **P2 — Nested ScriptLock (unverified):** `Scheduler.main` holds ScriptLock then `ensureHorizon` calls `Lock.runExclusive` (waits 5s). Reentrancy behavior of Apps Script ScriptLock is unverified — must be tested in the live environment.
 - **P2 — Global ScriptLock coupling:** a webhook arriving during a long scheduler run waits 5s then `LOCK_TIMEOUT` → booking failure.
 - **P2 — Liveness vs constitution conflict:** constitution §9.3 says HealthCheck is "best effort, doesn't stop Scheduler", but code makes `healthy:false` fail the whole scheduler (operationalOk=false). Code matches the owner's newer spec; conflict is undocumented.
-- **P2 — Application-layer storage leaks (planned hardening):** `MaintenanceService` → `GoogleSheets.updateBatch` directly; `HealthCheckService` → `GoogleSheets.getAllRows` + `PropertiesService`; `Scheduler` → `LockService` + `PropertiesService` directly; `ProcessedMessagesService` → `PropertiesService`; `SlotRepository.query(predicate)` passes raw rows to Application.
+- **P2 — Application-layer storage leaks (planned hardening):** `MaintenanceService` → `GoogleSheets.updateBatch` directly; `HealthCheckService` → `GoogleSheets.getAllRows` + `PropertiesService`; `Scheduler` → `LockService` + `PropertiesService` directly; `ProcessedMessagesService` → `PropertiesService`; `SlotRepository.query(predicate)` passes raw rows to Application. (Archive was the first of these fixed — Phase A.)
 - **P3 — `sort_key`/`LegacySlotTimeParser`** temporary (ADR-016); dies with generator rebuild.
 - **P3 — `Reminder_sent: 'TRUE'`** string sentinel hardcoded in Application.
 - **P3 — PropertiesService key accumulation** (500-key limit; documented in constitution §12).
@@ -268,7 +271,8 @@ Ranked by severity (P0=worst). All confirmed by code inspection.
 - **Patient-retention-first** in reschedule — once the new appointment is confirmed, cleanup failures never surface to the patient.
 - **Webhook idempotency** (ADR-023) — 5-min dedup to survive ultramsg retries.
 - **Result-only returns** (CAS-008) — uniform success/failure signaling; no silent true/false.
-- **`LogRepository` append-only** — diagnostic log; never a read/delete API (archive reads live in a separate repository to be created).
+- **`LogRepository` append-only** — diagnostic log; never a read/delete API (archived reads/deletes live in `LogArchiveRepository`).
+- **Archive identity safety (Phase A)** — no stable unique ID in SYSTEM_LOG; delete only on exactly-one full-content match, never on row number alone. Simple, safe, no schema change; a future `log_id` column would improve it (not needed now).
 - **Best-effort background ops** (ADR-017) — Maintenance/Reminders/HealthCheck failures log but don't cascade, EXCEPT operational stages gate liveness by design.
 - **Single daily trigger** — one `RUN_scheduler`; do not add triggers without explicit approval.
 
@@ -292,13 +296,15 @@ Ranked by severity (P0=worst). All confirmed by code inspection.
 - `Clock.now()` time-source rule (CAS-009).
 - The single daily Scheduler trigger / `RUN_scheduler`.
 - Sheet columns without auditing all readers/writers (bookings are the source of truth; SYSTEM_LOG is diagnostic only).
-- Any `Config`/sheet-name literal that other files reference (archive sheet name currently lives in `ArchiveService.js`; will move to `LogArchiveRepository`).
+- Any `Config`/sheet-name literal that other files reference (archive sheet name lives in `LogArchiveRepository`; do not move back to Application).
 
 ## 15. Current Project Status
 
 - **Stable v1.0**; constitution v3.2; hardening roadmap officially complete.
 - **Recently completed:** ArchiveService for SYSTEM_LOG (last commits); Scheduler archive stage; Liveness fix; HealthCheck; horizon maintainer; webhook idempotency.
-- **In progress (approved, not yet implemented):** **Phase A — decouple `ArchiveService` from storage** (create `LogArchiveRepository`; keep policy in ArchiveService; batch delete rows; remove `getActiveSpreadsheet`; no Scheduler changes). Plan approved by owner; awaiting implementation go-ahead.
+- **Implemented (Phase A — decouple ArchiveService from storage):** `LogArchiveRepository` created (findOlderThan / appendToArchive with read-back verify / deleteRecords with identity rule); `ArchiveService` is now policy-only (no `SpreadsheetApp`, no sheet names, no row numbers, no delete logic, no `_rowNumber`); `GoogleSheets` gained generic `getOrCreateSheet`, `deleteRowsByNumbers`, and `_openSpreadsheet`. Batch delete (merged ranges, no `deleteRow` loop). No Scheduler/LogRepository/Config/Result changes.
+- **Tested (local, test-only):** `ArchiveTestHarness.js` (deletable) — in-memory GoogleSheets mock + real production code loaded read-only; 8/8 PASS covering successful archive, no-old-records, copy failure (no delete), identity-not-found (no delete), identity-ambiguous (no delete), crash-after-copy-before-delete + retry, partial-delete + retry, date normalization.
+- **Pending (owner):** git commit/push of Phase A + PROJECT_CONTEXT update; Apps Script deploy; **live test of archive on real SYSTEM_LOG** (mock is faithful but not a substitute for real Sheets API behavior/quota); ArchiveTestHarness is temporary and may be deleted.
 - **Planned separately:** Scheduler archive ordering (archive last); Application-layer leakage hardening (Maintenance/HealthCheck/Scheduler/ProcessedMessages → repositories); booking-path concurrency review (SlotSelection retry) — next stated goal.
 - **Always manual (owner):** git commit/push, Apps Script deploy, trigger setup, live testing. The agent only produces code.
 
