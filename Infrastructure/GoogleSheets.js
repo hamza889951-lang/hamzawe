@@ -28,7 +28,7 @@ const GoogleSheets = {
     var obj = { _rowNumber: rowNumber };
     headers.forEach(function(h, i) { obj[h] = row[i]; });
     return obj;
-
+  },
 
   findRowByColumn: function(sheetName, columnName, value) {
     var rows = this.queryRows(sheetName, function(row) {
