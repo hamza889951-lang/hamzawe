@@ -81,10 +81,6 @@
  *   الأساسي والتنظيف كليهما (التنظيف يُسجَّل بمرحلة CLEANUP_FAILED
  *   تحت نفس اسم الأمر، لا Command جديد).
  * - اختيار الفتحة البديلة عبر SlotSelection.findEarliestBookable() فقط.
- * - Hardening B1: حجز الفتحة البديلة يعيد الاختيار عند
- *   INVALID_TRANSITION فقط، بحد أقصى 3 محاولات مع استبعاد المرشح الخاسر.
- *   أخطاء القفل/التخزين تُعاد كما هي. يظل الـ retry محصورًا في اختيار
- *   المرشح + atomicUpdate، قبل أي تأكيد أو Calendar أو cleanup.
  * - مدة الفتحة عبر SettingsRepository.getSlotDurationMinutes() فقط.
  * - إصلاح عرض (بعد مراجعة الشيت الفعلي): date/time المستخدَمان في نص
  *   الرد يمران الآن عبر DateUtils.formatDateDisplay()/formatTimeDisplay()
@@ -129,21 +125,32 @@ const ChangeService = {
       Config.VOCABULARY.COMMANDS.CHANGE_APPOINTMENT,
       { phone: phone, slotId: oldSlot.slot_id },
       function() {
+        const newSlot = SlotSelection.findEarliestBookable(oldSlot.slot_id);
+        if (!newSlot) {
+          return Result.fail('NO_ALTERNATIVE_SLOT', 'No alternative bookable slot found');
+        }
+
         const reservedUntil = DateUtils.addMinutes(
           Clock.now(),
           Config.SYSTEM_POLICY.RESERVATION_TIMEOUT_MINUTES
         );
 
-        // Hardening B1: الـ retry محصور في اختيار البديل + حجزه الذري.
-        // القديمة تبقى سليمة إن فشلت كل محاولات حجز الجديدة.
-        const reservationResult = ChangeService._reserveAlternativeSlot(
-          phone,
-          oldSlot.patient_name,
-          reservedUntil,
-          oldSlot.slot_id
-        );
-        if (!reservationResult.ok) return reservationResult;
-        const newSlot = reservationResult.data.slot;
+        // ── حجز الجديدة أولاً — القديمة تبقى سليمة إن فشلت هذه ──
+        const reserveResult = SlotRepository.atomicUpdate(newSlot.slot_id, function(freshNew) {
+          const check = Validators.validateTransition(
+            freshNew.status,
+            Config.VOCABULARY.COMMANDS.RESERVE_SLOT
+          );
+          if (!check.ok) return check;
+          return Result.ok({
+            status: Config.VOCABULARY.STATUS.RESERVED,
+            phone: phone,
+            patient_name: oldSlot.patient_name,
+            reserved_until: reservedUntil,
+            reserved_until_unix: reservedUntil.getTime()
+          });
+        });
+        if (!reserveResult.ok) return reserveResult;
 
         // ── تحرير القديمة — فقط بعد تأمين الجديدة ──
         const freeResult = SlotRepository.atomicUpdate(oldSlot.slot_id, function(freshOld) {
@@ -182,14 +189,10 @@ const ChangeService = {
     );
 
     if (!commandResult.ok) {
-      if (commandResult.error && commandResult.error.code === 'NO_SLOT_AVAILABLE') {
-        return Result.ok({
-          reply: 'تعذّر تغيير الحجز حاليًا. الرجاء المحاولة مرة أخرى.',
-          conversationState: Config.VOCABULARY.CONVERSATION_STATE.WAITING_CONFIRMATION
-        });
-      }
-      // أخطاء القفل/التخزين لا تُخفى كعدم وجود بديل.
-      return commandResult;
+      return Result.ok({
+        reply: 'تعذّر تغيير الحجز حاليًا. الرجاء المحاولة مرة أخرى.',
+        conversationState: Config.VOCABULARY.CONVERSATION_STATE.WAITING_CONFIRMATION
+      });
     }
 
     ConversationRepository.moveToWaitingConfirmation(
@@ -241,21 +244,33 @@ const ChangeService = {
       Config.VOCABULARY.COMMANDS.CHANGE_APPOINTMENT,
       { phone: phone, slotId: oldSlot.slot_id },
       function() {
+        // الخطوة 2: إيجاد فتحة جديدة FREE
+        const newSlot = SlotSelection.findEarliestBookable(oldSlot.slot_id);
+        if (!newSlot) {
+          return Result.fail('NO_ALTERNATIVE_SLOT', 'No alternative bookable slot found');
+        }
+
         const reservedUntil = DateUtils.addMinutes(
           Clock.now(),
           Config.SYSTEM_POLICY.RESERVATION_TIMEOUT_MINUTES
         );
 
-        // الخطوتان 2-3: اختيار بديل وحجزه ذريًا. إعادة المحاولة هنا فقط؛
-        // لا يُعاد التأكيد أو Calendar أو أي cleanup.
-        const reservationResult = ChangeService._reserveAlternativeSlot(
-          phone,
-          oldSlot.patient_name,
-          reservedUntil,
-          oldSlot.slot_id
-        );
-        if (!reservationResult.ok) return reservationResult;
-        const newSlot = reservationResult.data.slot;
+        // الخطوة 3: حجز الفتحة الجديدة → RESERVED
+        const reserveResult = SlotRepository.atomicUpdate(newSlot.slot_id, function(freshNew) {
+          const check = Validators.validateTransition(
+            freshNew.status,
+            Config.VOCABULARY.COMMANDS.RESERVE_SLOT
+          );
+          if (!check.ok) return check;
+          return Result.ok({
+            status: Config.VOCABULARY.STATUS.RESERVED,
+            phone: phone,
+            patient_name: oldSlot.patient_name,
+            reserved_until: reservedUntil,
+            reserved_until_unix: reservedUntil.getTime()
+          });
+        });
+        if (!reserveResult.ok) return reserveResult;
         // إن فشل أي شيء بعد هذه النقطة: الموعد القديم لم يُمَس إطلاقًا.
 
         // الخطوة 4: تأكيد الفتحة الجديدة → CONFIRMED (مع فحص الملكية)
@@ -326,14 +341,10 @@ const ChangeService = {
     );
 
     if (!commandResult.ok) {
-      if (commandResult.error && commandResult.error.code === 'NO_SLOT_AVAILABLE') {
-        return Result.ok({
-          reply: 'تعذّر تغيير موعدك حاليًا. الرجاء المحاولة مرة أخرى أو التواصل مع العيادة.',
-          conversationState: Config.VOCABULARY.CONVERSATION_STATE.BOOKED
-        });
-      }
-      // أخطاء القفل/التخزين لا تُخفى كعدم وجود بديل.
-      return commandResult;
+      return Result.ok({
+        reply: 'تعذّر تغيير موعدك حاليًا. الرجاء المحاولة مرة أخرى أو التواصل مع العيادة.',
+        conversationState: Config.VOCABULARY.CONVERSATION_STATE.BOOKED
+      });
     }
 
     // ═══ Post-Commit Cleanup: الخطوتان 7-8. فشلها لا يغيّر رد المستخدم ═══
@@ -354,60 +365,6 @@ const ChangeService = {
   // ─────────────────────────────────────
   // أدوات داخلية (Internal helpers)
   // ─────────────────────────────────────
-
-  /**
-   * يختار ويحجز بديلًا ذريًا. وحده INVALID_TRANSITION أثناء ReserveSlot
-   * يُعامل كخسارة سباق. يستبعد الفتحة القديمة وكل مرشح خاسر، ويقف بعد
-   * 3 محاولات. لا يشمل الـ retry التأكيد أو Calendar أو cleanup.
-   *
-   * @param {string} phone
-   * @param {string} patientName
-   * @param {Date} reservedUntil
-   * @param {string} oldSlotId
-   * @returns {Result} data: { slot: Object }
-   */
-  _reserveAlternativeSlot(phone, patientName, reservedUntil, oldSlotId) {
-    const excludedSlotIds = oldSlotId ? [oldSlotId] : [];
-    const maxAttempts = 3;
-
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const selectionResult = SlotSelection.findEarliestBookable(excludedSlotIds);
-      if (!selectionResult.ok) return selectionResult;
-
-      const slot = selectionResult.data;
-      const reserveResult = SlotRepository.atomicUpdate(slot.slot_id, function(freshNew) {
-        const check = Validators.validateTransition(
-          freshNew.status,
-          Config.VOCABULARY.COMMANDS.RESERVE_SLOT
-        );
-        if (!check.ok) return check;
-
-        return Result.ok({
-          status: Config.VOCABULARY.STATUS.RESERVED,
-          phone: phone,
-          patient_name: patientName,
-          reserved_until: reservedUntil,
-          reserved_until_unix: reservedUntil.getTime()
-        });
-      });
-
-      if (reserveResult.ok) return Result.ok({ slot: slot });
-      if (!ChangeService._isReservationRaceLoss(reserveResult)) return reserveResult;
-
-      excludedSlotIds.push(slot.slot_id);
-    }
-
-    return Result.fail('NO_SLOT_AVAILABLE', 'No bookable slot found');
-  },
-
-  _isReservationRaceLoss(result) {
-    return Boolean(
-      result &&
-      !result.ok &&
-      result.error &&
-      result.error.code === 'INVALID_TRANSITION'
-    );
-  },
 
   /**
    * تنظيف ما بعد الالتزام (الخطوتان 7-8) لموعد قديم بعد نجاح تأمين
