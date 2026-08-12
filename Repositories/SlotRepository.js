@@ -49,9 +49,11 @@ const SlotRepository = {
    */
   queryResult: function(predicateFn) {
     try {
-      return Result.ok(
-        GoogleSheets.queryRows(Config.VOCABULARY.SHEETS.AVAILABILITY, predicateFn)
+      var rows = GoogleSheets.queryRows(
+        Config.VOCABULARY.SHEETS.AVAILABILITY,
+        predicateFn
       );
+      return Result.ok(rows);
     } catch (e) {
       return Result.fail('UNEXPECTED_ERROR', e.message, e.stack);
     }

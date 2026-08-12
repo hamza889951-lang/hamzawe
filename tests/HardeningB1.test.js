@@ -34,7 +34,22 @@ sandbox.LegacySlotTimeParser = {
     return typeof value === 'number' ? value : null;
   }
 };
-sandbox.SlotRepository = {};
+sandbox.GoogleSheets = {
+  queryRows: function() { return []; },
+  findRowByColumn: function() { return null; },
+  updateRowByColumn: function() { return true; }
+};
+sandbox.Lock = {
+  runExclusive: function(key, fn) { return fn(); }
+};
+
+// Load the production repository implementation. The repository contract tests
+// below call these functions directly instead of replacing queryResult with a mock.
+load('Repositories/SlotRepository.js', 'SlotRepository');
+const productionQueryResult = sandbox.SlotRepository.queryResult;
+const productionQuery = sandbox.SlotRepository.query;
+const productionAtomicUpdate = sandbox.SlotRepository.atomicUpdate;
+const productionFindById = sandbox.SlotRepository.findById;
 
 load('Slotselection.js', 'SlotSelection');
 load('Application/BookingService.js', 'BookingService');
@@ -88,8 +103,119 @@ function reserveWithBookingService() {
   );
 }
 
+function useProductionRepository() {
+  sandbox.SlotRepository.queryResult = productionQueryResult;
+  sandbox.SlotRepository.query = productionQuery;
+  sandbox.SlotRepository.atomicUpdate = productionAtomicUpdate;
+  sandbox.SlotRepository.findById = productionFindById;
+}
+
 const tests = [];
 function test(name, fn) { tests.push({ name: name, fn: fn }); }
+
+test('R1 — production queryResult wraps successful rows in Result.ok', function() {
+  useProductionRepository();
+  const rows = [candidate('A', 120), candidate('B', 150)];
+  sandbox.GoogleSheets.queryRows = function() { return rows; };
+
+  const result = sandbox.SlotRepository.queryResult(function() { return true; });
+  const legacyResult = sandbox.SlotRepository.query(function() { return true; });
+
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.data, rows);
+  assert.strictEqual(result.error, null);
+  assert.strictEqual(Array.isArray(legacyResult), true);
+  assert.strictEqual(legacyResult, rows);
+});
+
+test('R2 — production queryResult returns Result.ok for an empty read', function() {
+  useProductionRepository();
+  const rows = [];
+  sandbox.GoogleSheets.queryRows = function() { return rows; };
+
+  const result = sandbox.SlotRepository.queryResult(function() { return true; });
+  const legacyResult = sandbox.SlotRepository.query(function() { return true; });
+
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.data, rows);
+  assert.strictEqual(result.data.length, 0);
+  assert.strictEqual(Array.isArray(legacyResult), true);
+  assert.strictEqual(legacyResult.length, 0);
+});
+
+test('R3 — production queryResult converts a read exception to Result.fail', function() {
+  useProductionRepository();
+  sandbox.GoogleSheets.queryRows = function() {
+    throw new Error('test read failure');
+  };
+
+  const result = sandbox.SlotRepository.queryResult(function() { return true; });
+  const legacyResult = sandbox.SlotRepository.query(function() { return true; });
+
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.error.code, 'UNEXPECTED_ERROR');
+  assert.strictEqual(result.error.message, 'test read failure');
+  assert.strictEqual(Array.isArray(legacyResult), true);
+  assert.strictEqual(legacyResult.length, 0);
+});
+
+test('R4 — SlotSelection maps Result.ok([]) to NO_SLOT_AVAILABLE', function() {
+  useProductionRepository();
+  sandbox.GoogleSheets.queryRows = function() { return []; };
+
+  const result = sandbox.SlotSelection.findEarliestBookable();
+
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.error.code, 'NO_SLOT_AVAILABLE');
+});
+
+test('R5 — SlotSelection propagates the repository read failure unchanged', function() {
+  useProductionRepository();
+  let repositoryFailure = null;
+  sandbox.GoogleSheets.queryRows = function() {
+    throw new Error('selection read failure');
+  };
+  sandbox.SlotRepository.queryResult = function(predicateFn) {
+    repositoryFailure = productionQueryResult.call(sandbox.SlotRepository, predicateFn);
+    return repositoryFailure;
+  };
+
+  const result = sandbox.SlotSelection.findEarliestBookable();
+
+  assert.strictEqual(result, repositoryFailure);
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.error.code, 'UNEXPECTED_ERROR');
+  assert.notStrictEqual(result.error.code, 'NO_SLOT_AVAILABLE');
+});
+
+test('R6 — production path selects a candidate and performs atomicUpdate', function() {
+  useProductionRepository();
+  const slotA = candidate('A', 120);
+  const updates = [];
+  sandbox.GoogleSheets.queryRows = function(sheetName, predicateFn) {
+    return [slotA].filter(predicateFn);
+  };
+  sandbox.GoogleSheets.findRowByColumn = function(sheetName, columnName, value) {
+    return value === slotA.slot_id ? Object.assign({}, slotA) : null;
+  };
+  sandbox.GoogleSheets.updateRowByColumn = function(
+    sheetName, columnName, value, fields
+  ) {
+    updates.push({ slotId: value, fields: fields });
+    return true;
+  };
+
+  const result = reserveWithBookingService();
+
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.data.slot.slot_id, 'A');
+  assert.strictEqual(updates.length, 1);
+  assert.strictEqual(updates[0].slotId, 'A');
+  assert.strictEqual(
+    updates[0].fields.status,
+    sandbox.Config.VOCABULARY.STATUS.RESERVED
+  );
+});
 
 test('A — normal reservation', function() {
   const slotA = candidate('A', 120);
