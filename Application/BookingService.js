@@ -34,11 +34,6 @@
  *   فمكانه Repository وليس Config ولا أي Service).
  * - هذان التعديلان داخليان بحتًا: توقيع handleIncomingMessage() وشكل
  *   الـ Result لم يتغيّرا إطلاقًا.
- * - Hardening B1: محاولة RESERVE_SLOT تعيد اختيار مرشح جديد عند خسارة
- *   INVALID_TRANSITION فقط، بحد أقصى 3 محاولات، وتستبعد كل مرشح خاسر
- *   داخل العملية نفسها. أخطاء القفل/التخزين تُعاد كما هي ولا تتحول إلى
- *   NO_SLOT_AVAILABLE. الاختيار يبقى في SlotSelection، والحجز الذري
- *   يبقى في SlotRepository.atomicUpdate.
  * - إصلاح إضافي (قرار مشرف): نتيجة SlotRepository.atomicUpdate التي
  *   تخزّن calendar_event_id بعد إنشاء حدث التقويم لم تعد تُتجاهل —
  *   فشلها الآن يُعيد Result.fail بوضوح بدل المرور الصامت (نفس الإصلاح
@@ -168,19 +163,34 @@ const BookingService = {
       Config.VOCABULARY.COMMANDS.RESERVE_SLOT,
       { phone: phone },
       function() {
+        // ── ADR-019: اختيار الفتحة عبر SlotSelection، لا منطق داخلي ──
+        const slot = SlotSelection.findEarliestBookable();
+        if (!slot) {
+          return Result.fail('NO_SLOT_AVAILABLE', 'No bookable slot found');
+        }
+
         const reservedUntil = DateUtils.addMinutes(
           Clock.now(),
           Config.SYSTEM_POLICY.RESERVATION_TIMEOUT_MINUTES
         );
 
-        // Hardening B1: الـ retry محصور في اختيار المرشح + محاولة حجزه.
-        // لا يعيد CommandExecutor أو أي خطوة من رحلة المحادثة.
-        const reservationResult = BookingService._reserveEarliestBookable(
-          phone, patientName, reservedUntil
-        );
-        if (!reservationResult.ok) return reservationResult;
+        const updateResult = SlotRepository.atomicUpdate(slot.slot_id, function(freshSlot) {
+          const check = Validators.validateTransition(
+            freshSlot.status,
+            Config.VOCABULARY.COMMANDS.RESERVE_SLOT
+          );
+          if (!check.ok) return check;
 
-        const slot = reservationResult.data.slot;
+          return Result.ok({
+            status: Config.VOCABULARY.STATUS.RESERVED,
+            phone: phone,
+            patient_name: patientName,
+            reserved_until: reservedUntil,
+            reserved_until_unix: reservedUntil.getTime()
+          });
+        });
+
+        if (!updateResult.ok) return updateResult;
 
         // ── أمر تنفيذ معماري: رقم الباص قيمة عرض مشتقة، تُحسب هنا فقط ──
         const busResult = BusNumberCalculator.fromSlot(slot);
@@ -195,15 +205,10 @@ const BookingService = {
     );
 
     if (!commandResult.ok) {
-      if (commandResult.error && commandResult.error.code === 'NO_SLOT_AVAILABLE') {
-        return Result.ok({
-          reply: 'عذرًا، لا توجد مواعيد متاحة حاليًا. الرجاء المحاولة لاحقًا.',
-          conversationState: Config.VOCABULARY.CONVERSATION_STATE.WAITING_NAME
-        });
-      }
-      // LOCK_TIMEOUT / UPDATE_FAILED / SLOT_NOT_FOUND وغيرها تبقى ظاهرة
-      // للطبقة الأعلى بعقدها الحقيقي، ولا تُخفى كعدم توفر مواعيد.
-      return commandResult;
+      return Result.ok({
+        reply: 'عذرًا، لا توجد مواعيد متاحة حاليًا. الرجاء المحاولة لاحقًا.',
+        conversationState: Config.VOCABULARY.CONVERSATION_STATE.WAITING_NAME
+      });
     }
 
     ConversationRepository.moveToWaitingConfirmation(
@@ -369,60 +374,6 @@ const BookingService = {
   // ─────────────────────────────────────
   // أدوات داخلية (Internal helpers)
   // ─────────────────────────────────────
-
-  /**
-   * يحاول حجز أقرب مرشح ذريًا. وحده INVALID_TRANSITION أثناء ReserveSlot
-   * يُعامل كخسارة سباق ويؤدي إلى إعادة الاختيار. كل خطأ آخر يُعاد كما هو.
-   * نطاق الـ retry لا يتجاوز selection + atomicUpdate، وبحد أقصى 3.
-   *
-   * @param {string} phone
-   * @param {string} patientName
-   * @param {Date} reservedUntil
-   * @returns {Result} data: { slot: Object }
-   */
-  _reserveEarliestBookable(phone, patientName, reservedUntil) {
-    const excludedSlotIds = [];
-    const maxAttempts = 3;
-
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const selectionResult = SlotSelection.findEarliestBookable(excludedSlotIds);
-      if (!selectionResult.ok) return selectionResult;
-
-      const slot = selectionResult.data;
-      const updateResult = SlotRepository.atomicUpdate(slot.slot_id, function(freshSlot) {
-        const check = Validators.validateTransition(
-          freshSlot.status,
-          Config.VOCABULARY.COMMANDS.RESERVE_SLOT
-        );
-        if (!check.ok) return check;
-
-        return Result.ok({
-          status: Config.VOCABULARY.STATUS.RESERVED,
-          phone: phone,
-          patient_name: patientName,
-          reserved_until: reservedUntil,
-          reserved_until_unix: reservedUntil.getTime()
-        });
-      });
-
-      if (updateResult.ok) return Result.ok({ slot: slot });
-      if (!BookingService._isReservationRaceLoss(updateResult)) return updateResult;
-
-      // يمنع إعادة نفس المرشح حتى لو أعادت القراءة التالية snapshot قديمًا.
-      excludedSlotIds.push(slot.slot_id);
-    }
-
-    return Result.fail('NO_SLOT_AVAILABLE', 'No bookable slot found');
-  },
-
-  _isReservationRaceLoss(result) {
-    return Boolean(
-      result &&
-      !result.ok &&
-      result.error &&
-      result.error.code === 'INVALID_TRANSITION'
-    );
-  },
 
   _isConfirmationKeyword(message) {
     if (!message || typeof message !== 'string') return false;

@@ -43,28 +43,12 @@ const SlotRepository = {
     }
   },
 
-  /**
-   * Result-based query contract for Application paths that must distinguish
-   * an empty result from a storage/read failure (Hardening B1).
-   */
-  queryResult: function(predicateFn) {
-    try {
-      var rows = GoogleSheets.queryRows(
-        Config.VOCABULARY.SHEETS.AVAILABILITY,
-        predicateFn
-      );
-      return Result.ok(rows);
-    } catch (e) {
-      return Result.fail('UNEXPECTED_ERROR', e.message, e.stack);
-    }
-  },
-
-  /**
-   * Legacy best-effort query contract retained for existing background callers.
-   */
   query: function(predicateFn) {
-    var result = SlotRepository.queryResult(predicateFn);
-    return result.ok ? result.data : [];
+    try {
+      return GoogleSheets.queryRows(Config.VOCABULARY.SHEETS.AVAILABILITY, predicateFn);
+    } catch (e) {
+      return [];
+    }
   },
 
   atomicUpdate: function(slotId, decisionFn) {
