@@ -1,6 +1,12 @@
 /**
- * Webhook.gs — ADR-023
- * استقبال ← تحليل ← فحص تكرار (Idempotency) ← توجيه ← إرسال
+ * Webhook.gs — ADR-023 / B2
+ * استقبال ← تحليل ← claim ذري ← توجيه ← إرسال
+ *
+ * B2 — Atomic Webhook Idempotency:
+ *   المسار الحرج يستخدم ProcessedMessagesService.claim() بدلاً من
+ *   isDuplicate() + markProcessed() المنفصلتين.
+ *   الـclaim عملية ذرية داخل Lock.runExclusive() — لا يمكن لتكرارين
+ *   متزامنين لنفس messageId الدخول إلى Router معًا.
  */
 function doPost(e) {
   try {
@@ -20,13 +26,33 @@ function doPost(e) {
       return ContentService.createTextOutput('IGNORED');
     }
 
-    // ADR-023: Idempotency — منع تكرار الرسائل
+    // ─────────────────────────────────────────────────────────
+    // B2: Atomic claim — idempotency ownership before Router
+    // ─────────────────────────────────────────────────────────
     var msgId = parsed.messageId || null;
-    if (ProcessedMessagesService.isDuplicate(msgId, parsed.phone, parsed.message)) {
+    var claimResult = ProcessedMessagesService.claim(msgId, parsed.phone, parsed.message);
+
+    // فشلClaim (lock timeout / persistence failure) → لا تدخل business processing
+    if (!claimResult.ok) {
+      LogRepository.write({
+        timestamp: Clock.now(),
+        command: 'WEBHOOK_CLAIM_FAILED',
+        phone: parsed.phone,
+        slotId: '',
+        stage: 'IDEMPOTENCY',
+        success: false,
+        durationMs: null,
+        error: claimResult.error ? JSON.stringify(claimResult.error) : 'CLAIM_FAILED'
+      });
       return ContentService.createTextOutput('OK');
     }
-    ProcessedMessagesService.markProcessed(msgId, parsed.phone, parsed.message);
 
+    // duplicate → أوقف فورًا، لا تدخل Router
+    if (claimResult.data && claimResult.data.status === 'DUPLICATE') {
+      return ContentService.createTextOutput('OK');
+    }
+
+    // ACQUIRED — امضِ إلى business processing
     const result = Router.dispatch({
       phone: parsed.phone,
       message: parsed.message
