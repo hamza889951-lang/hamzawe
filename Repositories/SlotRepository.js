@@ -43,12 +43,25 @@ const SlotRepository = {
     }
   },
 
-  query: function(predicateFn) {
+  /**
+   * Result-based read for callers that must distinguish an empty result
+   * from a storage failure. The legacy query() contract remains unchanged.
+   */
+  queryResult: function(predicateFn) {
     try {
-      return GoogleSheets.queryRows(Config.VOCABULARY.SHEETS.AVAILABILITY, predicateFn);
+      var rows = GoogleSheets.queryRows(
+        Config.VOCABULARY.SHEETS.AVAILABILITY,
+        predicateFn
+      );
+      return Result.ok(rows);
     } catch (e) {
-      return [];
+      return Result.fail('UNEXPECTED_ERROR', e.message, e.stack);
     }
+  },
+
+  query: function(predicateFn) {
+    var result = SlotRepository.queryResult(predicateFn);
+    return result.ok ? result.data : [];
   },
 
   atomicUpdate: function(slotId, decisionFn) {

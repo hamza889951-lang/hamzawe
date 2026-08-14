@@ -163,34 +163,19 @@ const BookingService = {
       Config.VOCABULARY.COMMANDS.RESERVE_SLOT,
       { phone: phone },
       function() {
-        // ── ADR-019: اختيار الفتحة عبر SlotSelection، لا منطق داخلي ──
-        const slot = SlotSelection.findEarliestBookable();
-        if (!slot) {
-          return Result.fail('NO_SLOT_AVAILABLE', 'No bookable slot found');
-        }
-
         const reservedUntil = DateUtils.addMinutes(
           Clock.now(),
           Config.SYSTEM_POLICY.RESERVATION_TIMEOUT_MINUTES
         );
 
-        const updateResult = SlotRepository.atomicUpdate(slot.slot_id, function(freshSlot) {
-          const check = Validators.validateTransition(
-            freshSlot.status,
-            Config.VOCABULARY.COMMANDS.RESERVE_SLOT
-          );
-          if (!check.ok) return check;
+        const reservationResult = BookingService._reserveEarliestBookable(
+          phone,
+          patientName,
+          reservedUntil
+        );
+        if (!reservationResult.ok) return reservationResult;
 
-          return Result.ok({
-            status: Config.VOCABULARY.STATUS.RESERVED,
-            phone: phone,
-            patient_name: patientName,
-            reserved_until: reservedUntil,
-            reserved_until_unix: reservedUntil.getTime()
-          });
-        });
-
-        if (!updateResult.ok) return updateResult;
+        const slot = reservationResult.data.slot;
 
         // ── أمر تنفيذ معماري: رقم الباص قيمة عرض مشتقة، تُحسب هنا فقط ──
         const busResult = BusNumberCalculator.fromSlot(slot);
@@ -205,10 +190,13 @@ const BookingService = {
     );
 
     if (!commandResult.ok) {
-      return Result.ok({
-        reply: 'عذرًا، لا توجد مواعيد متاحة حاليًا. الرجاء المحاولة لاحقًا.',
-        conversationState: Config.VOCABULARY.CONVERSATION_STATE.WAITING_NAME
-      });
+      if (commandResult.error && commandResult.error.code === 'NO_SLOT_AVAILABLE') {
+        return Result.ok({
+          reply: 'عذرًا، لا توجد مواعيد متاحة حاليًا. الرجاء المحاولة لاحقًا.',
+          conversationState: Config.VOCABULARY.CONVERSATION_STATE.WAITING_NAME
+        });
+      }
+      return commandResult;
     }
 
     ConversationRepository.moveToWaitingConfirmation(
@@ -379,5 +367,47 @@ const BookingService = {
     if (!message || typeof message !== 'string') return false;
     const normalized = message.trim();
     return normalized === '1' || normalized === 'تأكيد' || normalized === 'نعم';
+  },
+
+  /**
+   * Selects and atomically reserves one candidate. A race loss excludes that
+   * candidate for this operation only. One loop iteration equals one
+   * reservation atomicUpdate, with at most three attempts.
+   */
+  _reserveEarliestBookable(phone, patientName, reservedUntil) {
+    const excludedSlotIds = [];
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const selectionResult = SlotSelection.findEarliestBookable(excludedSlotIds);
+      if (!selectionResult.ok) return selectionResult;
+
+      const slot = selectionResult.data;
+      const updateResult = SlotRepository.atomicUpdate(slot.slot_id, function(freshSlot) {
+        const check = Validators.validateTransition(
+          freshSlot.status,
+          Config.VOCABULARY.COMMANDS.RESERVE_SLOT
+        );
+        if (!check.ok) return check;
+
+        return Result.ok({
+          status: Config.VOCABULARY.STATUS.RESERVED,
+          phone: phone,
+          patient_name: patientName,
+          reserved_until: reservedUntil,
+          reserved_until_unix: reservedUntil.getTime()
+        });
+      });
+
+      if (updateResult.ok) return Result.ok({ slot: slot });
+
+      if (updateResult.error && updateResult.error.code === 'INVALID_TRANSITION') {
+        excludedSlotIds.push(slot.slot_id);
+        continue;
+      }
+
+      return updateResult;
+    }
+
+    return Result.fail('NO_SLOT_AVAILABLE', 'No bookable slot found');
   }
 };
