@@ -132,9 +132,13 @@ const ChangeService = {
 
         // ── حجز الجديدة أولاً — القديمة تبقى سليمة إن فشلت هذه ──
         const reserveResult = ChangeService._reserveAlternativeSlot(
-          phone, oldSlot.patient_name, reservedUntil, oldSlot.slot_id
+          phone,
+          oldSlot.patient_name,
+          reservedUntil,
+          oldSlot.slot_id
         );
         if (!reserveResult.ok) return reserveResult;
+
         const newSlot = reserveResult.data.slot;
 
         // ── تحرير القديمة — فقط بعد تأمين الجديدة ──
@@ -234,11 +238,15 @@ const ChangeService = {
           Config.SYSTEM_POLICY.RESERVATION_TIMEOUT_MINUTES
         );
 
-        // الخطوتان 2-3: إيجاد فتحة جديدة FREE وحجزها → RESERVED
+        // الخطوتان 2-3: اختيار فتحة جديدة وحجزها ذريًا
         const reserveResult = ChangeService._reserveAlternativeSlot(
-          phone, oldSlot.patient_name, reservedUntil, oldSlot.slot_id
+          phone,
+          oldSlot.patient_name,
+          reservedUntil,
+          oldSlot.slot_id
         );
         if (!reserveResult.ok) return reserveResult;
+
         const newSlot = reserveResult.data.slot;
         // إن فشل أي شيء بعد هذه النقطة: الموعد القديم لم يُمَس إطلاقًا.
 
@@ -336,31 +344,25 @@ const ChangeService = {
   // ─────────────────────────────────────
 
   /**
-   * مسار حجز البديل الوحيد: اختيار → atomicUpdate.
-   * نفس قواعد B1: إعادة محاولة فقط عند INVALID_TRANSITION، حد 3،
-   * واستبعاد المرشح الخاسر من العملية الحالية فقط.
+   * Selects and atomically reserves an alternative slot. The old slot is
+   * always excluded, and each race-lost candidate is excluded for this
+   * operation only. One loop iteration is one reservation attempt.
    */
-  _reserveAlternativeSlot(phone, patientName, reservedUntil, excludeSlotId) {
-    const excluded = [];
-    if (Object.prototype.toString.call(excludeSlotId) === '[object Array]') {
-      for (let i = 0; i < excludeSlotId.length; i++) {
-        if (excludeSlotId[i]) excluded.push(excludeSlotId[i]);
-      }
-    } else if (excludeSlotId) {
-      excluded.push(excludeSlotId);
-    }
+  _reserveAlternativeSlot(phone, patientName, reservedUntil, oldSlotId) {
+    const excludedSlotIds = oldSlotId ? [oldSlotId] : [];
 
     for (let attempt = 0; attempt < 3; attempt++) {
-      const selection = SlotSelection.findEarliestBookable(excluded);
-      if (!selection.ok) return selection;
+      const selectionResult = SlotSelection.findEarliestBookable(excludedSlotIds);
+      if (!selectionResult.ok) return selectionResult;
 
-      const slot = selection.data;
-      const updateResult = SlotRepository.atomicUpdate(slot.slot_id, function(freshNew) {
+      const slot = selectionResult.data;
+      const updateResult = SlotRepository.atomicUpdate(slot.slot_id, function(freshSlot) {
         const check = Validators.validateTransition(
-          freshNew.status,
+          freshSlot.status,
           Config.VOCABULARY.COMMANDS.RESERVE_SLOT
         );
         if (!check.ok) return check;
+
         return Result.ok({
           status: Config.VOCABULARY.STATUS.RESERVED,
           phone: phone,
@@ -370,12 +372,10 @@ const ChangeService = {
         });
       });
 
-      if (updateResult.ok) {
-        return Result.ok({ slot: slot });
-      }
+      if (updateResult.ok) return Result.ok({ slot: slot });
 
       if (updateResult.error && updateResult.error.code === 'INVALID_TRANSITION') {
-        excluded.push(slot.slot_id);
+        excludedSlotIds.push(slot.slot_id);
         continue;
       }
 

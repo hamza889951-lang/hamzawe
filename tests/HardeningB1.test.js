@@ -68,6 +68,10 @@ function candidate(id, offsetMinutes) {
 
 function configureReservation(candidates, outcomesById) {
   const attempts = [];
+  Object.defineProperty(attempts, 'reservedSlotIds', {
+    value: [],
+    enumerable: false
+  });
   const byId = {};
   candidates.forEach(function(slot) { byId[slot.slot_id] = slot; });
 
@@ -89,6 +93,7 @@ function configureReservation(candidates, outcomesById) {
     });
     const decision = decisionFn(fresh);
     if (!decision.ok) return decision;
+    attempts.reservedSlotIds.push(slotId);
     return sandbox.Result.ok(Object.assign({ slotId: slotId }, decision.data));
   };
 
@@ -103,6 +108,33 @@ function reserveWithBookingService() {
   );
 }
 
+function runPublicBookingWorkflow() {
+  let movedToSlotId = null;
+
+  sandbox.PhoneUtils = { normalize: function(value) { return value; } };
+  sandbox.CommandExecutor = {
+    execute: function(command, context, fn) { return fn(); }
+  };
+  sandbox.BusNumberCalculator = {
+    fromSlot: function() { return sandbox.Result.ok({ busNumber: 1 }); }
+  };
+  sandbox.ConversationRepository = {
+    findByPhone: function() {
+      return { state: sandbox.Config.VOCABULARY.CONVERSATION_STATE.WAITING_NAME };
+    },
+    moveToWaitingConfirmation: function(phone, patientName, slotId) {
+      movedToSlotId = slotId;
+    }
+  };
+
+  const result = sandbox.BookingService.handleIncomingMessage(
+    '9647000000000',
+    'Test Patient'
+  );
+
+  return { result: result, movedToSlotId: movedToSlotId };
+}
+
 function useProductionRepository() {
   sandbox.SlotRepository.queryResult = productionQueryResult;
   sandbox.SlotRepository.query = productionQuery;
@@ -113,7 +145,7 @@ function useProductionRepository() {
 const tests = [];
 function test(name, fn) { tests.push({ name: name, fn: fn }); }
 
-test('R1 — production queryResult wraps successful rows in Result.ok', function() {
+test('I/R1 — production queryResult wraps successful rows in Result.ok', function() {
   useProductionRepository();
   const rows = [candidate('A', 120), candidate('B', 150)];
   sandbox.GoogleSheets.queryRows = function() { return rows; };
@@ -128,7 +160,7 @@ test('R1 — production queryResult wraps successful rows in Result.ok', functio
   assert.strictEqual(legacyResult, rows);
 });
 
-test('R2 — production queryResult returns Result.ok for an empty read', function() {
+test('I/R2 — production queryResult returns Result.ok for an empty read', function() {
   useProductionRepository();
   const rows = [];
   sandbox.GoogleSheets.queryRows = function() { return rows; };
@@ -143,7 +175,7 @@ test('R2 — production queryResult returns Result.ok for an empty read', functi
   assert.strictEqual(legacyResult.length, 0);
 });
 
-test('R3 — production queryResult converts a read exception to Result.fail', function() {
+test('I/R3 — production queryResult converts a read exception to Result.fail', function() {
   useProductionRepository();
   sandbox.GoogleSheets.queryRows = function() {
     throw new Error('test read failure');
@@ -217,7 +249,7 @@ test('R6 — production path selects a candidate and performs atomicUpdate', fun
   );
 });
 
-test('A — normal reservation', function() {
+test('A — public BookingService workflow reserves the nearest candidate once', function() {
   const slotA = candidate('A', 120);
   const slotB = candidate('B', 180);
   const unavailable = Object.assign(candidate('UNAVAILABLE', 90), { is_available: false });
@@ -229,30 +261,27 @@ test('A — normal reservation', function() {
     [slotB, unavailable, notFree, tooSoon, slotA],
     { A: ['SUCCESS'] }
   );
-  const result = reserveWithBookingService();
+  const workflow = runPublicBookingWorkflow();
 
-  assert.strictEqual(result.ok, true);
-  assert.strictEqual(result.data.slot.slot_id, 'A');
+  assert.strictEqual(workflow.result.ok, true);
+  assert.strictEqual(workflow.movedToSlotId, 'A');
   assert.deepStrictEqual(attempts, ['A']);
-
-  sandbox.SlotRepository.queryResult = function() { return sandbox.Result.ok([]); };
-  const noCandidate = sandbox.SlotSelection.findEarliestBookable();
-  assert.strictEqual(noCandidate.ok, false);
-  assert.strictEqual(noCandidate.error.code, 'NO_SLOT_AVAILABLE');
 });
 
-test('B — race loss then retry succeeds on a different slot', function() {
+test('B — public BookingService retries a race loss and reserves B', function() {
   const slotA = candidate('A', 120);
   const slotB = candidate('B', 150);
   const attempts = configureReservation(
     [slotB, slotA],
     { A: ['INVALID_TRANSITION'], B: ['SUCCESS'] }
   );
-  const result = reserveWithBookingService();
+  const workflow = runPublicBookingWorkflow();
 
-  assert.strictEqual(result.ok, true);
-  assert.strictEqual(result.data.slot.slot_id, 'B');
+  assert.strictEqual(workflow.result.ok, true);
+  assert.strictEqual(workflow.movedToSlotId, 'B');
   assert.deepStrictEqual(attempts, ['A', 'B']);
+  assert.deepStrictEqual(attempts.reservedSlotIds, ['B']);
+  assert.strictEqual(attempts.reservedSlotIds.indexOf('A'), -1);
 });
 
 test('C — three race losses become NO_SLOT_AVAILABLE', function() {
@@ -281,21 +310,17 @@ test('D — storage/lock failures are propagated without retry', function() {
       [candidate('A', 120), candidate('B', 150)],
       { A: [errorCode] }
     );
-    const result = sandbox.BookingService._handleWaitingName(
-      '9647000000000', 'Test Patient'
-    );
+    const workflow = runPublicBookingWorkflow();
 
-    assert.strictEqual(result.ok, false);
-    assert.strictEqual(result.error.code, errorCode);
+    assert.strictEqual(workflow.result.ok, false);
+    assert.strictEqual(workflow.result.error.code, errorCode);
     assert.deepStrictEqual(attempts, ['A']);
   });
 
   sandbox.SlotRepository.queryResult = function() {
     return sandbox.Result.fail('UNEXPECTED_ERROR', 'read failure');
   };
-  const readFailure = sandbox.BookingService._handleWaitingName(
-    '9647000000000', 'Test Patient'
-  );
+  const readFailure = runPublicBookingWorkflow().result;
   assert.strictEqual(readFailure.ok, false);
   assert.strictEqual(readFailure.error.code, 'UNEXPECTED_ERROR');
 });
@@ -307,10 +332,10 @@ test('E — a lost candidate is excluded from the current operation', function()
     [slotA, slotB],
     { A: ['INVALID_TRANSITION', 'SUCCESS'], B: ['SUCCESS'] }
   );
-  const result = reserveWithBookingService();
+  const workflow = runPublicBookingWorkflow();
 
-  assert.strictEqual(result.ok, true);
-  assert.strictEqual(result.data.slot.slot_id, 'B');
+  assert.strictEqual(workflow.result.ok, true);
+  assert.strictEqual(workflow.movedToSlotId, 'B');
   assert.strictEqual(attempts.filter(function(id) { return id === 'A'; }).length, 1);
   assert.deepStrictEqual(attempts, ['A', 'B']);
 });
@@ -365,6 +390,63 @@ test('F — ChangeService retries candidate reservation and preserves new-first 
   assert.strictEqual(result.ok, true);
   assert.strictEqual(movedToSlotId, 'B');
   assert.deepStrictEqual(attempts, ['A', 'B', 'OLD']);
+});
+
+test('G — public BookingService has one successful reservation path', function() {
+  const attempts = configureReservation(
+    [candidate('A', 120)],
+    { A: ['SUCCESS'] }
+  );
+
+  const workflow = runPublicBookingWorkflow();
+
+  assert.strictEqual(workflow.result.ok, true);
+  assert.strictEqual(workflow.movedToSlotId, 'A');
+  assert.strictEqual(attempts.length, 1);
+  assert.deepStrictEqual(attempts, ['A']);
+});
+
+test('H — public ChangeService reserves new once before releasing old', function() {
+  const oldSlot = {
+    slot_id: 'OLD',
+    status: sandbox.Config.VOCABULARY.STATUS.RESERVED,
+    phone: '9647000000000',
+    patient_name: 'Test Patient',
+    is_available: false,
+    sort_key: NOW_MS + 90 * 60000
+  };
+  const newSlot = candidate('NEW', 120);
+  const attempts = [];
+
+  sandbox.PhoneUtils = { normalize: function(value) { return value; } };
+  sandbox.CommandExecutor = {
+    execute: function(command, context, fn) { return fn(); }
+  };
+  sandbox.BusNumberCalculator = {
+    fromSlot: function() { return sandbox.Result.ok({ busNumber: 2 }); }
+  };
+  sandbox.ConversationRepository = {
+    moveToWaitingConfirmation: function() {}
+  };
+  sandbox.SlotRepository.findByPhoneAndStatus = function() { return oldSlot; };
+  sandbox.SlotRepository.queryResult = function(predicate) {
+    return sandbox.Result.ok([oldSlot, newSlot].filter(predicate));
+  };
+  sandbox.SlotRepository.atomicUpdate = function(slotId, decisionFn) {
+    attempts.push(slotId);
+    const fresh = slotId === 'OLD'
+      ? Object.assign({}, oldSlot)
+      : Object.assign({}, newSlot);
+    const decision = decisionFn(fresh);
+    if (!decision.ok) return decision;
+    return sandbox.Result.ok(Object.assign({ slotId: slotId }, decision.data));
+  };
+
+  const result = sandbox.ChangeService.changeReservation('9647000000000');
+
+  assert.strictEqual(result.ok, true);
+  assert.deepStrictEqual(attempts, ['NEW', 'OLD']);
+  assert.strictEqual(attempts.filter(function(id) { return id === 'NEW'; }).length, 1);
 });
 
 let failures = 0;

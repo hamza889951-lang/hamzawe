@@ -3,18 +3,17 @@
  * P0 fix: is_available enforced
  */
 const SlotSelection = {
-  findEarliestBookable: function(excludeSlotId) {
+  findEarliestBookable: function(excludedSlotIds) {
     var cutoff = DateUtils.addMinutes(
       Clock.now(),
       Config.SYSTEM_POLICY.MIN_BOOKING_LEAD_MINUTES
     ).getTime();
 
-    var excludedIds = SlotSelection._asExcludeList(excludeSlotId);
-
+    var excluded = SlotSelection._normalizeExcludedIds(excludedSlotIds);
     var queryResult = SlotRepository.queryResult(function(row) {
       if (row.status !== Config.VOCABULARY.STATUS.FREE) return false;
       if (!SlotSelection._isAvailable(row.is_available)) return false;
-      if (excludedIds.indexOf(row.slot_id) !== -1) return false;
+      if (excluded.indexOf(row.slot_id) !== -1) return false;
       var sortValue = LegacySlotTimeParser.toComparableTime(row.sort_key);
       if (sortValue === null) return false;
       return sortValue >= cutoff;
@@ -35,12 +34,12 @@ const SlotSelection = {
     return Result.ok(candidates[0]);
   },
 
-  _asExcludeList: function(excludeSlotId) {
-    if (excludeSlotId == null || excludeSlotId === '') return [];
-    if (Object.prototype.toString.call(excludeSlotId) === '[object Array]') {
-      return excludeSlotId;
+  _normalizeExcludedIds: function(excludedSlotIds) {
+    if (excludedSlotIds == null || excludedSlotIds === '') return [];
+    if (Object.prototype.toString.call(excludedSlotIds) === '[object Array]') {
+      return excludedSlotIds;
     }
-    return [excludeSlotId];
+    return [excludedSlotIds];
   },
 
   _isAvailable: function(value) {

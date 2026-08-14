@@ -168,12 +168,15 @@ const BookingService = {
           Config.SYSTEM_POLICY.RESERVATION_TIMEOUT_MINUTES
         );
 
-        const reserveResult = BookingService._reserveEarliestBookable(
-          phone, patientName, reservedUntil
+        const reservationResult = BookingService._reserveEarliestBookable(
+          phone,
+          patientName,
+          reservedUntil
         );
-        if (!reserveResult.ok) return reserveResult;
+        if (!reservationResult.ok) return reservationResult;
 
-        const slot = reserveResult.data.slot;
+        const slot = reservationResult.data.slot;
+
         // ── أمر تنفيذ معماري: رقم الباص قيمة عرض مشتقة، تُحسب هنا فقط ──
         const busResult = BusNumberCalculator.fromSlot(slot);
 
@@ -367,25 +370,18 @@ const BookingService = {
   },
 
   /**
-   * مسار الحجز الوحيد: اختيار → atomicUpdate.
-   * يعيد المحاولة فقط عند INVALID_TRANSITION، بحد أقصى 3 محاولات.
-   * المرشح الخاسر يُستبعد من العملية الحالية فقط (لا يُخزَّن).
+   * Selects and atomically reserves one candidate. A race loss excludes that
+   * candidate for this operation only. One loop iteration equals one
+   * reservation atomicUpdate, with at most three attempts.
    */
-  _reserveEarliestBookable(phone, patientName, reservedUntil, excludeSlotId) {
-    const excluded = [];
-    if (Object.prototype.toString.call(excludeSlotId) === '[object Array]') {
-      for (let i = 0; i < excludeSlotId.length; i++) {
-        if (excludeSlotId[i]) excluded.push(excludeSlotId[i]);
-      }
-    } else if (excludeSlotId) {
-      excluded.push(excludeSlotId);
-    }
+  _reserveEarliestBookable(phone, patientName, reservedUntil) {
+    const excludedSlotIds = [];
 
     for (let attempt = 0; attempt < 3; attempt++) {
-      const selection = SlotSelection.findEarliestBookable(excluded);
-      if (!selection.ok) return selection;
+      const selectionResult = SlotSelection.findEarliestBookable(excludedSlotIds);
+      if (!selectionResult.ok) return selectionResult;
 
-      const slot = selection.data;
+      const slot = selectionResult.data;
       const updateResult = SlotRepository.atomicUpdate(slot.slot_id, function(freshSlot) {
         const check = Validators.validateTransition(
           freshSlot.status,
@@ -402,12 +398,10 @@ const BookingService = {
         });
       });
 
-      if (updateResult.ok) {
-        return Result.ok({ slot: slot });
-      }
+      if (updateResult.ok) return Result.ok({ slot: slot });
 
       if (updateResult.error && updateResult.error.code === 'INVALID_TRANSITION') {
-        excluded.push(slot.slot_id);
+        excludedSlotIds.push(slot.slot_id);
         continue;
       }
 
