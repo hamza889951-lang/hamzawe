@@ -43,22 +43,12 @@ const SlotRepository = {
     }
   },
 
-  /**
-   * Canonical Result-based read. Distinguishes a successful empty
-   * result from a storage/read failure. query() stays array-compatible.
-   */
-  queryResult: function(predicateFn) {
-    try {
-      var rows = GoogleSheets.queryRows(Config.VOCABULARY.SHEETS.AVAILABILITY, predicateFn);
-      return Result.ok(rows);
-    } catch (e) {
-      return Result.fail('UNEXPECTED_ERROR', e.message, e.stack);
-    }
-  },
-
   query: function(predicateFn) {
-    var result = SlotRepository.queryResult(predicateFn);
-    return result.ok ? result.data : [];
+    try {
+      return GoogleSheets.queryRows(Config.VOCABULARY.SHEETS.AVAILABILITY, predicateFn);
+    } catch (e) {
+      return [];
+    }
   },
 
   atomicUpdate: function(slotId, decisionFn) {
