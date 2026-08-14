@@ -1,0 +1,1119 @@
+Application/BookingService.gs
+/**
+ * ═══════════════════════════════════════
+ * CONTRACT — BookingService
+ * ═══════════════════════════════════════
+ *
+ * يضمن:
+ * - إدارة كامل رحلة الحجز داخل ملف واحد:
+ *   MENU_MAIN → WAITING_NAME → WAITING_CONFIRMATION → BOOKED
+ *   (قرار معماري صريح من المشرف: رفض ConversationOrchestrator في v1)
+ * - عدم معرفة أي تفاصيل تخزين للمحادثة — يتعامل فقط مع عمليات
+ *   ConversationRepository محددة المعنى (moveToWaitingName...)
+ * - الالتزام الكامل بـ ADR-013: لا يستدعي أي Service آخر إطلاقًا.
+ * - يعيد Result يحمل { reply, conversationState } فقط.
+ *
+ * لا يضمن:
+ * - إرسال الرسالة عبر WhatsApp — مسؤولية Presentation (Webhook)
+ *   الذي يستدعي WhatsAppAdapter.sendMessage() بعد استلام Result من هنا.
+ * - أي تعامل مع BOOKED خارج الرد الإرشادي — التغيير/الإلغاء الفعلي
+ *   خدمات مستقلة (CancelService/ChangeService) تُربط عبر Router
+ *   مستقبلًا، وليس من هنا (ADR-013).
+ *
+ * ═══════════════════════════════════════
+ * تعديل بقرار مراجعة معمارية من المشرف (بعد بناء ChangeService)
+ * ═══════════════════════════════════════
+ * - اختيار "أقرب فتحة قابلة للحجز" لم يعد منطقًا داخليًا خاصًا بهذا
+ *   الملف. استُخرج إلى Application/SlotSelection.gs (ADR-019) لأن
+ *   ChangeService احتاج نفس المنطق تمامًا؛ استمرار نسخه هنا كان
+ *   يخالف CAS-005. الدالة الداخلية _findEarliestBookableSlot حُذفت،
+ *   ويُستدعى بدلاً منها SlotSelection.findEarliestBookable() مباشرة.
+ * - مدة الفتحة الزمنية (لحساب endTime عند التأكيد) لم تعد تُقرأ عبر
+ *   ثابتين محليين (SETTINGS_KEY_SLOT_DURATION / DEFAULT_SLOT_DURATION_MINUTES)
+ *   ولا عبر دالة داخلية خاصة. أصبحت SettingsRepository.getSlotDurationMinutes()
+ *   مصدر الحقيقة الوحيد (قرار المشرف: هذا إعداد تشغيلي وليس ثابتًا،
+ *   فمكانه Repository وليس Config ولا أي Service).
+ * - هذان التعديلان داخليان بحتًا: توقيع handleIncomingMessage() وشكل
+ *   الـ Result لم يتغيّرا إطلاقًا.
+ * - إصلاح إضافي (قرار مشرف): نتيجة SlotRepository.atomicUpdate التي
+ *   تخزّن calendar_event_id بعد إنشاء حدث التقويم لم تعد تُتجاهل —
+ *   فشلها الآن يُعيد Result.fail بوضوح بدل المرور الصامت (نفس الإصلاح
+ *   طُبّق في ChangeService.changeConfirmedAppointment).
+ * - إصلاح اتساق (توصية مشرف غير مانعة): تحقق ملكية الهاتف
+ *   (freshSlot.phone === phone) أُضيف داخل atomicUpdate عند تأكيد
+ *   الحجز، بنفس نمط الفحص المعتمد في ChangeService — ليس لأن السيناريو
+ *   متوقع هنا، بل لتوحيد القاعدة على كل عملية حساسة في النظام.
+ * - إصلاح عرض (بعد مراجعة الشيت الفعلي): حقلا date/time القادمان من
+ *   Google Sheets هما كائنا Date خام، فدمجهما مباشرة في نص الرد كان
+ *   ينتج toString() افتراضيًا غير مقروء. أُضيفت
+ *   DateUtils.formatDateDisplay()/formatTimeDisplay() دالتا عرض بحتتان
+ *   لا تمسان أي منطق عمل وتُستخدمان الآن عند بناء نص الرد فقط.
+ * - أمر تنفيذ معماري (Separation of Internal Time Model and Patient
+ *   Presentation): رسائل الرد للمريض تعرض الآن رقم "الباص" (قيمة
+ *   عرض مشتقة عبر Utils/BusNumberCalculator.gs، لا تُخزَّن في أي
+ *   مكان) بدل الوقت/التاريخ مباشرة، مع تراجع احتياطي للوقت/التاريخ
+ *   إن تعذّر الحساب. وصف/عنوان حدث Google Calendar أيضًا يعرضان رقم
+ *   الباص الآن (Projection بحت — startTime/endTime الحقيقيان لم
+ *   يتغيّرا إطلاقًا.
+ *
+ * ═══════════════════════════════════════
+ * ديون معمارية موثّقة (لا تُصلح الآن بقرار المشرف)
+ * ═══════════════════════════════════════
+ * ADR-014: منطق تنفيذ ReserveSlot و ConfirmReservation (التحقق من
+ * الانتقال + التحديث الذري) موجود هنا مباشرة داخل الـ Service بدل أن
+ * يكون Command مستقلاً حقيقيًا. مسموح مؤقتًا في v1. يُستخرج إلى
+ * Command مستقل في Domain/Application فقط عند إعادة استخدامه من أكثر
+ * من Service (ADR-015).
+ *
+ * ADR-016 / ملاحظة تنفيذية مؤقتة بخصوص sort_key:
+ * تحويل sort_key إلى قيمة قابلة للمقارنة يمر عبر LegacySlotTimeParser
+ * (ملف مؤقت بالكامل). أي منطق هنا يعتمد على شكل sort_key الحالي
+ * يُعتبر مؤقتًا وقابلًا للحذف/التعديل فور اعتماد الـ Generator الجديد،
+ * وليس مرجعًا تصميميًا دائمًا.
+ *
+ * ملاحظة توثيقية (ليست ACR) بخصوص ADR-006:
+ * التأكيد يلمس موردين (Slot ثم Calendar) دون ذرّية كاملة بينهما. هذا
+ * هو الشرط الذي حدده ADR-006 لبناء TransactionManager مستقبلًا.
+ * التزامًا بتأجيل ذلك القرار وبساطة CAS-012، الفشل الجزئي هنا يُسجَّل
+ * بوضوح في LOG_SYSTEM (عبر CommandExecutor) دون آلية Rollback تلقائية.
+ *
+ * ⚠️ افتراض بيانات يحتاج تأكيد المشرف مقابل البيانات الفعلية:
+ * - شكل تخزين sort_key الفعلي (يُعالج عبر LegacySlotTimeParser).
+ */
+const BookingService = {
+
+
+  /**
+   * نقطة الدخول الوحيدة لهذا الـ Service.
+   * @param {string} rawPhone
+   * @param {string} rawMessage
+   * @returns {Result} data: { reply: string, conversationState: string }
+   */
+  handleIncomingMessage(rawPhone, rawMessage) {
+    const normalizedPhone = PhoneUtils.normalize(rawPhone);
+    const phoneCheck = Validators.validatePhone(normalizedPhone);
+    if (!phoneCheck.ok) return phoneCheck;
+    const phone = phoneCheck.data;
+
+
+    const conversation = ConversationRepository.findByPhone(phone);
+
+
+    if (!conversation) {
+      return this._handleFirstContact(phone);
+    }
+
+
+    switch (conversation.state) {
+      case Config.VOCABULARY.CONVERSATION_STATE.MENU_MAIN:
+        return this._handleMenuMain(phone);
+
+
+      case Config.VOCABULARY.CONVERSATION_STATE.WAITING_NAME:
+        return this._handleWaitingName(phone, rawMessage);
+
+
+      case Config.VOCABULARY.CONVERSATION_STATE.WAITING_CONFIRMATION:
+        return this._handleWaitingConfirmation(phone, rawMessage, conversation);
+
+
+      case Config.VOCABULARY.CONVERSATION_STATE.BOOKED:
+        return this._handleBooked();
+
+
+      default:
+        return this._handleUnknownState(phone);
+    }
+  },
+
+
+  // ─────────────────────────────────────
+  // معالجات كل حالة (Internal — لا تُستدعى من خارج الملف)
+  // ─────────────────────────────────────
+
+
+  _handleFirstContact(phone) {
+    ConversationRepository.startNew(phone);
+
+
+    let clinicName = '';
+    try {
+      clinicName = SettingsRepository.get('clinic_name') || '';
+    } catch (e) {
+      clinicName = '';
+    }
+
+
+    const text = 'أهلاً بك' + (clinicName ? ' في ' + clinicName : '') +
+      '. للبدء بحجز موعد، أرسل أي رسالة.';
+
+
+    return Result.ok({
+      reply: text,
+      conversationState: Config.VOCABULARY.CONVERSATION_STATE.MENU_MAIN
+    });
+  },
+
+
+  _handleMenuMain(phone) {
+    ConversationRepository.moveToWaitingName(phone);
+    return Result.ok({
+      reply: 'الرجاء إرسال اسمك الثلاثي لإكمال الحجز.',
+      conversationState: Config.VOCABULARY.CONVERSATION_STATE.WAITING_NAME
+    });
+  },
+
+
+  _handleWaitingName(phone, rawMessage) {
+    const nameCheck = Validators.validatePatientName(rawMessage);
+    if (!nameCheck.ok) {
+      return Result.ok({
+        reply: 'الاسم غير صالح، الرجاء إرسال اسمك الثلاثي كاملاً.',
+        conversationState: Config.VOCABULARY.CONVERSATION_STATE.WAITING_NAME
+      });
+    }
+    const patientName = nameCheck.data;
+
+
+    // ── ADR-014: تنفيذ Command مباشر هنا، مؤقتًا، بموافقة المشرف ──
+    const commandResult = CommandExecutor.execute(
+      Config.VOCABULARY.COMMANDS.RESERVE_SLOT,
+      { phone: phone },
+      function() {
+        // ── ADR-019: اختيار الفتحة عبر SlotSelection، لا منطق داخلي ──
+        const slot = SlotSelection.findEarliestBookable();
+        if (!slot) {
+          return Result.fail('NO_SLOT_AVAILABLE', 'No bookable slot found');
+        }
+
+
+        const reservedUntil = DateUtils.addMinutes(
+          Clock.now(),
+          Config.SYSTEM_POLICY.RESERVATION_TIMEOUT_MINUTES
+        );
+
+
+        const updateResult = SlotRepository.atomicUpdate(slot.slot_id, function(freshSlot) {
+          const check = Validators.validateTransition(
+            freshSlot.status,
+            Config.VOCABULARY.COMMANDS.RESERVE_SLOT
+          );
+          if (!check.ok) return check;
+
+
+          return Result.ok({
+            status: Config.VOCABULARY.STATUS.RESERVED,
+            phone: phone,
+            patient_name: patientName,
+            reserved_until: reservedUntil,
+            reserved_until_unix: reservedUntil.getTime()
+          });
+        });
+
+
+        if (!updateResult.ok) return updateResult;
+
+
+        // ── أمر تنفيذ معماري: رقم الباص قيمة عرض مشتقة، تُحسب هنا فقط ──
+        const busResult = BusNumberCalculator.fromSlot(slot);
+
+
+        return Result.ok({
+          slotId: slot.slot_id,
+          date: slot.date,
+          time: slot.time,
+          busNumber: busResult.ok ? busResult.data.busNumber : null
+        });
+      }
+    );
+
+
+    if (!commandResult.ok) {
+      return Result.ok({
+        reply: 'عذرًا، لا توجد مواعيد متاحة حاليًا. الرجاء المحاولة لاحقًا.',
+        conversationState: Config.VOCABULARY.CONVERSATION_STATE.WAITING_NAME
+      });
+    }
+
+
+    ConversationRepository.moveToWaitingConfirmation(
+      phone, patientName, commandResult.data.slotId
+    );
+
+
+    // ── قرار مالك المشروع: التاريخ يبقى ظاهرًا دائمًا مع رقم الباص ──
+    // (رقم الباص وحده لا يخبر المريض بأي يوم هو الموعد)
+    const preConfirmDisplay = 'بتاريخ ' + DateUtils.formatDateDisplay(commandResult.data.date) +
+      ' — ' + (commandResult.data.busNumber !== null
+        ? 'رقم الباص: ' + commandResult.data.busNumber
+        : 'الساعة ' + DateUtils.formatTimeDisplay(commandResult.data.time));
+
+
+    return Result.ok({
+      reply: 'تم إيجاد موعد ' + preConfirmDisplay + '.\n' +
+             '١️⃣ تأكيد الحجز\n' +
+             '٢️⃣ تغيير الموعد\n' +
+             'أرسل رقم الخيار المطلوب.',
+      conversationState: Config.VOCABULARY.CONVERSATION_STATE.WAITING_CONFIRMATION
+    });
+  },
+
+
+  _handleWaitingConfirmation(phone, rawMessage, conversation) {
+    if (!this._isConfirmationKeyword(rawMessage)) {
+      return Result.ok({
+        reply: 'تم إيجاد موعد لك.\n' +
+               '١️⃣ تأكيد الحجز\n' +
+               '٢️⃣ تغيير الموعد\n' +
+               'أرسل رقم الخيار المطلوب.',
+        conversationState: Config.VOCABULARY.CONVERSATION_STATE.WAITING_CONFIRMATION
+      });
+    }
+
+
+    const slotId = conversation.slot_id;
+    if (!slotId) {
+      ConversationRepository.resetToMenuMain(phone);
+      return Result.ok({
+        reply: 'حدث خطأ في بيانات الحجز، تم إعادة الضبط. أرسل أي رسالة للبدء من جديد.',
+        conversationState: Config.VOCABULARY.CONVERSATION_STATE.MENU_MAIN
+      });
+    }
+
+
+    // ── ADR-014: تنفيذ Command مباشر هنا، مؤقتًا، بموافقة المشرف ──
+    const commandResult = CommandExecutor.execute(
+      Config.VOCABULARY.COMMANDS.CONFIRM_RESERVATION,
+      { phone: phone, slotId: slotId },
+      function() {
+        const updateResult = SlotRepository.atomicUpdate(slotId, function(freshSlot) {
+          if (freshSlot.phone !== phone) {
+            return Result.fail(
+              'SLOT_OWNER_MISMATCH',
+              'Slot no longer belongs to this phone',
+              { slotId: freshSlot.slot_id, phone: phone }
+            );
+          }
+          const check = Validators.validateTransition(
+            freshSlot.status,
+            Config.VOCABULARY.COMMANDS.CONFIRM_RESERVATION
+          );
+          if (!check.ok) return check;
+          return Result.ok({ status: Config.VOCABULARY.STATUS.CONFIRMED });
+        });
+
+
+        if (!updateResult.ok) return updateResult;
+
+
+        const slot = SlotRepository.findById(slotId);
+        if (!slot) {
+          return Result.fail(
+            'SLOT_NOT_FOUND_AFTER_UPDATE',
+            'Slot disappeared right after ConfirmReservation'
+          );
+        }
+
+
+        // ⚠️ مؤقت — راجع ملاحظة sort_key في رأس الملف (ADR-016)
+        const startMs = LegacySlotTimeParser.toComparableTime(slot.sort_key);
+        const startTime = startMs !== null ? DateUtils.fromTimestamp(startMs) : null;
+        // ── مدة الفتحة عبر SettingsRepository (مصدر الحقيقة الوحيد) ──
+        const endTime = startTime
+          ? DateUtils.addMinutes(startTime, SettingsRepository.getSlotDurationMinutes())
+          : null;
+
+
+        // ── أمر تنفيذ معماري: عرض رقم الباص للعيادة في التقويم ──
+        // Presentation فقط — startTime/endTime الحقيقيان لم يتغيّرا،
+        // لا تخزين لرقم الباص في أي Repository (يُحسب هنا فقط للعرض)
+        const busResult = BusNumberCalculator.fromSlot(slot);
+        const eventTitle = busResult.ok
+          ? '#' + busResult.data.busNumber + ' | ' + (slot.patient_name || phone)
+          : (slot.patient_name || phone);
+        const eventDescription = 'رقم الهاتف: ' + phone +
+          '\nالوقت الحقيقي: ' + DateUtils.formatTimeDisplay(startTime) +
+          '\nslot_id: ' + slot.slot_id;
+
+
+        // ─── نقطة الفشل الجزئي الموثّقة في رأس الملف (راجع ADR-006) ───
+        const eventResult = CalendarRepository.createAppointmentEvent({
+          title: eventTitle,
+          startTime: startTime,
+          endTime: endTime,
+          description: eventDescription
+        });
+
+
+        if (!eventResult.ok) {
+          return eventResult;
+        }
+
+
+        // ⚠️ نتيجة هذه الخطوة تُفحص إلزاميًا (قرار مشرف) — لا يجوز
+        // تجاهلها: فشل صامت هنا يعني حدث تقويم بلا event_id مخزَّن،
+        // ولن يستطيع CancelService/ChangeService حذفه لاحقًا، ولن
+        // يُسجَّل الفشل في LOG_SYSTEM إن تم تجاهله.
+        const storeEventResult = SlotRepository.atomicUpdate(slotId, function(freshSlot) {
+          return Result.ok({ calendar_event_id: eventResult.data.eventId });
+        });
+        if (!storeEventResult.ok) return storeEventResult;
+
+
+        return Result.ok({
+          slotId: slotId,
+          calendarEventId: eventResult.data.eventId,
+          date: slot.date,
+          time: slot.time,
+          busNumber: busResult.ok ? busResult.data.busNumber : null
+        });
+      }
+    );
+
+
+    if (!commandResult.ok) {
+      return Result.ok({
+        reply: 'تعذّر تأكيد الحجز حاليًا. الرجاء المحاولة مرة أخرى.',
+        conversationState: Config.VOCABULARY.CONVERSATION_STATE.WAITING_CONFIRMATION
+      });
+    }
+
+
+    ConversationRepository.moveToBooked(phone);
+
+
+    const confirmedDisplay = 'بتاريخ ' + DateUtils.formatDateDisplay(commandResult.data.date) +
+      '\n' + (commandResult.data.busNumber !== null
+        ? 'رقم الباص: ' + commandResult.data.busNumber
+        : 'الساعة ' + DateUtils.formatTimeDisplay(commandResult.data.time));
+
+
+    return Result.ok({
+      reply: 'تم تأكيد حجزك بنجاح.\n' + confirmedDisplay +
+        '\nيرجى الحضور ضمن وقت دوام العيادة.',
+      conversationState: Config.VOCABULARY.CONVERSATION_STATE.BOOKED
+    });
+  },
+
+
+  _handleBooked() {
+    return Result.ok({
+      reply: 'لديك حجز مؤكد حالياً.\n' +
+             '٢️⃣ تغيير الموعد\n' +
+             '٣️⃣ إلغاء الموعد\n' +
+             'أرسل رقم الخيار المطلوب.',
+      conversationState: Config.VOCABULARY.CONVERSATION_STATE.BOOKED
+    });
+  },
+
+
+  _handleUnknownState(phone) {
+    ConversationRepository.resetToMenuMain(phone);
+    return Result.ok({
+      reply: 'حدث خطأ غير متوقع، تم إعادة ضبط محادثتك. أرسل أي رسالة للبدء من جديد.',
+      conversationState: Config.VOCABULARY.CONVERSATION_STATE.MENU_MAIN
+    });
+  },
+
+
+  // ─────────────────────────────────────
+  // أدوات داخلية (Internal helpers)
+  // ─────────────────────────────────────
+
+
+  _isConfirmationKeyword(message) {
+    if (!message || typeof message !== 'string') return false;
+    const normalized = message.trim();
+    return normalized === '1' || normalized === 'تأكيد' || normalized === 'نعم';
+  }
+};
+
+
+ 
+
+SlotRepository.gs
+const SlotRepository = {
+
+
+  findById: function(slotId) {
+    try {
+      var result = GoogleSheets.findRowByColumn(Config.VOCABULARY.SHEETS.AVAILABILITY, 'slot_id', slotId);
+      return result ? result : null;
+    } catch (e) {
+      return null;
+    }
+  },
+
+
+  findByStatus: function(status) {
+    try {
+      return GoogleSheets.queryRows(Config.VOCABULARY.SHEETS.AVAILABILITY, function(row) {
+        return row.status === status;
+      });
+    } catch (e) {
+      return [];
+    }
+  },
+
+
+  findAvailableByDate: function(dateStr) {
+    try {
+      return GoogleSheets.queryRows(Config.VOCABULARY.SHEETS.AVAILABILITY, function(row) {
+        if (row.date !== dateStr) return false;
+        if (row.status !== Config.VOCABULARY.STATUS.FREE) return false;
+        if (!SlotRepository._isAvailable(row.is_available)) return false;
+        return true;
+      });
+    } catch (e) {
+      return [];
+    }
+  },
+
+
+  findByPhoneAndStatus: function(phone, status) {
+    try {
+      var results = GoogleSheets.queryRows(Config.VOCABULARY.SHEETS.AVAILABILITY, function(row) {
+        return row.phone === phone && row.status === status;
+      });
+      return results.length ? results[0] : null;
+    } catch (e) {
+      return null;
+    }
+  },
+
+
+  query: function(predicateFn) {
+    try {
+      return GoogleSheets.queryRows(Config.VOCABULARY.SHEETS.AVAILABILITY, predicateFn);
+    } catch (e) {
+      return [];
+    }
+  },
+
+
+  atomicUpdate: function(slotId, decisionFn) {
+    return Lock.runExclusive('slot:' + slotId, function() {
+      var slot = SlotRepository.findById(slotId);
+      if (!slot) {
+        return Result.fail('SLOT_NOT_FOUND', 'Slot ' + slotId + ' does not exist');
+      }
+      var decision = decisionFn(slot);
+      if (!decision.ok) return decision;
+
+
+      var updated = GoogleSheets.updateRowByColumn(
+        Config.VOCABULARY.SHEETS.AVAILABILITY, 'slot_id', slotId, decision.data
+      );
+
+
+      if (!updated) {
+        return Result.fail(
+          'UPDATE_FAILED',
+          'Failed to update slot ' + slotId + ' during atomicUpdate',
+          { slotId: slotId, data: decision.data }
+        );
+      }
+
+
+      return Result.ok(Object.assign({ slotId: slotId }, decision.data));
+    });
+  },
+
+
+  insert: function(slotFields) {
+    var record = Object.assign(
+      { slot_id: IdGenerator.generateSlotId(), status: Config.VOCABULARY.STATUS.FREE },
+      slotFields
+    );
+    GoogleSheets.appendRow(Config.VOCABULARY.SHEETS.AVAILABILITY, record);
+    return Result.ok(record);
+  },
+
+
+  _isAvailable: function(value) {
+    if (value === true) return true;
+    if (typeof value === 'string') {
+      var trimmed = value.trim().toUpperCase();
+      if (trimmed === 'TRUE') return true;
+    }
+    return false;
+  }
+};
+
+
+SlotRepository.findLatestSortKey = function() {
+  var all = GoogleSheets.getAllRows(Config.VOCABULARY.SHEETS.AVAILABILITY);
+  if (all.length === 0) return Result.ok(null);
+
+
+  var maxKey = null;
+  for (var i = 0; i < all.length; i++) {
+    var key = all[i].sort_key;
+    if (key && (maxKey === null || key > maxKey)) {
+      maxKey = key;
+    }
+  }
+  return Result.ok(maxKey);
+};
+
+
+SlotRepository.insertBatch = function(slots) {
+  if (!slots || slots.length === 0) return Result.ok({ inserted: 0 });
+
+
+  var headers = GoogleSheets.getHeaders(Config.VOCABULARY.SHEETS.AVAILABILITY);
+  var rows = slots.map(function(slot) {
+    return headers.map(function(h) {
+      return slot.hasOwnProperty(h) ? slot[h] : '';
+    });
+  });
+
+
+  return GoogleSheets.appendRows(Config.VOCABULARY.SHEETS.AVAILABILITY, rows);
+};
+
+
+
+
+Changeservice.gs
+/**
+ * ═══════════════════════════════════════
+ * CONTRACT — ChangeService
+ * ═══════════════════════════════════════
+ * يضمن:
+ * - نقطتي دخول منفصلتين لعمليتين مختلفتين تمامًا في الأثر على النظام
+ *   (قرار معماري صريح من المشرف):
+ *
+ *   1) changeReservation(rawPhone)
+ *      تغيير حجز لم يُؤكَّد بعد (الحالة RESERVED). لا يوجد حدث تقويم،
+ *      لا يوجد Appointment فعلي. العملية بأكملها على مورد واحد (Slot).
+ *
+ *   2) changeConfirmedAppointment(rawPhone)
+ *      تغيير موعد مؤكَّد فعليًا (الحالة CONFIRMED). يوجد حدث تقويم،
+ *      وتوجد نقطة فشل جزئي محتملة بين موردين (Slot + Calendar).
+ *
+ * - عدم استدعاء أي Service آخر إطلاقًا (ADR-013).
+ * - يعيد كل من نقطتي الدخول Result يحمل { reply, conversationState }.
+ *
+ * لا يضمن:
+ * - تحديد أي من نقطتي الدخول يجب استدعاؤها — هذا قرار طبقة أعلى
+ *   (Router/Webhook مستقبلاً) بناءً على حالة المحادثة الحالية.
+ * - اختيار المستخدم اليدوي لفتحة بديلة — يُعتمد دائمًا أقرب فتحة متاحة
+ *   عبر SlotSelection.findEarliestBookable() (ADR-019).
+ *
+ * ═══════════════════════════════════════
+ * سياسة الفشل الجزئي: Patient-retention-first (قرار مشرف مُلزم)
+ * ═══════════════════════════════════════
+ * — changeReservation —
+ * الترتيب: حجز الجديد (RESERVED) ← ثم تحرير القديم (FREE).
+ * إن فشل حجز الجديد: القديم يبقى سليمًا كما هو (لا ضرر).
+ * إن نجح حجز الجديد وفشل تحرير القديم: يبقى للهاتف حجزان مؤقتان
+ * (RESERVED) في آن واحد — أثر جانبي مقبول، MaintenanceService ينظفه.
+ *
+ * — changeConfirmedAppointment —
+ * ═══ تمييز صريح بين "نجاح العملية الأساسية" و"تنظيف ما بعد الالتزام" ═══
+ * (تعديل بقرار مشرف: كان التوثيق سابقًا يصف هذا الفصل لفظيًا فقط، دون
+ * أن ينعكس فعليًا في الكود؛ هذه النسخة تُصلح التعارض).
+ *
+ * • الخطوات 1-6 = "نجاح العملية الأساسية" (Core Success):
+ *     1. إيجاد الموعد القديم CONFIRMED
+ *     2. إيجاد فتحة جديدة FREE (عبر SlotSelection)
+ *     3. حجز الفتحة الجديدة → RESERVED
+ *     4. تأكيد الفتحة الجديدة → CONFIRMED
+ *     5. إنشاء Calendar Event جديد
+ *     6. تخزين calendar_event_id على الفتحة الجديدة
+ *   بمجرد نجاح الخطوة 6، الموعد الجديد هو الموعد الفعلي والصالح
+ *   للمريض. هذه الخطوات الستة فقط هي ما يحدد نجاح/فشل CommandExecutor
+ *   الرئيسي (CHANGE_APPOINTMENT) وما يُبنى عليه رد المستخدم.
+ *
+ * • الخطوتان 7-8 = "تنظيف ما بعد الالتزام" (Post-Commit Cleanup):
+ *     7. حذف Calendar Event القديم
+ *     8. تحرير الفتحة القديمة إلى FREE
+ *   تُنفَّذان بعد إرجاع نتيجة النجاح الأساسية، عبر _cleanupOldAppointment.
+ *   فشل أي منهما:
+ *     - يُسجَّل بوضوح في LOG_SYSTEM (سجل CLEANUP_FAILED منفصل، عبر
+ *       LogRepository مباشرة — وليس عبر فشل CommandExecutor الرئيسي).
+ *     - لا يُحوَّل أبدًا إلى رسالة فشل للمستخدم. المستخدم يملك موعدًا
+ *       جديدًا صالحًا بغض النظر عن نتيجة التنظيف.
+ *   الأثر المتبقي عند فشل التنظيف: حدث تقويم قديم عالق و/أو فتحة قديمة
+ *   CONFIRMED عالقة — يتطلب مراجعة يدوية لاحقة عبر LOG_SYSTEM، وهذا
+ *   مقبول صراحةً لأنه لا يمس تجربة المريض إطلاقًا (يتوافق مع
+ *   Patient-retention-first).
+ *   ⚠️ إن فشل حذف حدث التقويم القديم تحديدًا (الخطوة 7)، لا تُنفَّذ
+ *   الخطوة 8 (تحرير الفتحة): تحرير الفتحة سيمسح calendar_event_id
+ *   المخزَّن، فيفقد أي مراجع لاحق القدرة على تتبع الحدث اليتيم في
+ *   Google Calendar لحذفه يدويًا. تبقى الفتحة القديمة CONFIRMED عمدًا
+ *   لحفظ هذا المرجع حتى المراجعة اليدوية.
+ *
+ * ═══════════════════════════════════════
+ * فحص هوية المالك (قرار مشرف مُلزم — إصلاح ثغرة اتساق)
+ * ═══════════════════════════════════════
+ * كل عملية atomicUpdate تلمس فتحة "قديمة" أو "فتحة جديدة تخص هذا
+ * الهاتف تحديدًا" تتحقق أولاً أن freshSlot.phone === phone الحالي،
+ * وتفشل بوضوح (SLOT_OWNER_MISMATCH) قبل أي تنفيذ إن لم يتطابق.
+ *
+ * ═══════════════════════════════════════
+ * قرارات المشرف المثبَّتة الأخرى
+ * ═══════════════════════════════════════
+ * - Command واحد فقط CHANGE_APPOINTMENT لكلا المسارين، ولعمليتي النجاح
+ *   الأساسي والتنظيف كليهما (التنظيف يُسجَّل بمرحلة CLEANUP_FAILED
+ *   تحت نفس اسم الأمر، لا Command جديد).
+ * - اختيار الفتحة البديلة عبر SlotSelection.findEarliestBookable() فقط.
+ * - مدة الفتحة عبر SettingsRepository.getSlotDurationMinutes() فقط.
+ * - إصلاح عرض (بعد مراجعة الشيت الفعلي): date/time المستخدَمان في نص
+ *   الرد يمران الآن عبر DateUtils.formatDateDisplay()/formatTimeDisplay()
+ *   بدل دمج كائن Date الخام مباشرة (نفس الإصلاح في BookingService).
+ * - أمر تنفيذ معماري (Separation of Internal Time Model and Patient
+ *   Presentation): كلا الردين (قبل/بعد التأكيد) يعرضان الآن "رقم
+ *   الباص" عبر Utils/BusNumberCalculator.gs بدل التاريخ/الوقت، مع
+ *   تراجع احتياطي للتاريخ/الوقت إن تعذّر الحساب. عنوان/وصف حدث
+ *   Google Calendar في changeConfirmedAppointment يعرضان رقم الباص
+ *   أيضًا (Projection بحت — startTime/endTime لم يتغيّرا).
+ */
+const ChangeService = {
+
+
+  // ─────────────────────────────────────
+  // المسار الأول: تغيير قبل التأكيد
+  // ─────────────────────────────────────
+
+
+  /**
+   * يغيّر فتحة محجوزة (RESERVED) غير مؤكَّدة بعد إلى فتحة أخرى.
+   * لا علاقة له بـ Google Calendar إطلاقًا.
+   *
+   * @param {string} rawPhone
+   * @returns {Result} data: { reply: string, conversationState: string|null }
+   */
+  changeReservation(rawPhone) {
+    const normalizedPhone = PhoneUtils.normalize(rawPhone);
+    const phoneCheck = Validators.validatePhone(normalizedPhone);
+    if (!phoneCheck.ok) return phoneCheck;
+    const phone = phoneCheck.data;
+
+
+    const oldSlot = SlotRepository.findByPhoneAndStatus(
+      phone, Config.VOCABULARY.STATUS.RESERVED
+    );
+    if (!oldSlot) {
+      return Result.ok({
+        reply: 'لا يوجد لديك حجز غير مؤكَّد حاليًا لتغييره.',
+        conversationState: null
+      });
+    }
+
+
+    const commandResult = CommandExecutor.execute(
+      Config.VOCABULARY.COMMANDS.CHANGE_APPOINTMENT,
+      { phone: phone, slotId: oldSlot.slot_id },
+      function() {
+        const newSlot = SlotSelection.findEarliestBookable(oldSlot.slot_id);
+        if (!newSlot) {
+          return Result.fail('NO_ALTERNATIVE_SLOT', 'No alternative bookable slot found');
+        }
+
+
+        const reservedUntil = DateUtils.addMinutes(
+          Clock.now(),
+          Config.SYSTEM_POLICY.RESERVATION_TIMEOUT_MINUTES
+        );
+
+
+        // ── حجز الجديدة أولاً — القديمة تبقى سليمة إن فشلت هذه ──
+        const reserveResult = SlotRepository.atomicUpdate(newSlot.slot_id, function(freshNew) {
+          const check = Validators.validateTransition(
+            freshNew.status,
+            Config.VOCABULARY.COMMANDS.RESERVE_SLOT
+          );
+          if (!check.ok) return check;
+          return Result.ok({
+            status: Config.VOCABULARY.STATUS.RESERVED,
+            phone: phone,
+            patient_name: oldSlot.patient_name,
+            reserved_until: reservedUntil,
+            reserved_until_unix: reservedUntil.getTime()
+          });
+        });
+        if (!reserveResult.ok) return reserveResult;
+
+
+        // ── تحرير القديمة — فقط بعد تأمين الجديدة ──
+        const freeResult = SlotRepository.atomicUpdate(oldSlot.slot_id, function(freshOld) {
+          if (freshOld.phone !== phone) {
+            return Result.fail(
+              'SLOT_OWNER_MISMATCH',
+              'Slot no longer belongs to this phone',
+              { slotId: freshOld.slot_id, phone: phone }
+            );
+          }
+          const check = Validators.validateTransition(
+            freshOld.status,
+            Config.VOCABULARY.COMMANDS.CLEANUP_RESERVATION
+          );
+          if (!check.ok) return check;
+          return Result.ok({
+            status: Config.VOCABULARY.STATUS.FREE,
+            patient_name: '',
+            phone: '',
+            reserved_until: '',
+            reserved_until_unix: ''
+          });
+        });
+        if (!freeResult.ok) return freeResult;
+
+
+        // ── أمر تنفيذ معماري: رقم الباص قيمة عرض مشتقة، تُحسب هنا فقط ──
+        const busResult = BusNumberCalculator.fromSlot(newSlot);
+
+
+        return Result.ok({
+          slotId: newSlot.slot_id,
+          date: newSlot.date,
+          time: newSlot.time,
+          busNumber: busResult.ok ? busResult.data.busNumber : null
+        });
+      }
+    );
+
+
+    if (!commandResult.ok) {
+      return Result.ok({
+        reply: 'تعذّر تغيير الحجز حاليًا. الرجاء المحاولة مرة أخرى.',
+        conversationState: Config.VOCABULARY.CONVERSATION_STATE.WAITING_CONFIRMATION
+      });
+    }
+
+
+    ConversationRepository.moveToWaitingConfirmation(
+      phone, oldSlot.patient_name, commandResult.data.slotId
+    );
+
+
+    // ── قرار مالك المشروع: التاريخ يبقى ظاهرًا دائمًا مع رقم الباص ──
+    const preConfirmDisplay = 'بتاريخ ' + DateUtils.formatDateDisplay(commandResult.data.date) +
+      ' — ' + (commandResult.data.busNumber !== null
+        ? 'الباص رقم: ' + commandResult.data.busNumber
+        : 'الساعة ' + DateUtils.formatTimeDisplay(commandResult.data.time));
+
+
+    return Result.ok({
+      reply: 'تم تغيير موعدك المؤقت ' + preConfirmDisplay +
+        '. أرسل "1" لتأكيد الحجز.',
+      conversationState: Config.VOCABULARY.CONVERSATION_STATE.WAITING_CONFIRMATION
+    });
+  },
+
+
+  // ─────────────────────────────────────
+  // المسار الثاني: تغيير بعد التأكيد
+  // ─────────────────────────────────────
+
+
+  /**
+   * يغيّر موعدًا مؤكَّدًا فعليًا (CONFIRMED) إلى فتحة أخرى.
+   * نجاح العملية للمستخدم يُحدَّد بالكامل عبر الخطوات 1-6 (Core
+   * Success). الخطوتان 7-8 تنظيف ما بعد الالتزام — راجع رأس الملف.
+   *
+   * @param {string} rawPhone
+   * @returns {Result} data: { reply: string, conversationState: string|null }
+   */
+  changeConfirmedAppointment(rawPhone) {
+    const normalizedPhone = PhoneUtils.normalize(rawPhone);
+    const phoneCheck = Validators.validatePhone(normalizedPhone);
+    if (!phoneCheck.ok) return phoneCheck;
+    const phone = phoneCheck.data;
+
+
+    // الخطوة 1: إيجاد الموعد القديم CONFIRMED
+    const oldSlot = AppointmentRepository.findActiveByPhone(phone);
+    if (!oldSlot) {
+      return Result.ok({
+        reply: 'لا يوجد لديك حجز مؤكَّد حاليًا لتغييره.',
+        conversationState: null
+      });
+    }
+
+
+    // ═══ Core Success: الخطوات 1-6 فقط تحدد نجاح/فشل هذا الأمر ═══
+    const commandResult = CommandExecutor.execute(
+      Config.VOCABULARY.COMMANDS.CHANGE_APPOINTMENT,
+      { phone: phone, slotId: oldSlot.slot_id },
+      function() {
+        // الخطوة 2: إيجاد فتحة جديدة FREE
+        const newSlot = SlotSelection.findEarliestBookable(oldSlot.slot_id);
+        if (!newSlot) {
+          return Result.fail('NO_ALTERNATIVE_SLOT', 'No alternative bookable slot found');
+        }
+
+
+        const reservedUntil = DateUtils.addMinutes(
+          Clock.now(),
+          Config.SYSTEM_POLICY.RESERVATION_TIMEOUT_MINUTES
+        );
+
+
+        // الخطوة 3: حجز الفتحة الجديدة → RESERVED
+        const reserveResult = SlotRepository.atomicUpdate(newSlot.slot_id, function(freshNew) {
+          const check = Validators.validateTransition(
+            freshNew.status,
+            Config.VOCABULARY.COMMANDS.RESERVE_SLOT
+          );
+          if (!check.ok) return check;
+          return Result.ok({
+            status: Config.VOCABULARY.STATUS.RESERVED,
+            phone: phone,
+            patient_name: oldSlot.patient_name,
+            reserved_until: reservedUntil,
+            reserved_until_unix: reservedUntil.getTime()
+          });
+        });
+        if (!reserveResult.ok) return reserveResult;
+        // إن فشل أي شيء بعد هذه النقطة: الموعد القديم لم يُمَس إطلاقًا.
+
+
+        // الخطوة 4: تأكيد الفتحة الجديدة → CONFIRMED (مع فحص الملكية)
+        const confirmResult = SlotRepository.atomicUpdate(newSlot.slot_id, function(freshNew) {
+          if (freshNew.phone !== phone) {
+            return Result.fail(
+              'SLOT_OWNER_MISMATCH',
+              'Newly reserved slot no longer belongs to this phone',
+              { slotId: freshNew.slot_id, phone: phone }
+            );
+          }
+          const check = Validators.validateTransition(
+            freshNew.status,
+            Config.VOCABULARY.COMMANDS.CONFIRM_RESERVATION
+          );
+          if (!check.ok) return check;
+          return Result.ok({ status: Config.VOCABULARY.STATUS.CONFIRMED });
+        });
+        if (!confirmResult.ok) return confirmResult;
+
+
+        // ⚠️ مؤقت — يعتمد على LegacySlotTimeParser (ADR-016)
+        const startMs = LegacySlotTimeParser.toComparableTime(newSlot.sort_key);
+        const startTime = startMs !== null ? DateUtils.fromTimestamp(startMs) : null;
+        const endTime = startTime
+          ? DateUtils.addMinutes(startTime, SettingsRepository.getSlotDurationMinutes())
+          : null;
+
+
+        // ── أمر تنفيذ معماري: عرض رقم الباص للعيادة في التقويم ──
+        const busResult = BusNumberCalculator.fromSlot(newSlot);
+        const eventTitle = busResult.ok
+          ? '#' + busResult.data.busNumber + ' | ' + (oldSlot.patient_name || phone)
+          : (oldSlot.patient_name || phone);
+        const eventDescription = 'رقم الهاتف: ' + phone +
+          '\nالوقت الحقيقي: ' + DateUtils.formatTimeDisplay(startTime) +
+          '\nslot_id: ' + newSlot.slot_id;
+
+
+        // الخطوة 5: إنشاء Calendar Event جديد
+        const eventResult = CalendarRepository.createAppointmentEvent({
+          title: eventTitle,
+          startTime: startTime,
+          endTime: endTime,
+          description: eventDescription
+        });
+        if (!eventResult.ok) return eventResult;
+
+
+        // الخطوة 6: تخزين calendar_event_id — النتيجة تُفحص إلزاميًا
+        const storeEventResult = SlotRepository.atomicUpdate(newSlot.slot_id, function(freshNew) {
+          if (freshNew.phone !== phone) {
+            return Result.fail(
+              'SLOT_OWNER_MISMATCH',
+              'Slot no longer belongs to this phone before storing calendar_event_id',
+              { slotId: freshNew.slot_id, phone: phone }
+            );
+          }
+          return Result.ok({ calendar_event_id: eventResult.data.eventId });
+        });
+        if (!storeEventResult.ok) return storeEventResult;
+
+
+        // ═══ Core Success مكتمل هنا. الموعد الجديد صالح وفعلي للمريض ═══
+        return Result.ok({
+          slotId: newSlot.slot_id,
+          date: newSlot.date,
+          time: newSlot.time,
+          calendarEventId: eventResult.data.eventId,
+          busNumber: busResult.ok ? busResult.data.busNumber : null
+        });
+      }
+    );
+
+
+    if (!commandResult.ok) {
+      return Result.ok({
+        reply: 'تعذّر تغيير موعدك حاليًا. الرجاء المحاولة مرة أخرى أو التواصل مع العيادة.',
+        conversationState: Config.VOCABULARY.CONVERSATION_STATE.BOOKED
+      });
+    }
+
+
+    // ═══ Post-Commit Cleanup: الخطوتان 7-8. فشلها لا يغيّر رد المستخدم ═══
+    ChangeService._cleanupOldConfirmedAppointment(phone, oldSlot);
+
+
+    const confirmedDisplay = 'بتاريخ ' + DateUtils.formatDateDisplay(commandResult.data.date) +
+      '\n' + (commandResult.data.busNumber !== null
+        ? 'رقم الباص الجديد: ' + commandResult.data.busNumber
+        : 'الساعة ' + DateUtils.formatTimeDisplay(commandResult.data.time));
+
+
+    return Result.ok({
+      reply: 'تم تغيير موعدك بنجاح.\n' + confirmedDisplay +
+        '\nيرجى الحضور ضمن وقت دوام العيادة.',
+      conversationState: Config.VOCABULARY.CONVERSATION_STATE.BOOKED
+    });
+  },
+
+
+  // ─────────────────────────────────────
+  // أدوات داخلية (Internal helpers)
+  // ─────────────────────────────────────
+
+
+  /**
+   * تنظيف ما بعد الالتزام (الخطوتان 7-8) لموعد قديم بعد نجاح تأمين
+   * الموعد الجديد بالكامل. لا تُرجع Result، ولا يجوز لمستدعيها تحويل
+   * فشلها إلى فشل معروض للمستخدم — راجع سياسة Patient-retention-first
+   * في رأس الملف. كل فشل هنا يُسجَّل مباشرة في LOG_SYSTEM عبر
+   * LogRepository (وليس عبر CommandExecutor، لأن هذا ليس Command
+   * مستقلاً بل استمرار داخلي لأمر CHANGE_APPOINTMENT الذي نجح فعلاً).
+   *
+   * @param {string} phone
+   * @param {Object} oldSlot - الفتحة القديمة كما قُرئت قبل بدء العملية
+   */
+  _cleanupOldConfirmedAppointment(phone, oldSlot) {
+    const startedAt = Clock.now();
+
+
+    try {
+      // الخطوة 7: حذف Calendar Event القديم
+      if (oldSlot.calendar_event_id) {
+        const deleteResult = CalendarRepository.deleteAppointmentEvent(
+          oldSlot.calendar_event_id
+        );
+        if (!deleteResult.ok) {
+          LogRepository.write({
+            timestamp: Clock.now(),
+            command: Config.VOCABULARY.COMMANDS.CHANGE_APPOINTMENT,
+            phone: phone,
+            slotId: oldSlot.slot_id,
+            stage: 'CLEANUP_FAILED',
+            success: false,
+            durationMs: Clock.now().getTime() - startedAt.getTime(),
+            error: 'OLD_CALENDAR_EVENT_DELETE_FAILED: ' + JSON.stringify(deleteResult.error)
+          });
+          // ⚠️ نتوقف عمدًا هنا ولا ننفذ الخطوة 8: تحرير الفتحة سيمسح
+          // calendar_event_id، فتُفقد القدرة على تتبع الحدث اليتيم
+          // لحذفه يدويًا لاحقًا. تبقى الفتحة القديمة CONFIRMED عمدًا.
+          return;
+        }
+      }
+
+
+      // الخطوة 8: تحرير الفتحة القديمة إلى FREE (مع فحص الملكية)
+      const freeResult = SlotRepository.atomicUpdate(oldSlot.slot_id, function(freshOld) {
+        if (freshOld.phone !== phone) {
+          return Result.fail(
+            'SLOT_OWNER_MISMATCH',
+            'Old slot no longer belongs to this phone',
+            { slotId: freshOld.slot_id, phone: phone }
+          );
+        }
+        const check = Validators.validateTransition(
+          freshOld.status,
+          Config.VOCABULARY.COMMANDS.CANCEL_APPOINTMENT
+        );
+        if (!check.ok) return check;
+        return Result.ok({
+          status: Config.VOCABULARY.STATUS.FREE,
+          patient_name: '',
+          phone: '',
+          calendar_event_id: '',
+          reserved_until: '',
+          reserved_until_unix: ''
+        });
+      });
+
+
+      if (!freeResult.ok) {
+        LogRepository.write({
+          timestamp: Clock.now(),
+          command: Config.VOCABULARY.COMMANDS.CHANGE_APPOINTMENT,
+          phone: phone,
+          slotId: oldSlot.slot_id,
+          stage: 'CLEANUP_FAILED',
+          success: false,
+          durationMs: Clock.now().getTime() - startedAt.getTime(),
+          error: 'OLD_SLOT_RELEASE_FAILED: ' + JSON.stringify(freeResult.error)
+        });
+      }
+    } catch (e) {
+      // شبكة أمان: أي استثناء غير متوقع أثناء التنظيف يُسجَّل، ولا
+      // يُسمح له بالتسرب ليؤثر على النتيجة التي استُلمها المستخدم بالفعل.
+      LogRepository.write({
+        timestamp: Clock.now(),
+        command: Config.VOCABULARY.COMMANDS.CHANGE_APPOINTMENT,
+        phone: phone,
+        slotId: oldSlot.slot_id,
+        stage: 'CLEANUP_EXCEPTION',
+        success: false,
+        durationMs: Clock.now().getTime() - startedAt.getTime(),
+        error: e.message
+      });
+    }
+  }
+};
+
+
+SlotSelection.gs
+/**
+ * CONTRACT — SlotSelection (ADR-019)
+ * P0 fix: is_available enforced
+ */
+const SlotSelection = {
+  findEarliestBookable: function(excludeSlotId) {
+    var cutoff = DateUtils.addMinutes(
+      Clock.now(),
+      Config.SYSTEM_POLICY.MIN_BOOKING_LEAD_MINUTES
+    ).getTime();
+
+
+    var candidates = SlotRepository.query(function(row) {
+      if (row.status !== Config.VOCABULARY.STATUS.FREE) return false;
+      if (!SlotSelection._isAvailable(row.is_available)) return false;
+      if (excludeSlotId && row.slot_id === excludeSlotId) return false;
+      var sortValue = LegacySlotTimeParser.toComparableTime(row.sort_key);
+      if (sortValue === null) return false;
+      return sortValue >= cutoff;
+    });
+
+
+    if (!candidates.length) return null;
+
+
+    candidates.sort(function(a, b) {
+      return LegacySlotTimeParser.toComparableTime(a.sort_key) -
+        LegacySlotTimeParser.toComparableTime(b.sort_key);
+    });
+
+
+    return candidates[0];
+  },
+
+
+  _isAvailable: function(value) {
+    if (value === true) return true;
+    if (typeof value === 'string') {
+      var trimmed = value.trim().toUpperCase();
+      if (trimmed === 'TRUE') return true;
+    }
+    return false;
+  }
+};
+
+
