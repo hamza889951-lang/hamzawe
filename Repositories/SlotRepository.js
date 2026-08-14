@@ -89,6 +89,66 @@ const SlotRepository = {
     });
   },
 
+  cleanupExpiredReservation: function(slotId, nowMs) {
+    return Lock.runExclusive('maintenance', function() {
+      var slot = SlotRepository.findById(slotId);
+      if (!slot) {
+        return Result.fail('NOT_FOUND', 'Slot ' + slotId + ' does not exist');
+      }
+
+      if (slot.status !== Config.VOCABULARY.STATUS.RESERVED) {
+        return Result.ok({
+          status: 'SKIPPED_STATE',
+          slotId: slotId,
+          currentStatus: slot.status
+        });
+      }
+
+      var until = Number(slot.reserved_until_unix);
+      if (isNaN(until)) {
+        return Result.ok({
+          status: 'SKIPPED_STATE',
+          slotId: slotId,
+          reason: 'INVALID_EXPIRY'
+        });
+      }
+
+      if (until >= nowMs) {
+        return Result.ok({
+          status: 'SKIPPED_NOT_EXPIRED',
+          slotId: slotId,
+          reservedUntilUnix: until
+        });
+      }
+
+      var updated = GoogleSheets.updateRowByColumn(
+        Config.VOCABULARY.SHEETS.AVAILABILITY,
+        'slot_id',
+        slotId,
+        {
+          status: Config.VOCABULARY.STATUS.FREE,
+          patient_name: '',
+          phone: '',
+          reserved_until: '',
+          reserved_until_unix: ''
+        }
+      );
+
+      if (!updated) {
+        return Result.fail(
+          'UPDATE_FAILED',
+          'Failed to update slot ' + slotId + ' during cleanup',
+          { slotId: slotId }
+        );
+      }
+
+      return Result.ok({
+        status: 'CLEANED',
+        slotId: slotId
+      });
+    });
+  },
+
   insert: function(slotFields) {
     var record = Object.assign(
       { slot_id: IdGenerator.generateSlotId(), status: Config.VOCABULARY.STATUS.FREE },

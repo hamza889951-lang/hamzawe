@@ -2,19 +2,39 @@ const MaintenanceService = {
 
   runCleanup: function() {
     var nowMs = Clock.now().getTime();
-    var expiredReservations = SlotRepository.query(function(row) {
+    var expiredCandidates = SlotRepository.query(function(row) {
       if (row.status !== Config.VOCABULARY.STATUS.RESERVED) return false;
       var until = Number(row.reserved_until_unix);
       if (isNaN(until)) return false;
       return until < nowMs;
     });
-    if (expiredReservations.length === 0) return Result.ok({ cleaned: 0 });
-    var updates = expiredReservations.map(function(slot) {
-      return { columnName: 'slot_id', value: slot.slot_id, fields: { status: Config.VOCABULARY.STATUS.FREE, patient_name: '', phone: '', reserved_until: '', reserved_until_unix: '' } };
-    });
-    var result = GoogleSheets.updateBatch(Config.VOCABULARY.SHEETS.AVAILABILITY, updates);
-    if (!result.ok) return result;
-    return Result.ok({ cleaned: result.data.updated });
+
+    if (expiredCandidates.length === 0) {
+      return Result.ok({ cleaned: 0, skipped: 0 });
+    }
+
+    var cleaned = 0;
+    var skipped = 0;
+
+    for (var i = 0; i < expiredCandidates.length; i++) {
+      var candidate = expiredCandidates[i];
+      var result = SlotRepository.cleanupExpiredReservation(candidate.slot_id, nowMs);
+
+      if (!result.ok) {
+        return result;
+      }
+
+      if (result.data && result.data.status === 'CLEANED') {
+        cleaned++;
+      } else if (
+        result.data &&
+        (result.data.status === 'SKIPPED_STATE' || result.data.status === 'SKIPPED_NOT_EXPIRED')
+      ) {
+        skipped++;
+      }
+    }
+
+    return Result.ok({ cleaned: cleaned, skipped: skipped });
   },
 
   runExpiration: function() {
