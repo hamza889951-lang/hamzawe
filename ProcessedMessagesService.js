@@ -7,31 +7,32 @@
  * ═══════════════════════════════════════
  *
  * يضمن:
- *   - claim(messageId, phone, message): عملية ذرية واحدة تجمع
- *     فحص وجود claim سابق + إنشاء claim جديد داخل Lock.runExclusive().
- *     لا يمكن لتنفيذين متزامنين لنفس المفتاح الحصول على ACQUIRED معًا.
+ *   - claim(messageId, phone, message): يبني مفتاح الرسالة ويفوّض
+ *     العملية الذرية إلى ProcessedMessagesRepository.claim().
+ *     لا يعرف Service أي تفاصيل عن Lock أو PropertiesService.
  *
  *   - إرجاع Result:
  *       Result.ok({ status: 'ACQUIRED' })  — هذا execution يملك الرسالة
  *       Result.ok({ status: 'DUPLICATE' }) — execution آخر يملكها أو سبق له
- *       Result.fail(...)                    — فشل ذرية أو تخزين
+ *       Result.fail(...)                    — فشل ذرية أو تخزين (من Repository)
  *
  * لا يضمن:
- *   - أي ذرية عبر موارد خارجية (Sheets, Calendar).
+ *   - أي ذرية — مسؤولية ProcessedMessagesRepository.
+ *   - أي تخزين — مسؤولية ProcessedMessagesRepository.
  *   - أي cleanup تلقائي للمفاتيح المنتهية.
  *   - أي منطق عمل — فقط idempotency ownership.
  *
  * ═══════════════════════════════════════
- * B2 — Atomicity Model
+ * Layering (B2 Correction)
  * ═══════════════════════════════════════
  *
- *   Lock.runExclusive('idempotency')
- *     → read existing claim via ProcessedMessagesRepository
- *     → if valid claim exists → DUPLICATE
- *     → else → write new claim → ACQUIRED
- *     → release lock
+ *   ProcessedMessagesService.claim(messageId, phone, message)
+ *       ↓ build key
+ *   ProcessedMessagesRepository.claim(key, nowMs, windowMs)
+ *       ↓ Lock.runExclusive + PropertiesService
  *
- *   Business processing happens OUTSIDE the lock (Webhook.js).
+ *   Service owns: key building, policy (DUPLICATE_WINDOW_MS), contract.
+ *   Repository owns: atomicity (Lock), persistence (PropertiesService).
  *
  * ═══════════════════════════════════════
  * TTL / Expiration
@@ -48,6 +49,7 @@ const ProcessedMessagesService = {
 
   /**
    * Atomic claim — يملك رسالة inbound ذريًا قبل دخول Router.
+   * يفوّض العملية الذرية بالكامل إلى ProcessedMessagesRepository.
    *
    * @param {string|null} messageId - من UltraMsg payload (data.id)
    * @param {string} phone
@@ -55,52 +57,12 @@ const ProcessedMessagesService = {
    * @returns {Result}
    *   ok({ status: 'ACQUIRED' })  — execution يملك الرسالة، يُسمح بدخول Router
    *   ok({ status: 'DUPLICATE' }) — execution آخر سبق، لا تدخل Router
-   *   fail('LOCK_TIMEOUT', ...)   — لم يتمكن من الحصول على القفل
-   *   fail('CLAIM_PERSISTENCE_FAILED', ...) — فشل تخزين claim
+   *   fail(...)                    — فشل من Repository (lock/read/write)
    */
   claim: function(messageId, phone, message) {
-    var self = this;
     var key = this._buildKey(messageId, phone, message);
-
-    return Lock.runExclusive('idempotency', function() {
-      // ── read existing claim ──
-      var storedMs = null;
-      try {
-        var stored = ProcessedMessagesRepository.read(key);
-        if (stored) {
-          storedMs = parseInt(stored, 10);
-        }
-      } catch (e) {
-        return Result.fail(
-          'CLAIM_READ_FAILED',
-          'Failed to read idempotency claim',
-          e.message
-        );
-      }
-
-      // ── check if existing claim is still valid ──
-      if (storedMs !== null && !isNaN(storedMs)) {
-        var elapsed = Clock.now().getTime() - storedMs;
-        if (elapsed < self.DUPLICATE_WINDOW_MS) {
-          return Result.ok({ status: 'DUPLICATE' });
-        }
-        // expired — fall through to acquire
-      }
-
-      // ── establish ownership ──
-      try {
-        var nowMs = Clock.now().getTime();
-        ProcessedMessagesRepository.write(key, String(nowMs));
-      } catch (e) {
-        return Result.fail(
-          'CLAIM_PERSISTENCE_FAILED',
-          'Failed to persist idempotency claim',
-          e.message
-        );
-      }
-
-      return Result.ok({ status: 'ACQUIRED' });
-    });
+    var nowMs = Clock.now().getTime();
+    return ProcessedMessagesRepository.claim(key, nowMs, this.DUPLICATE_WINDOW_MS);
   },
 
   // ─────────────────────────────────────

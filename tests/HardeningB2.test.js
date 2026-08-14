@@ -32,45 +32,61 @@ sandbox.Clock = {
   now: function() { return new Date(currentTimeMs); }
 };
 
-// ── In-memory ScriptProperties mock ──
+// ── In-memory ScriptProperties mock (controllable) ──
 var scriptProperties = {};
-var scriptPropertiesShouldFail = false;
+var scriptPropertiesShouldFailRead = false;
+var scriptPropertiesShouldFailWrite = false;
 
-sandbox.PropertiesService = {
-  getScriptProperties: function() {
-    return {
-      getProperty: function(key) {
-        if (scriptPropertiesShouldFail) throw new Error('STORAGE_FAILURE');
-        return scriptProperties.hasOwnProperty(key) ? scriptProperties[key] : null;
-      },
-      setProperty: function(key, value) {
-        if (scriptPropertiesShouldFail) throw new Error('STORAGE_FAILURE');
-        scriptProperties[key] = value;
-      }
-    };
-  }
-};
+function resetScriptProperties() {
+  scriptProperties = {};
+  scriptPropertiesShouldFailRead = false;
+  scriptPropertiesShouldFailWrite = false;
+}
 
-// ── Lock mock (real single-threaded semantics by default) ──
+function makePropertiesService() {
+  return {
+    getScriptProperties: function() {
+      return {
+        getProperty: function(key) {
+          if (scriptPropertiesShouldFailRead) throw new Error('READ_FAILURE');
+          return scriptProperties.hasOwnProperty(key) ? scriptProperties[key] : null;
+        },
+        setProperty: function(key, value) {
+          if (scriptPropertiesShouldFailWrite) throw new Error('WRITE_FAILURE');
+          scriptProperties[key] = value;
+        }
+      };
+    }
+  };
+}
+
+sandbox.PropertiesService = makePropertiesService();
+
+// ── Lock mock (simple passthrough by default) ──
 var lockShouldFail = false;
-sandbox.Lock = {
-  runExclusive: function(key, fn) {
-    if (lockShouldFail) {
-      return sandbox.Result.fail('LOCK_TIMEOUT', 'Could not acquire lock for ' + key);
+
+function makeDefaultLock() {
+  return {
+    runExclusive: function(key, fn) {
+      if (lockShouldFail) {
+        return sandbox.Result.fail('LOCK_TIMEOUT', 'Could not acquire lock for ' + key);
+      }
+      try {
+        return fn();
+      } catch (e) {
+        return sandbox.Result.fail('UNEXPECTED_ERROR', e.message, e.stack);
+      }
     }
-    try {
-      return fn();
-    } catch (e) {
-      return sandbox.Result.fail('UNEXPECTED_ERROR', e.message, e.stack);
-    }
-  }
-};
+  };
+}
+
+sandbox.Lock = makeDefaultLock();
 
 // Load production files
 load('ProcessedMessagesRepository.js', 'ProcessedMessagesRepository');
 load('ProcessedMessagesService.js', 'ProcessedMessagesService');
 
-// ── Router mock for webhook tests ──
+// ── Router mock ──
 var routerDispatchCount = 0;
 var routerLastContext = null;
 sandbox.Router = {
@@ -124,14 +140,15 @@ load('Webhook.js', 'doPost');
 // Test helpers
 // ─────────────────────────────────────────
 function resetState() {
-  scriptProperties = {};
-  scriptPropertiesShouldFail = false;
+  resetScriptProperties();
   lockShouldFail = false;
   currentTimeMs = NOW_MS;
   routerDispatchCount = 0;
   routerLastContext = null;
   logEntries = [];
   lastContentOutput = null;
+  sandbox.Lock = makeDefaultLock();
+  sandbox.PropertiesService = makePropertiesService();
 }
 
 function makeWebhookEvent(messageId, phone, body) {
@@ -180,72 +197,104 @@ test('B — sequential duplicate returns DUPLICATE', function() {
 });
 
 // ═══════════════════════════════════════
-// C — Concurrent duplicate (simulated)
+// C — Deterministic Race Test
 // ═══════════════════════════════════════
-test('C — concurrent duplicate yields exactly one owner', function() {
+//
+// This test proves atomicity by injecting an interleaving attempt
+// BETWEEN the read and write operations of claim().
+//
+// Methodology:
+//   1. Install a Lock mock with REAL mutual exclusion semantics
+//      (re-entrant attempt returns LOCK_TIMEOUT).
+//   2. Install a PropertiesService mock where getProperty() triggers
+//      a nested claim() attempt on first read of a new key.
+//   3. Call claim(K) — enters lock → reads (absent) → nested claim
+//      tries to enter lock → BLOCKED → outer continues → writes → ACQUIRED.
+//
+// With atomic implementation: nested gets LOCK_TIMEOUT → PASS
+// With non-atomic (no lock):  nested also gets ACQUIRED → FAIL
+//
+test('C — deterministic race: interleaving between read and write is blocked', function() {
   resetState();
 
-  // Simulate concurrent execution by using a lock that serializes access
-  // and captures the interleaving that would cause a race without atomicity.
-  //
-  // With a real lock: A acquires → B waits → A releases → B acquires → sees claim → DUPLICATE
-  // Without a lock:   A reads false → B reads false → A writes → B writes → both ACQUIRED (bug)
-  //
-  // We test by calling claim() twice sequentially (which is what a real lock would serialize to)
-  // and verifying exactly one ACQUIRED.
-
-  var results = [];
-  var executionCount = 0;
-
-  // Override Lock to track serialization
-  var originalLock = sandbox.Lock;
-  var lockAcquired = false;
+  // ── Lock mock with REAL mutual exclusion ──
+  var lockHeld = false;
   sandbox.Lock = {
     runExclusive: function(key, fn) {
-      // Simulate real lock: only one execution at a time
-      if (lockAcquired) {
-        // In a real system, B would wait. Here we just serialize.
-        // The test verifies that even with perfect serialization,
-        // the second call sees the first's claim.
+      if (lockHeld) {
+        // Another execution already holds the lock — this is the race guard
+        return sandbox.Result.fail('LOCK_TIMEOUT', 'Lock held by another execution');
       }
-      lockAcquired = true;
+      lockHeld = true;
       try {
         return fn();
       } finally {
-        lockAcquired = false;
+        lockHeld = false;
       }
     }
   };
 
-  // First claim
-  var r1 = sandbox.ProcessedMessagesService.claim('msg-concurrent', '9647001234567', 'test');
-  results.push(r1);
+  // ── Storage mock that injects interleaving attempt ──
+  var storage = {};
+  var interleavingAttempted = false;
+  var interleavingResult = null;
 
-  // Second claim (simulates the other request that was waiting on lock)
-  var r2 = sandbox.ProcessedMessagesService.claim('msg-concurrent', '9647001234567', 'test');
-  results.push(r2);
+  sandbox.PropertiesService = {
+    getScriptProperties: function() {
+      return {
+        getProperty: function(key) {
+          var value = storage.hasOwnProperty(key) ? storage[key] : null;
 
-  // Restore lock
-  sandbox.Lock = originalLock;
+          // INJECT INTERLEAVING: on first read of this key where value is absent,
+          // simulate a second execution arriving during the first's critical section
+          if (!interleavingAttempted && value === null) {
+            interleavingAttempted = true;
+            // B attempts claim while A is still inside the lock
+            interleavingResult = sandbox.ProcessedMessagesRepository.claim(
+              key, NOW_MS + 1, 300000
+            );
+          }
 
-  var acquiredCount = results.filter(function(r) { return r.ok && r.data.status === 'ACQUIRED'; }).length;
-  var duplicateCount = results.filter(function(r) { return r.ok && r.data.status === 'DUPLICATE'; }).length;
+          return value;
+        },
+        setProperty: function(key, value) {
+          storage[key] = value;
+        }
+      };
+    }
+  };
 
-  assert.strictEqual(acquiredCount, 1, 'Exactly one execution should get ACQUIRED');
-  assert.strictEqual(duplicateCount, 1, 'Exactly one execution should get DUPLICATE');
+  // ── Execute A's claim (production code path) ──
+  var resultA = sandbox.ProcessedMessagesRepository.claim('msg_race_key', NOW_MS, 300000);
+
+  // ── Assertions ──
+  assert.strictEqual(interleavingAttempted, true,
+    'Interleaving should have been attempted during A critical section');
+
+  // A must get ACQUIRED
+  assert.strictEqual(resultA.ok, true);
+  assert.strictEqual(resultA.data.status, 'ACQUIRED');
+
+  // B (interleaving) must NOT get ACQUIRED
+  assert.ok(interleavingResult, 'Interleaving must have produced a result');
+
+  if (interleavingResult.ok) {
+    assert.strictEqual(interleavingResult.data.status, 'DUPLICATE',
+      'RACE VIOLATION: interleaved execution got ACQUIRED — atomicity is broken');
+  } else {
+    assert.strictEqual(interleavingResult.error.code, 'LOCK_TIMEOUT',
+      'Interleaved execution should be blocked by lock, got: ' + interleavingResult.error.code);
+  }
 });
 
 // ═══════════════════════════════════════
-// C2 — Verify lock prevents interleaving
+// C2 — Structural: claim uses Lock.runExclusive
 // ═══════════════════════════════════════
-test('C2 — claim uses Lock.runExclusive (atomicity enforced)', function() {
+test('C2 — structural: ProcessedMessagesRepository.claim uses Lock.runExclusive', function() {
   resetState();
 
-  // Track whether Lock.runExclusive was actually called during claim
   var lockCalled = false;
   var lockKeyUsed = null;
-  var originalLock = sandbox.Lock;
-
   sandbox.Lock = {
     runExclusive: function(key, fn) {
       lockCalled = true;
@@ -254,12 +303,10 @@ test('C2 — claim uses Lock.runExclusive (atomicity enforced)', function() {
     }
   };
 
-  sandbox.ProcessedMessagesService.claim('msg-lock-check', '9647001234567', 'test');
+  sandbox.ProcessedMessagesRepository.claim('msg_struct', NOW_MS, 300000);
 
-  sandbox.Lock = originalLock;
-
-  assert.strictEqual(lockCalled, true, 'claim() must call Lock.runExclusive()');
-  assert.strictEqual(typeof lockKeyUsed, 'string', 'Lock must be called with a key');
+  assert.strictEqual(lockCalled, true, 'Repository.claim must call Lock.runExclusive');
+  assert.strictEqual(lockKeyUsed, 'idempotency', 'Lock key must be "idempotency"');
 });
 
 // ═══════════════════════════════════════
@@ -293,9 +340,6 @@ test('E — duplicate blocked before Router via doPost', function() {
   assert.strictEqual(routerDispatchCount, 1, 'Duplicate must NOT reach Router again');
 });
 
-// ═══════════════════════════════════════
-// E2 — Multiple different messages all reach Router
-// ═══════════════════════════════════════
 test('E2 — different messages all reach Router via doPost', function() {
   resetState();
 
@@ -312,7 +356,6 @@ test('E2 — different messages all reach Router via doPost', function() {
 test('F — expired claim allows retry', function() {
   resetState();
 
-  // First claim
   var r1 = sandbox.ProcessedMessagesService.claim('msg-expiry', '9647001234567', 'hello');
   assert.strictEqual(r1.ok, true);
   assert.strictEqual(r1.data.status, 'ACQUIRED');
@@ -320,7 +363,6 @@ test('F — expired claim allows retry', function() {
   // Advance time past DUPLICATE_WINDOW_MS (300,000ms)
   currentTimeMs = NOW_MS + 300001;
 
-  // Same key should now be ACQUIRED again (expired → retryable)
   var r2 = sandbox.ProcessedMessagesService.claim('msg-expiry', '9647001234567', 'hello');
   assert.strictEqual(r2.ok, true);
   assert.strictEqual(r2.data.status, 'ACQUIRED');
@@ -346,7 +388,8 @@ test('F2 — claim just before expiry still blocks', function() {
 // ═══════════════════════════════════════
 test('G — persistence failure blocks business processing', function() {
   resetState();
-  scriptPropertiesShouldFail = true;
+  scriptPropertiesShouldFailWrite = true;
+  sandbox.PropertiesService = makePropertiesService();
 
   var result = sandbox.ProcessedMessagesService.claim('msg-fail', '9647001234567', 'hello');
 
@@ -356,24 +399,22 @@ test('G — persistence failure blocks business processing', function() {
 
 test('G2 — persistence failure in webhook blocks Router', function() {
   resetState();
-  scriptPropertiesShouldFail = true;
+  scriptPropertiesShouldFailWrite = true;
+  sandbox.PropertiesService = makePropertiesService();
 
   var event = makeWebhookEvent('msg-g2', '9647001234567', 'hello');
   sandbox.doPost(event);
 
   assert.strictEqual(routerDispatchCount, 0, 'Router must NOT be called when claim fails');
 
-  // Verify error was logged
   var claimFailLog = logEntries.find(function(e) { return e.command === 'WEBHOOK_CLAIM_FAILED'; });
   assert.ok(claimFailLog, 'Claim failure should be logged');
 });
 
-// ═══════════════════════════════════════
-// G3 — Lock failure
-// ═══════════════════════════════════════
 test('G3 — lock failure blocks business processing', function() {
   resetState();
   lockShouldFail = true;
+  sandbox.Lock = makeDefaultLock();
 
   var result = sandbox.ProcessedMessagesService.claim('msg-lockfail', '9647001234567', 'hello');
 
@@ -416,127 +457,144 @@ test('H3 — missing postData returns IGNORED', function() {
 });
 
 // ═══════════════════════════════════════
-// R1 — Repository: first claim (write + read)
+// R1–R6 — Repository tests (production code)
 // ═══════════════════════════════════════
-test('R1 — repository first claim stores value', function() {
+
+test('R1 — repository first claim returns ACQUIRED', function() {
   resetState();
 
-  sandbox.ProcessedMessagesRepository.write('msg_r1', '12345');
-  var stored = sandbox.ProcessedMessagesRepository.read('msg_r1');
+  var result = sandbox.ProcessedMessagesRepository.claim('msg_r1', NOW_MS, 300000);
 
-  assert.strictEqual(stored, '12345');
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.data.status, 'ACQUIRED');
+});
+
+test('R2 — repository duplicate claim returns DUPLICATE', function() {
+  resetState();
+
+  var r1 = sandbox.ProcessedMessagesRepository.claim('msg_r2', NOW_MS, 300000);
+  var r2 = sandbox.ProcessedMessagesRepository.claim('msg_r2', NOW_MS + 1000, 300000);
+
+  assert.strictEqual(r1.ok, true);
+  assert.strictEqual(r1.data.status, 'ACQUIRED');
+  assert.strictEqual(r2.ok, true);
+  assert.strictEqual(r2.data.status, 'DUPLICATE');
+});
+
+test('R3 — repository expired claim allows new ACQUIRED', function() {
+  resetState();
+
+  var r1 = sandbox.ProcessedMessagesRepository.claim('msg_r3', NOW_MS, 300000);
+  assert.strictEqual(r1.data.status, 'ACQUIRED');
+
+  // After expiration
+  var r2 = sandbox.ProcessedMessagesRepository.claim('msg_r3', NOW_MS + 300001, 300000);
+  assert.strictEqual(r2.ok, true);
+  assert.strictEqual(r2.data.status, 'ACQUIRED');
+});
+
+test('R4 — repository read failure returns CLAIM_READ_FAILED', function() {
+  resetState();
+  scriptPropertiesShouldFailRead = true;
+  sandbox.PropertiesService = makePropertiesService();
+
+  var result = sandbox.ProcessedMessagesRepository.claim('msg_r4', NOW_MS, 300000);
+
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.error.code, 'CLAIM_READ_FAILED');
+});
+
+test('R5 — repository write failure returns CLAIM_PERSISTENCE_FAILED', function() {
+  resetState();
+  scriptPropertiesShouldFailWrite = true;
+  sandbox.PropertiesService = makePropertiesService();
+
+  var result = sandbox.ProcessedMessagesRepository.claim('msg_r5', NOW_MS, 300000);
+
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.error.code, 'CLAIM_PERSISTENCE_FAILED');
+});
+
+test('R6 — repository lock failure returns LOCK_TIMEOUT', function() {
+  resetState();
+  lockShouldFail = true;
+  sandbox.Lock = makeDefaultLock();
+
+  var result = sandbox.ProcessedMessagesRepository.claim('msg_r6', NOW_MS, 300000);
+
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.error.code, 'LOCK_TIMEOUT');
 });
 
 // ═══════════════════════════════════════
-// R2 — Repository: duplicate claim read
+// REGRESSION — Layer boundary checks
 // ═══════════════════════════════════════
-test('R2 — repository duplicate claim returns stored value', function() {
-  resetState();
 
-  sandbox.ProcessedMessagesRepository.write('msg_r2', '99999');
-  var first = sandbox.ProcessedMessagesRepository.read('msg_r2');
-  var second = sandbox.ProcessedMessagesRepository.read('msg_r2');
+test('REGRESSION — ProcessedMessagesService does NOT reference Lock', function() {
+  var source = fs.readFileSync(path.join(ROOT, 'ProcessedMessagesService.js'), 'utf8');
 
-  assert.strictEqual(first, '99999');
-  assert.strictEqual(second, '99999');
+  // Remove comments for analysis
+  var codeLines = source.split('\n').filter(function(line) {
+    var trimmed = line.trim();
+    return trimmed.indexOf('//') !== 0 && trimmed.indexOf('*') !== 0 && trimmed.indexOf('/**') !== 0;
+  }).join('\n');
+
+  assert.strictEqual(
+    codeLines.indexOf('Lock.runExclusive') === -1,
+    true,
+    'ProcessedMessagesService must NOT call Lock.runExclusive in code'
+  );
 });
 
-// ═══════════════════════════════════════
-// R3 — Repository: different key
-// ═══════════════════════════════════════
-test('R3 — repository different keys are independent', function() {
-  resetState();
+test('REGRESSION — ProcessedMessagesService does NOT reference PropertiesService', function() {
+  var source = fs.readFileSync(path.join(ROOT, 'ProcessedMessagesService.js'), 'utf8');
 
-  sandbox.ProcessedMessagesRepository.write('msg_r3a', '111');
-  sandbox.ProcessedMessagesRepository.write('msg_r3b', '222');
+  var codeLines = source.split('\n').filter(function(line) {
+    var trimmed = line.trim();
+    return trimmed.indexOf('//') !== 0 && trimmed.indexOf('*') !== 0 && trimmed.indexOf('/**') !== 0;
+  }).join('\n');
 
-  assert.strictEqual(sandbox.ProcessedMessagesRepository.read('msg_r3a'), '111');
-  assert.strictEqual(sandbox.ProcessedMessagesRepository.read('msg_r3b'), '222');
+  assert.strictEqual(
+    codeLines.indexOf('PropertiesService') === -1,
+    true,
+    'ProcessedMessagesService must NOT reference PropertiesService in code'
+  );
 });
 
-// ═══════════════════════════════════════
-// R4 — Repository: persistence failure
-// ═══════════════════════════════════════
-test('R4 — repository persistence failure throws', function() {
-  resetState();
-  scriptPropertiesShouldFail = true;
-
-  var writeThrew = false;
-  try {
-    sandbox.ProcessedMessagesRepository.write('msg_r4', '999');
-  } catch (e) {
-    writeThrew = true;
-  }
-  assert.strictEqual(writeThrew, true, 'Write should throw on storage failure');
+test('REGRESSION — ProcessedMessagesRepository DOES reference Lock', function() {
+  var source = fs.readFileSync(path.join(ROOT, 'ProcessedMessagesRepository.js'), 'utf8');
+  assert.ok(
+    source.indexOf('Lock.runExclusive') !== -1,
+    'Repository must use Lock.runExclusive for atomicity'
+  );
 });
 
-// ═══════════════════════════════════════
-// R5 — Repository: read non-existent key returns null
-// ═══════════════════════════════════════
-test('R5 — repository read non-existent key returns null', function() {
-  resetState();
-
-  var value = sandbox.ProcessedMessagesRepository.read('msg_nonexistent_r5');
-  assert.strictEqual(value, null);
-});
-
-// ═══════════════════════════════════════
-// Regression — B2 prevents old pattern
-// ═══════════════════════════════════════
-test('REGRESSION — Webhook.js source does not use isDuplicate+markProcessed pattern in critical path', function() {
+test('REGRESSION — Webhook.js uses claim only (no check+mark pattern)', function() {
   var webhookSource = fs.readFileSync(path.join(ROOT, 'Webhook.js'), 'utf8');
 
-  // The critical path must use claim(), not separate isDuplicate + markProcessed
   assert.ok(
     webhookSource.indexOf('.claim(') !== -1,
     'Webhook.js must use claim() in the critical path'
   );
 
-  // Verify that the old two-step pattern is NOT present as sequential calls in the critical path
-  // (isDuplicate followed by markProcessed before Router.dispatch)
-  var hasOldPattern = false;
+  // Verify old two-step pattern is NOT in active code
   var lines = webhookSource.split('\n');
   var foundIsDuplicate = false;
   var foundMarkProcessed = false;
-  var foundDispatch = false;
 
   for (var i = 0; i < lines.length; i++) {
     var line = lines[i].trim();
-    // Skip comments
     if (line.indexOf('//') === 0 || line.indexOf('*') === 0) continue;
 
     if (line.indexOf('.isDuplicate(') !== -1) foundIsDuplicate = true;
     if (line.indexOf('.markProcessed(') !== -1) foundMarkProcessed = true;
-    if (line.indexOf('Router.dispatch(') !== -1) foundDispatch = true;
   }
 
-  // If both isDuplicate and markProcessed appear before Router.dispatch in active code, that's the old pattern
-  if (foundIsDuplicate && foundMarkProcessed && foundDispatch) {
-    hasOldPattern = true;
-  }
-
-  assert.strictEqual(hasOldPattern, false,
-    'Webhook.js must not contain the old isDuplicate + markProcessed two-step pattern');
+  assert.strictEqual(foundIsDuplicate && foundMarkProcessed, false,
+    'Webhook.js must not contain isDuplicate + markProcessed two-step pattern');
 });
 
-// ═══════════════════════════════════════
-// Regression — claim uses Lock
-// ═══════════════════════════════════════
-test('REGRESSION — ProcessedMessagesService.claim uses Lock.runExclusive', function() {
-  var source = fs.readFileSync(
-    path.join(ROOT, 'ProcessedMessagesService.js'), 'utf8'
-  );
-
-  assert.ok(
-    source.indexOf('Lock.runExclusive') !== -1,
-    'claim() must use Lock.runExclusive for atomicity'
-  );
-});
-
-// ═══════════════════════════════════════
-// Regression — no PropertiesService in Application
-// ═══════════════════════════════════════
-test('REGRESSION — no PropertiesService in Application/Domain layer', function() {
+test('REGRESSION — no PropertiesService in Application/Domain', function() {
   var appFiles = [
     'Application/BookingService.js',
     'Application/CancelService.js',
@@ -557,9 +615,6 @@ test('REGRESSION — no PropertiesService in Application/Domain layer', function
   });
 });
 
-// ═══════════════════════════════════════
-// Regression — B1 files unchanged
-// ═══════════════════════════════════════
 test('REGRESSION — B1 files are not modified by B2', function() {
   var b1Files = [
     'Slotselection.js',
@@ -568,9 +623,6 @@ test('REGRESSION — B1 files are not modified by B2', function() {
     'Repositories/SlotRepository.js'
   ];
 
-  // This test is a structural check — we verify that B2 tests don't import
-  // or depend on B1 internals being changed. The actual git diff check
-  // happens separately. Here we just confirm these files exist and load fine.
   b1Files.forEach(function(file) {
     var filePath = path.join(ROOT, file);
     if (fs.existsSync(filePath)) {
@@ -581,12 +633,11 @@ test('REGRESSION — B1 files are not modified by B2', function() {
 });
 
 // ═══════════════════════════════════════
-// messageId remains primary identity key
+// IDENTITY — messageId remains primary key
 // ═══════════════════════════════════════
 test('IDENTITY — messageId is the primary key when present', function() {
   resetState();
 
-  // Same messageId, different phone/message → should be DUPLICATE
   var r1 = sandbox.ProcessedMessagesService.claim('msg-identity', '9647001111111', 'first');
   var r2 = sandbox.ProcessedMessagesService.claim('msg-identity', '9647002222222', 'second');
 
@@ -595,17 +646,15 @@ test('IDENTITY — messageId is the primary key when present', function() {
 });
 
 // ═══════════════════════════════════════
-// Fallback key behavior preserved
+// FALLBACK — null messageId behavior preserved
 // ═══════════════════════════════════════
 test('FALLBACK — null messageId uses fallback key (behavior preserved)', function() {
   resetState();
 
-  // With null messageId, fallback key is used based on phone+message+minute bucket
   var r1 = sandbox.ProcessedMessagesService.claim(null, '9647001234567', 'same message');
   assert.strictEqual(r1.ok, true);
   assert.strictEqual(r1.data.status, 'ACQUIRED');
 
-  // Same phone+message within same minute bucket → DUPLICATE
   var r2 = sandbox.ProcessedMessagesService.claim(null, '9647001234567', 'same message');
   assert.strictEqual(r2.data.status, 'DUPLICATE');
 });
