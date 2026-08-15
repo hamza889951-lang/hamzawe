@@ -5,10 +5,26 @@
 const Scheduler = {
 
   main: function() {
-    var scriptLock = LockService.getScriptLock();
+    // B5 — Scheduler orchestration serialization uses the UserLock, NOT the
+    // global ScriptLock. Repository data atomicity keeps owning the ScriptLock
+    // via Lock.runExclusive(); this Scheduler must therefore never hold the
+    // ScriptLock across a stage that itself acquires it through
+    // Lock.runExclusive() (Maintenance/Horizon/Reminders) — that is a nested
+    // acquisition of the same global lock, the exact topology B5 removes — and
+    // must not couple Scheduler orchestration to webhook atomicUpdate.
+    //
+    // The UserLock serializes Scheduler executions under the documented
+    // deployment model, which is a precondition to verify at deploy time, not
+    // a runtime fact asserted here: every Scheduler invocation (the single
+    // daily time-driven trigger and manual RUN_scheduler) runs as the same
+    // owner user — appsscript.json (webapp executeAs: USER_DEPLOYING) and
+    // PROJECT_CONTEXT.md §5 ("Google services run as the deploying user"),
+    // §11 (trigger configured manually by the owner), §12 (single daily
+    // trigger). (Supervisor decision — B5.)
+    var schedulerLock = LockService.getUserLock();
     var hasLock = false;
 
-    try { scriptLock.waitLock(1000); hasLock = true; } catch (e) {
+    try { schedulerLock.waitLock(1000); hasLock = true; } catch (e) {
       LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_LOCKED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: 'Another Scheduler instance is already running' });
       return Result.ok({ status: 'SKIPPED', reason: 'Locked by concurrent run' });
     }
@@ -45,7 +61,7 @@ const Scheduler = {
       return Result.fail('SCHEDULER_PARTIAL_FAILURE', 'One or more Scheduler stages failed', { stages: { archive: S.archive.status, maintenance: S.maintenance.status, horizon: S.horizon.status, reminders: S.reminders.status, healthCheck: S.healthCheck.status }, details: summary, durationMs: durationMs });
 
     } finally {
-      if (hasLock) { try { scriptLock.releaseLock(); } catch (e) { /* best effort */ } }
+      if (hasLock) { try { schedulerLock.releaseLock(); } catch (e) { /* best effort */ } }
     }
   }
 };
