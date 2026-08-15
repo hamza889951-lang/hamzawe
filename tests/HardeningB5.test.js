@@ -67,8 +67,11 @@ sandbox.WhatsAppAdapter = {
 // ─────────────────────────────────────────────
 // LockService mock with REAL per-type mutual exclusion.
 // getScriptLock() and getUserLock() are independent locks, each with its own
-// held-flag; re-acquiring the same lock while held throws (no reentrancy is
-// assumed anywhere — exactly the non-reentrant ScriptLock contract).
+// held-flag; re-acquiring the same lock while held throws. The mock models the
+// documented one-holder-at-a-time semantics of LockService so the ownership
+// proof is deterministic; it asserts no runtime claim about ScriptLock's
+// same-execution reentrancy behavior (B5 removes the nested topology entirely,
+// so no proof here depends on it).
 // ─────────────────────────────────────────────
 var lockCalls = [];
 var userLockHeld = false;

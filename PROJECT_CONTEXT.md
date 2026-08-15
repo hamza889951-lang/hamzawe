@@ -275,6 +275,7 @@ Ranked by severity (P0=worst). All confirmed by code inspection.
 - **Archive identity safety (Phase A)** — no stable unique ID in SYSTEM_LOG; delete only on exactly-one full-content match, never on row number alone. Simple, safe, no schema change; a future `log_id` column would improve it (not needed now).
 - **Best-effort background ops** (ADR-017) — Maintenance/Reminders/HealthCheck failures log but don't cascade, EXCEPT operational stages gate liveness by design.
 - **Single daily trigger** — one `RUN_scheduler`; do not add triggers without explicit approval.
+- **Scheduler serialization ≠ repository atomicity (B5, PR #8):** `Scheduler.main` serializes Scheduler executions with `LockService.getUserLock()`; `Lock.runExclusive()` keeps owning the global `ScriptLock` for repository data atomicity. **Deployment precondition (verify at deploy time):** every Scheduler invocation — the single daily time-driven trigger and manual `RUN_scheduler` — must run as the same owner user (webapp `executeAs: USER_DEPLOYING` per `appsscript.json`; trigger configured manually by the owner per §11). If a trigger is ever created under a different Google user, UserLock-based Scheduler serialization no longer holds.
 
 ## 13. Dependencies & Configuration Requirements
 

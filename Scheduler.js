@@ -6,13 +6,21 @@ const Scheduler = {
 
   main: function() {
     // B5 — Scheduler orchestration serialization uses the UserLock, NOT the
-    // global ScriptLock. Repository data atomicity owns the ScriptLock via
-    // Lock.runExclusive(); the ScriptLock is a single non-reentrant global
-    // mutex, so holding it across stages would self-deadlock the Maintenance/
-    // Horizon/Reminders stages (which acquire it via Lock.runExclusive) and
-    // couple the Scheduler to every webhook atomicUpdate. The UserLock still
-    // serializes Scheduler executions because every Scheduler invocation runs
-    // as the same owner user. (Supervisor decision — B5.)
+    // global ScriptLock. Repository data atomicity keeps owning the ScriptLock
+    // via Lock.runExclusive(); this Scheduler must therefore never hold the
+    // ScriptLock across a stage that itself acquires it through
+    // Lock.runExclusive() (Maintenance/Horizon/Reminders) — that is a nested
+    // acquisition of the same global lock, the exact topology B5 removes — and
+    // must not couple Scheduler orchestration to webhook atomicUpdate.
+    //
+    // The UserLock serializes Scheduler executions under the documented
+    // deployment model, which is a precondition to verify at deploy time, not
+    // a runtime fact asserted here: every Scheduler invocation (the single
+    // daily time-driven trigger and manual RUN_scheduler) runs as the same
+    // owner user — appsscript.json (webapp executeAs: USER_DEPLOYING) and
+    // PROJECT_CONTEXT.md §5 ("Google services run as the deploying user"),
+    // §11 (trigger configured manually by the owner), §12 (single daily
+    // trigger). (Supervisor decision — B5.)
     var schedulerLock = LockService.getUserLock();
     var hasLock = false;
 
