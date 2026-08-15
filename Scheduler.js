@@ -5,10 +5,18 @@
 const Scheduler = {
 
   main: function() {
-    var scriptLock = LockService.getScriptLock();
+    // B5 — Scheduler orchestration serialization uses the UserLock, NOT the
+    // global ScriptLock. Repository data atomicity owns the ScriptLock via
+    // Lock.runExclusive(); the ScriptLock is a single non-reentrant global
+    // mutex, so holding it across stages would self-deadlock the Maintenance/
+    // Horizon/Reminders stages (which acquire it via Lock.runExclusive) and
+    // couple the Scheduler to every webhook atomicUpdate. The UserLock still
+    // serializes Scheduler executions because every Scheduler invocation runs
+    // as the same owner user. (Supervisor decision — B5.)
+    var schedulerLock = LockService.getUserLock();
     var hasLock = false;
 
-    try { scriptLock.waitLock(1000); hasLock = true; } catch (e) {
+    try { schedulerLock.waitLock(1000); hasLock = true; } catch (e) {
       LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_LOCKED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: 'Another Scheduler instance is already running' });
       return Result.ok({ status: 'SKIPPED', reason: 'Locked by concurrent run' });
     }
@@ -45,7 +53,7 @@ const Scheduler = {
       return Result.fail('SCHEDULER_PARTIAL_FAILURE', 'One or more Scheduler stages failed', { stages: { archive: S.archive.status, maintenance: S.maintenance.status, horizon: S.horizon.status, reminders: S.reminders.status, healthCheck: S.healthCheck.status }, details: summary, durationMs: durationMs });
 
     } finally {
-      if (hasLock) { try { scriptLock.releaseLock(); } catch (e) { /* best effort */ } }
+      if (hasLock) { try { schedulerLock.releaseLock(); } catch (e) { /* best effort */ } }
     }
   }
 };
