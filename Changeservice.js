@@ -228,15 +228,35 @@ const ChangeService = {
       });
     }
 
+    // B4: امتلاك durable للعملية المنطقية قبل أي replacement side effect.
+    // القفل داخل Repository قصير ويُحرَّر قبل بدء atomicUpdate/Calendar.
+    const claimResult = AppointmentRepository.acquireChangeClaim(phone, oldSlot.slot_id);
+    if (!claimResult.ok) {
+      if (claimResult.error && claimResult.error.code === 'CHANGE_ALREADY_IN_PROGRESS') {
+        return Result.ok({
+          reply: 'تعذّر تغيير الموعد الآن لأن هناك عملية تغيير جارية. يرجى المحاولة مرة أخرى.',
+          conversationState: Config.VOCABULARY.CONVERSATION_STATE.BOOKED
+        });
+      }
+      return Result.ok({
+        reply: 'تعذّر تغيير موعدك حاليًا. الرجاء المحاولة مرة أخرى أو التواصل مع العيادة.',
+        conversationState: Config.VOCABULARY.CONVERSATION_STATE.BOOKED
+      });
+    }
+
+    const claimOwnerToken = claimResult.data.ownerToken;
+
     // ═══ Core Success: الخطوات 1-6 فقط تحدد نجاح/فشل هذا الأمر ═══
-    const commandResult = CommandExecutor.execute(
-      Config.VOCABULARY.COMMANDS.CHANGE_APPOINTMENT,
-      { phone: phone, slotId: oldSlot.slot_id },
-      function() {
-        const reservedUntil = DateUtils.addMinutes(
-          Clock.now(),
-          Config.SYSTEM_POLICY.RESERVATION_TIMEOUT_MINUTES
-        );
+    let commandResult;
+    try {
+      commandResult = CommandExecutor.execute(
+        Config.VOCABULARY.COMMANDS.CHANGE_APPOINTMENT,
+        { phone: phone, slotId: oldSlot.slot_id },
+        function() {
+          const reservedUntil = DateUtils.addMinutes(
+            Clock.now(),
+            Config.SYSTEM_POLICY.RESERVATION_TIMEOUT_MINUTES
+          );
 
         // الخطوتان 2-3: اختيار فتحة جديدة وحجزها ذريًا
         const reserveResult = ChangeService._reserveAlternativeSlot(
@@ -314,8 +334,28 @@ const ChangeService = {
           calendarEventId: eventResult.data.eventId,
           busNumber: busResult.ok ? busResult.data.busNumber : null
         });
-      }
-    );
+        }
+      );
+    } catch (e) {
+      commandResult = Result.fail('UNEXPECTED_ERROR', e.message, e.stack);
+    }
+
+    // B4: normal success and normal failure both release ownership before
+    // post-commit cleanup. Release failure is logged without rewriting an
+    // already-established core appointment outcome.
+    const releaseResult = AppointmentRepository.releaseChangeClaim(phone, claimOwnerToken);
+    if (!releaseResult.ok) {
+      LogRepository.write({
+        timestamp: Clock.now(),
+        command: Config.VOCABULARY.COMMANDS.CHANGE_APPOINTMENT,
+        phone: phone,
+        slotId: oldSlot.slot_id,
+        stage: 'CLAIM_RELEASE_FAILED',
+        success: false,
+        durationMs: null,
+        error: JSON.stringify(releaseResult.error)
+      });
+    }
 
     if (!commandResult.ok) {
       return Result.ok({
