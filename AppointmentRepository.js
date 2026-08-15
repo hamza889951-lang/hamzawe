@@ -63,6 +63,42 @@ const AppointmentRepository = {
         );
       }
 
+      // The claim must own the one unambiguous active appointment identified
+      // by the caller. This closes the release-before-cleanup window: after a
+      // replacement commits, old + new are both CONFIRMED until cleanup, so a
+      // later acquisition is rejected before it can create another replacement.
+      const activeResult = SlotRepository.queryResult(function(slot) {
+        return slot.phone === phone &&
+          slot.status === Config.VOCABULARY.STATUS.CONFIRMED;
+      });
+      if (!activeResult.ok) {
+        return Result.fail(
+          'CLAIM_ACQUIRE_FAILED',
+          'Failed to verify active appointment identity',
+          activeResult.error
+        );
+      }
+
+      const activeAppointments = activeResult.data;
+      if (activeAppointments.length !== 1) {
+        return Result.fail(
+          'ACTIVE_APPOINTMENT_AMBIGUOUS',
+          'Change requires exactly one active confirmed appointment',
+          { phone: phone, activeCount: activeAppointments.length }
+        );
+      }
+      if (activeAppointments[0].slot_id !== oldSlotId) {
+        return Result.fail(
+          'ACTIVE_APPOINTMENT_CHANGED',
+          'Active confirmed appointment changed before claim acquisition',
+          {
+            phone: phone,
+            expectedSlotId: oldSlotId,
+            actualSlotId: activeAppointments[0].slot_id
+          }
+        );
+      }
+
       const ownerToken = 'CHG_' + ULID.generate();
       const claim = {
         ownerToken: ownerToken,

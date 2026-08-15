@@ -32,6 +32,8 @@ let properties = {};
 let propertyReadFailure = false;
 let propertyWriteFailure = false;
 let propertyDeleteFailure = false;
+let releaseInterleave = null;
+let pendingAfterUnlock = null;
 
 sandbox.PropertiesService = {
   getScriptProperties: function() {
@@ -47,6 +49,10 @@ sandbox.PropertiesService = {
       deleteProperty: function(key) {
         if (propertyDeleteFailure) throw new Error('PROPERTY_DELETE_FAILED');
         delete properties[key];
+        if (releaseInterleave) {
+          pendingAfterUnlock = releaseInterleave;
+          releaseInterleave = null;
+        }
       }
     };
   }
@@ -69,6 +75,11 @@ sandbox.Lock = {
     } finally {
       lockHeld = false;
       lockEntries.push({ key: key, phase: 'exit' });
+      if (pendingAfterUnlock) {
+        const interleave = pendingAfterUnlock;
+        pendingAfterUnlock = null;
+        interleave();
+      }
     }
   }
 };
@@ -105,6 +116,9 @@ sandbox.SlotRepository = {
       return item.phone === phone && item.status === status;
     });
     return found ? clone(found) : null;
+  },
+  queryResult: function(predicateFn) {
+    return sandbox.Result.ok(slots.filter(predicateFn).map(clone));
   },
   atomicUpdate: function(slotId, decisionFn) {
     assert.strictEqual(lockHeld, false,
@@ -209,6 +223,8 @@ function resetWorkflow() {
   propertyReadFailure = false;
   propertyWriteFailure = false;
   propertyDeleteFailure = false;
+  releaseInterleave = null;
+  pendingAfterUnlock = null;
   lockHeld = false;
   lockShouldFail = false;
   lockEntries = [];
@@ -223,7 +239,8 @@ function resetWorkflow() {
   slots = [
     slot('OLD', sandbox.Config.VOCABULARY.STATUS.CONFIRMED, PHONE),
     slot('A', sandbox.Config.VOCABULARY.STATUS.FREE, ''),
-    slot('B', sandbox.Config.VOCABULARY.STATUS.FREE, '')
+    slot('B', sandbox.Config.VOCABULARY.STATUS.FREE, ''),
+    slot('OTHER_OLD', sandbox.Config.VOCABULARY.STATUS.CONFIRMED, OTHER_PHONE)
   ];
 }
 
@@ -334,6 +351,34 @@ test('H/I/J — deterministic public interleaving permits one replacement and on
   assert.strictEqual(confirmedFor(PHONE).length, 1, 'Only T1 replacement remains confirmed');
   assert.strictEqual(confirmedFor(PHONE)[0].slot_id, 'A');
   assert.strictEqual(properties[claimKey(PHONE)], undefined, 'T1 releases after core success');
+});
+
+test('BLOCKER — release-before-cleanup window rejects a stale-old second change', function() {
+  resetWorkflow();
+  let secondResult = null;
+  let stateAtSecondEntry = null;
+
+  releaseInterleave = function() {
+    // T1's durable claim has been deleted and its short ScriptLock released,
+    // but ChangeService has not yet entered post-commit cleanup. OLD and A are
+    // both still CONFIRMED. T2 enters through the real public Router workflow.
+    stateAtSecondEntry = confirmedFor(PHONE).map(function(item) { return item.slot_id; });
+    secondResult = publicChange(PHONE);
+  };
+
+  const firstResult = publicChange(PHONE);
+
+  assert.deepStrictEqual(stateAtSecondEntry, ['OLD', 'A'],
+    'The injected T2 must run after claim release and before old cleanup');
+  assert.strictEqual(firstResult.ok, true);
+  assert.ok(firstResult.data.reply.indexOf('تم تغيير موعدك بنجاح') !== -1);
+  assert.ok(secondResult);
+  assert.ok(secondResult.data.reply.indexOf('تعذّر تغيير موعدك') !== -1);
+  assert.strictEqual(reserveAttempts.length, 1, 'T2 must not reserve B in the release window');
+  assert.strictEqual(createdEvents.length, 1, 'T2 must not create a second Calendar event');
+  assert.strictEqual(confirmedFor(PHONE).length, 1, 'T1 cleanup leaves only replacement A');
+  assert.strictEqual(confirmedFor(PHONE)[0].slot_id, 'A');
+  assert.strictEqual(properties[claimKey(PHONE)], undefined);
 });
 
 test('G/B1 — existing bounded slot-race retry remains in the CHANGE core', function() {
