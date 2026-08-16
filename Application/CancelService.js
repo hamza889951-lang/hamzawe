@@ -1,85 +1,127 @@
 /**
- * ═══════════════════════════════════════
- * CONTRACT — CancelService
- * ═══════════════════════════════════════
- * يضمن:
- * - إلغاء الحجز المؤكد الوحيد المرتبط برقم هاتف معين (CONFIRMED → FREE
- *   عبر StateMachine)، وحذف حدث التقويم المرتبط، وإعادة ضبط المحادثة.
- * - الالتزام الكامل بـ ADR-013: لا يستدعي BookingService ولا أي Service
- *   آخر إطلاقاً.
+ * CancelService
  *
- * لا يضمن:
- * - أي خطوة تأكيد وسيطة ("أرسل 1 للتأكيد") قبل الإلغاء الفعلي.
- *
- * ═══════════════════════════════════════
- * قرار نطاق (تنفيذي، وليس معمارياً)
- * ═══════════════════════════════════════
- * الإلغاء هنا يتم بخطوة واحدة فور استدعاء cancelAppointment(). لم أُضِف
- * حالة محادثة وسيطة (مثل WAITING_CANCEL_CONFIRMATION) لأن ذلك يتطلب
- * تعديل Config.VOCABULARY.CONVERSATION_STATE، وهي "لغة النظام الأساسية"
- * الموصوفة في Config.gs بأنها "لا تتغير أبداً". توسيع هذا المعجم قرار
- * معماري يخص المشرف حصرياً، وليس شيئاً أفترضه بنفسي. من يستدعي هذه
- * الدالة (لاحقاً Router) هو من يقرر متى يُستدعى، وأي تأكيد نصي يريده
- * قبل ذلك يقع خارج نطاق هذا الـ Service.
- *
- * ديون معمارية موثّقة:
- * ADR-014: منطق تنفيذ CancelAppointment (تحقق الانتقال + التحديث
- * الذري) موجود هنا مباشرة، وليس Command مستقلاً — بنفس شرط ADR-015.
- *
- * ADR-006: حذف حدث التقويم وتحرير الفتحة عمليتان على موردين منفصلين
- * دون ذرّية كاملة. لتقليل أثر الفشل الجزئي: يُحذف حدث التقويم أولاً؛
- * إذا فشل الحذف، لا تُحرَّر الفتحة إطلاقاً (تبقى الحالة متسقة: حجز
- * مؤكد + حدث تقويم موجود). لا Rollback تلقائي إن فشلت الخطوة الثانية
- * بعد نجاح الأولى — يُسجَّل الفشل في LOG_SYSTEM فقط.
+ * B6 routes confirmed-appointment cancellation through the same durable
+ * lifecycle ownership boundary used by confirmed Change. No public recovery
+ * endpoint or authentication system is introduced here.
  */
 const CancelService = {
 
-  /**
-   * نقطة الدخول الوحيدة لهذا الـ Service.
-   * @param {string} rawPhone
-   * @returns {Result} data: { reply: string, conversationState: string|null }
-   */
   cancelAppointment(rawPhone) {
     const normalizedPhone = PhoneUtils.normalize(rawPhone);
     const phoneCheck = Validators.validatePhone(normalizedPhone);
     if (!phoneCheck.ok) return phoneCheck;
     const phone = phoneCheck.data;
 
-    const appointment = AppointmentRepository.findActiveByPhone(phone);
-    if (!appointment) {
-      return Result.ok({
-        reply: 'لا يوجد لديك حجز مؤكد حالياً لإلغائه.',
-        conversationState: null
-      });
+    const lifecycleResult = B6LifecycleService.begin(
+      phone,
+      B6LifecycleService.COMMANDS.CANCEL
+    );
+    if (!lifecycleResult.ok) {
+      if (lifecycleResult.error && lifecycleResult.error.code === 'NO_CONFIRMED_APPOINTMENT') {
+        return CancelService._b6NoActiveReply();
+      }
+      return CancelService._b6FailureReply();
     }
 
-    const slotId = appointment.slot_id;
+    const ctx = lifecycleResult.data;
+    const targetSlot = ctx.oldSlot;
+    if (!targetSlot || !targetSlot.calendar_event_id) {
+      B6LifecycleService.enterUnresolved(
+        ctx,
+        'AUTHORITATIVE_TARGET_APPOINTMENT_INCOMPLETE',
+        { oldSlotId: ctx.oldSlotId }
+      );
+      return CancelService._b6FailureReply();
+    }
 
-    // ── ADR-014: تنفيذ Command مباشر هنا، مؤقتاً، بموافقة المشرف ──
+    ctx.oldCalendarEventId = targetSlot.calendar_event_id;
+    const targetCalendarInspection = CalendarRepository.inspectLifecycleAppointmentEvent(
+      ctx.oldCalendarEventId,
+      '',
+      null
+    );
+    if (!targetCalendarInspection.ok || !targetCalendarInspection.data ||
+      targetCalendarInspection.data.status !== 'MATCH' ||
+      !targetCalendarInspection.data.contextResolved) {
+      B6LifecycleService.enterUnresolved(
+        ctx,
+        'AUTHORITATIVE_TARGET_CALENDAR_CONTEXT_UNAVAILABLE',
+        targetCalendarInspection.ok ? targetCalendarInspection.data : targetCalendarInspection.error
+      );
+      return CancelService._b6FailureReply();
+    }
+    ctx.oldCalendarId = targetCalendarInspection.data.calendarId;
+
+    let checkpointResult = B6LifecycleService.recordCheckpoint(
+      ctx,
+      B6LifecycleService.LIFECYCLE_STATES.ACTIVE_PRE_EFFECT,
+      B6LifecycleService.OWNERSHIP_STATES.HELD_ACTIVE,
+      B6LifecycleService.CHECKPOINTS.TARGET_APPOINTMENT_VERIFIED,
+      { details: JSON.stringify({ oldCalendarId: ctx.oldCalendarId, oldCalendarEventId: ctx.oldCalendarEventId }) }
+    );
+    if (!checkpointResult.ok) {
+      B6LifecycleService.enterUnresolved(ctx, 'CHECKPOINT_PERSISTENCE_UNKNOWN', checkpointResult.error);
+      return CancelService._b6FailureReply();
+    }
+
     const commandResult = CommandExecutor.execute(
       Config.VOCABULARY.COMMANDS.CANCEL_APPOINTMENT,
-      { phone: phone, slotId: slotId },
+      { phone: phone, slotId: targetSlot.slot_id },
       function() {
-        const currentSlot = SlotRepository.findById(slotId);
-        if (!currentSlot) {
-          return Result.fail('SLOT_NOT_FOUND', 'Slot ' + slotId + ' no longer exists');
-        }
-
-        const preCheck = Validators.validateTransition(
-          currentSlot.status,
-          Config.VOCABULARY.COMMANDS.CANCEL_APPOINTMENT
+        checkpointResult = B6LifecycleService.recordCheckpoint(
+          ctx,
+          B6LifecycleService.LIFECYCLE_STATES.ACTIVE_POST_EFFECT,
+          B6LifecycleService.OWNERSHIP_STATES.HELD_ACTIVE,
+          B6LifecycleService.CHECKPOINTS.CALENDAR_DELETE_ATTEMPTED,
+          { details: JSON.stringify({ oldCalendarId: ctx.oldCalendarId, oldCalendarEventId: ctx.oldCalendarEventId }) }
         );
-        if (!preCheck.ok) return preCheck;
-
-        // حذف حدث التقويم أولاً — راجع تبرير الترتيب في رأس الملف (ADR-006)
-        if (currentSlot.calendar_event_id) {
-          const deleteResult = CalendarRepository.deleteAppointmentEvent(
-            currentSlot.calendar_event_id
-          );
-          if (!deleteResult.ok) return deleteResult;
+        if (!checkpointResult.ok) {
+          return B6LifecycleService.enterUnresolved(ctx, 'CHECKPOINT_PERSISTENCE_UNKNOWN', checkpointResult.error);
         }
 
-        const updateResult = SlotRepository.atomicUpdate(slotId, function(freshSlot) {
+        const deleteResult = CalendarRepository.deleteLifecycleAppointmentEvent(
+          ctx.oldCalendarEventId,
+          ctx.oldCalendarId || '',
+          null
+        );
+        if (!deleteResult.ok) {
+          return B6LifecycleService.enterUnresolved(
+            ctx,
+            'TARGET_CALENDAR_DELETE_OUTCOME_UNKNOWN',
+            deleteResult.error
+          );
+        }
+        ctx.oldCalendarDeleteResult = deleteResult.data;
+        ctx.oldCalendarId = deleteResult.data.calendarId;
+
+        checkpointResult = B6LifecycleService.recordCheckpoint(
+          ctx,
+          B6LifecycleService.LIFECYCLE_STATES.ACTIVE_POST_EFFECT,
+          B6LifecycleService.OWNERSHIP_STATES.HELD_ACTIVE,
+          B6LifecycleService.CHECKPOINTS.CALENDAR_DELETE_CONFIRMED,
+          {
+            calendar_id: ctx.oldCalendarId,
+            details: JSON.stringify({
+              oldCalendarId: ctx.oldCalendarId,
+              oldCalendarEventId: ctx.oldCalendarEventId,
+              deleteConfirmed: ctx.oldCalendarDeleteResult.deleteConfirmed,
+              absenceObserved: ctx.oldCalendarDeleteResult.absenceObserved
+            })
+          }
+        );
+        if (!checkpointResult.ok) {
+          return B6LifecycleService.enterUnresolved(ctx, 'CHECKPOINT_PERSISTENCE_UNKNOWN', checkpointResult.error);
+        }
+
+        const freeResult = SlotRepository.atomicUpdate(targetSlot.slot_id, function(freshSlot) {
+          if (freshSlot.phone !== phone) {
+            return Result.fail(
+              'SLOT_OWNER_MISMATCH',
+              'Target Slot no longer belongs to this phone',
+              { slotId: freshSlot.slot_id, phone: phone }
+            );
+          }
           const check = Validators.validateTransition(
             freshSlot.status,
             Config.VOCABULARY.COMMANDS.CANCEL_APPOINTMENT
@@ -95,25 +137,58 @@ const CancelService = {
             reserved_until_unix: ''
           });
         });
+        if (!freeResult.ok) {
+          return B6LifecycleService.enterUnresolved(
+            ctx,
+            'TARGET_SLOT_FREE_PERSISTENCE_UNKNOWN',
+            freeResult.error
+          );
+        }
 
-        if (!updateResult.ok) return updateResult;
+        checkpointResult = B6LifecycleService.recordCheckpoint(
+          ctx,
+          B6LifecycleService.LIFECYCLE_STATES.ACTIVE_POST_EFFECT,
+          B6LifecycleService.OWNERSHIP_STATES.HELD_ACTIVE,
+          B6LifecycleService.CHECKPOINTS.SLOT_FREED,
+          {}
+        );
+        if (!checkpointResult.ok) {
+          return B6LifecycleService.enterUnresolved(ctx, 'CHECKPOINT_PERSISTENCE_UNKNOWN', checkpointResult.error);
+        }
 
-        return Result.ok({ slotId: slotId });
+        const terminalProof = B6LifecycleService.verifyTerminalCancel(ctx);
+        if (!terminalProof.ok) {
+          return B6LifecycleService.enterUnresolved(
+            ctx,
+            'TERMINAL_CANCEL_PROOF_FAILED',
+            terminalProof.error
+          );
+        }
+
+        return B6LifecycleService.completeTerminalCancel(ctx);
       }
     );
 
-    if (!commandResult.ok) {
-      return Result.ok({
-        reply: 'تعذّر إلغاء الحجز حالياً. الرجاء المحاولة مرة أخرى أو التواصل مع العيادة.',
-        conversationState: null
-      });
-    }
+    if (!commandResult.ok) return CancelService._b6FailureReply();
 
     ConversationRepository.resetToMenuMain(phone);
-
     return Result.ok({
       reply: 'تم إلغاء حجزك بنجاح. يمكنك حجز موعد جديد بإرسال أي رسالة.',
       conversationState: Config.VOCABULARY.CONVERSATION_STATE.MENU_MAIN
+    });
+  },
+
+  _b6NoActiveReply() {
+    return Result.ok({
+      reply: 'لا يوجد لديك حجز مؤكد حالياً لإلغائه.',
+      conversationState: null
+    });
+  },
+
+  _b6FailureReply() {
+    return Result.ok({
+      reply: 'تعذّر إلغاء الحجز حالياً. الرجاء المحاولة مرة أخرى أو التواصل مع العيادة.',
+      conversationState: null
     });
   }
 };

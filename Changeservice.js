@@ -213,69 +213,120 @@ const ChangeService = {
    * @param {string} rawPhone
    * @returns {Result} data: { reply: string, conversationState: string|null }
    */
+  /**
+   * B6 confirmed-appointment Change. B4's legacy acquireChangeClaim/releaseChangeClaim
+   * remains in AppointmentRepository for inventory/migration only; this runtime path
+   * uses the shared B6 lifecycle fence also required by CancelService.
+   */
   changeConfirmedAppointment(rawPhone) {
     const normalizedPhone = PhoneUtils.normalize(rawPhone);
     const phoneCheck = Validators.validatePhone(normalizedPhone);
     if (!phoneCheck.ok) return phoneCheck;
     const phone = phoneCheck.data;
 
-    // الخطوة 1: إيجاد الموعد القديم CONFIRMED
-    const oldSlot = AppointmentRepository.findActiveByPhone(phone);
-    if (!oldSlot) {
-      return Result.ok({
-        reply: 'لا يوجد لديك حجز مؤكَّد حاليًا لتغييره.',
-        conversationState: null
-      });
-    }
-
-    // B4: امتلاك durable للعملية المنطقية قبل أي replacement side effect.
-    // القفل داخل Repository قصير ويُحرَّر قبل بدء atomicUpdate/Calendar.
-    const claimResult = AppointmentRepository.acquireChangeClaim(phone, oldSlot.slot_id);
-    if (!claimResult.ok) {
-      if (claimResult.error && claimResult.error.code === 'CHANGE_ALREADY_IN_PROGRESS') {
-        return Result.ok({
-          reply: 'تعذّر تغيير الموعد الآن لأن هناك عملية تغيير جارية. يرجى المحاولة مرة أخرى.',
-          conversationState: Config.VOCABULARY.CONVERSATION_STATE.BOOKED
-        });
+    const lifecycleResult = B6LifecycleService.begin(
+      phone,
+      B6LifecycleService.COMMANDS.CHANGE
+    );
+    if (!lifecycleResult.ok) {
+      if (lifecycleResult.error && lifecycleResult.error.code === 'NO_CONFIRMED_APPOINTMENT') {
+        return ChangeService._b6NoActiveReply();
       }
-      return Result.ok({
-        reply: 'تعذّر تغيير موعدك حاليًا. الرجاء المحاولة مرة أخرى أو التواصل مع العيادة.',
-        conversationState: Config.VOCABULARY.CONVERSATION_STATE.BOOKED
-      });
+      return ChangeService._b6FailureReply();
     }
 
-    const claimOwnerToken = claimResult.data.ownerToken;
+    const ctx = lifecycleResult.data;
+    const oldSlot = ctx.oldSlot;
+    if (!oldSlot || !oldSlot.calendar_event_id) {
+      B6LifecycleService.enterUnresolved(
+        ctx,
+        'AUTHORITATIVE_OLD_APPOINTMENT_INCOMPLETE',
+        { oldSlotId: ctx.oldSlotId }
+      );
+      return ChangeService._b6FailureReply();
+    }
 
-    // ═══ Core Success: الخطوات 1-6 فقط تحدد نجاح/فشل هذا الأمر ═══
-    let commandResult;
-    try {
-      commandResult = CommandExecutor.execute(
-        Config.VOCABULARY.COMMANDS.CHANGE_APPOINTMENT,
-        { phone: phone, slotId: oldSlot.slot_id },
-        function() {
-          const reservedUntil = DateUtils.addMinutes(
-            Clock.now(),
-            Config.SYSTEM_POLICY.RESERVATION_TIMEOUT_MINUTES
-          );
+    ctx.oldCalendarEventId = oldSlot.calendar_event_id;
+    const oldCalendarInspection = CalendarRepository.inspectLifecycleAppointmentEvent(
+      ctx.oldCalendarEventId,
+      '',
+      null
+    );
+    if (!oldCalendarInspection.ok || !oldCalendarInspection.data ||
+      oldCalendarInspection.data.status !== 'MATCH' ||
+      !oldCalendarInspection.data.contextResolved) {
+      B6LifecycleService.enterUnresolved(
+        ctx,
+        'AUTHORITATIVE_OLD_CALENDAR_CONTEXT_UNAVAILABLE',
+        oldCalendarInspection.ok ? oldCalendarInspection.data : oldCalendarInspection.error
+      );
+      return ChangeService._b6FailureReply();
+    }
+    ctx.oldCalendarId = oldCalendarInspection.data.calendarId;
 
-        // الخطوتان 2-3: اختيار فتحة جديدة وحجزها ذريًا
+    let checkpointResult = B6LifecycleService.recordCheckpoint(
+      ctx,
+      B6LifecycleService.LIFECYCLE_STATES.ACTIVE_PRE_EFFECT,
+      B6LifecycleService.OWNERSHIP_STATES.HELD_ACTIVE,
+      B6LifecycleService.CHECKPOINTS.OLD_APPOINTMENT_VERIFIED,
+      { details: JSON.stringify({ oldCalendarId: ctx.oldCalendarId, oldCalendarEventId: ctx.oldCalendarEventId }) }
+    );
+    if (!checkpointResult.ok) {
+      B6LifecycleService.enterUnresolved(ctx, 'CHECKPOINT_PERSISTENCE_UNKNOWN', checkpointResult.error);
+      return ChangeService._b6FailureReply();
+    }
+
+    const commandResult = CommandExecutor.execute(
+      Config.VOCABULARY.COMMANDS.CHANGE_APPOINTMENT,
+      { phone: phone, slotId: oldSlot.slot_id },
+      function() {
+        const reservedUntil = DateUtils.addMinutes(
+          Clock.now(),
+          Config.SYSTEM_POLICY.RESERVATION_TIMEOUT_MINUTES
+        );
+
         const reserveResult = ChangeService._reserveAlternativeSlot(
           phone,
           oldSlot.patient_name,
           reservedUntil,
           oldSlot.slot_id
         );
-        if (!reserveResult.ok) return reserveResult;
+        if (!reserveResult.ok) {
+          if (reserveResult.error && reserveResult.error.code === 'NO_SLOT_AVAILABLE') {
+            const rejected = B6LifecycleService.rejectNoEffect(
+              ctx,
+              'NO_SLOT_AVAILABLE',
+              reserveResult.error
+            );
+            if (!rejected.ok) return rejected;
+            return reserveResult;
+          }
+          return B6LifecycleService.enterUnresolved(
+            ctx,
+            'NEW_SLOT_RESERVATION_OUTCOME_UNKNOWN',
+            reserveResult.error
+          );
+        }
 
         const newSlot = reserveResult.data.slot;
-        // إن فشل أي شيء بعد هذه النقطة: الموعد القديم لم يُمَس إطلاقًا.
+        ctx.newSlot = newSlot;
+        ctx.newSlotId = newSlot.slot_id;
+        checkpointResult = B6LifecycleService.recordCheckpoint(
+          ctx,
+          B6LifecycleService.LIFECYCLE_STATES.ACTIVE_POST_EFFECT,
+          B6LifecycleService.OWNERSHIP_STATES.HELD_ACTIVE,
+          B6LifecycleService.CHECKPOINTS.NEW_SLOT_RESERVED,
+          {}
+        );
+        if (!checkpointResult.ok) {
+          return B6LifecycleService.enterUnresolved(ctx, 'CHECKPOINT_PERSISTENCE_UNKNOWN', checkpointResult.error);
+        }
 
-        // الخطوة 4: تأكيد الفتحة الجديدة → CONFIRMED (مع فحص الملكية)
         const confirmResult = SlotRepository.atomicUpdate(newSlot.slot_id, function(freshNew) {
           if (freshNew.phone !== phone) {
             return Result.fail(
               'SLOT_OWNER_MISMATCH',
-              'Newly reserved slot no longer belongs to this phone',
+              'Newly reserved Slot no longer belongs to this phone',
               { slotId: freshNew.slot_id, phone: phone }
             );
           }
@@ -286,86 +337,236 @@ const ChangeService = {
           if (!check.ok) return check;
           return Result.ok({ status: Config.VOCABULARY.STATUS.CONFIRMED });
         });
-        if (!confirmResult.ok) return confirmResult;
+        if (!confirmResult.ok) {
+          return B6LifecycleService.enterUnresolved(
+            ctx,
+            'NEW_SLOT_CONFIRMATION_OUTCOME_UNKNOWN',
+            confirmResult.error
+          );
+        }
 
-        // ⚠️ مؤقت — يعتمد على LegacySlotTimeParser (ADR-016)
+        checkpointResult = B6LifecycleService.recordCheckpoint(
+          ctx,
+          B6LifecycleService.LIFECYCLE_STATES.ACTIVE_POST_EFFECT,
+          B6LifecycleService.OWNERSHIP_STATES.HELD_ACTIVE,
+          B6LifecycleService.CHECKPOINTS.NEW_SLOT_CONFIRMED,
+          {}
+        );
+        if (!checkpointResult.ok) {
+          return B6LifecycleService.enterUnresolved(ctx, 'CHECKPOINT_PERSISTENCE_UNKNOWN', checkpointResult.error);
+        }
+
         const startMs = LegacySlotTimeParser.toComparableTime(newSlot.sort_key);
         const startTime = startMs !== null ? DateUtils.fromTimestamp(startMs) : null;
         const endTime = startTime
           ? DateUtils.addMinutes(startTime, SettingsRepository.getSlotDurationMinutes())
           : null;
+        if (!startTime || !endTime) {
+          return B6LifecycleService.enterUnresolved(
+            ctx,
+            'CALENDAR_WINDOW_UNAVAILABLE',
+            { slotId: newSlot.slot_id }
+          );
+        }
 
-        // ── أمر تنفيذ معماري: عرض رقم الباص للعيادة في التقويم ──
         const busResult = BusNumberCalculator.fromSlot(newSlot);
         const eventTitle = busResult.ok
           ? '#' + busResult.data.busNumber + ' | ' + (oldSlot.patient_name || phone)
           : (oldSlot.patient_name || phone);
         const eventDescription = 'رقم الهاتف: ' + phone +
           '\nالوقت الحقيقي: ' + DateUtils.formatTimeDisplay(startTime) +
-          '\nslot_id: ' + newSlot.slot_id;
+          '\nslot_id: ' + newSlot.slot_id +
+          '\noperation_id: ' + ctx.operationId;
 
-        // الخطوة 5: إنشاء Calendar Event جديد
-        const eventResult = CalendarRepository.createAppointmentEvent({
+        checkpointResult = B6LifecycleService.recordCheckpoint(
+          ctx,
+          B6LifecycleService.LIFECYCLE_STATES.ACTIVE_POST_EFFECT,
+          B6LifecycleService.OWNERSHIP_STATES.HELD_ACTIVE,
+          B6LifecycleService.CHECKPOINTS.CALENDAR_CREATE_ATTEMPTED,
+          {}
+        );
+        if (!checkpointResult.ok) {
+          return B6LifecycleService.enterUnresolved(ctx, 'CHECKPOINT_PERSISTENCE_UNKNOWN', checkpointResult.error);
+        }
+
+        const eventResult = CalendarRepository.createLifecycleAppointmentEvent({
           title: eventTitle,
           startTime: startTime,
           endTime: endTime,
-          description: eventDescription
+          description: eventDescription,
+          operationId: ctx.operationId
         });
-        if (!eventResult.ok) return eventResult;
+        if (!eventResult.ok) {
+          return B6LifecycleService.enterUnresolved(
+            ctx,
+            'CALENDAR_CREATE_OUTCOME_UNKNOWN',
+            eventResult.error
+          );
+        }
 
-        // الخطوة 6: تخزين calendar_event_id — النتيجة تُفحص إلزاميًا
+        ctx.calendarEventId = eventResult.data.eventId;
+        ctx.calendarId = eventResult.data.calendarId;
+        checkpointResult = B6LifecycleService.recordCheckpoint(
+          ctx,
+          B6LifecycleService.LIFECYCLE_STATES.ACTIVE_POST_EFFECT,
+          B6LifecycleService.OWNERSHIP_STATES.HELD_ACTIVE,
+          B6LifecycleService.CHECKPOINTS.CALENDAR_CREATE_CONFIRMED,
+          {
+            calendar_event_id: ctx.calendarEventId,
+            calendar_id: ctx.calendarId,
+            calendar_correlation_id: ctx.operationId
+          }
+        );
+        if (!checkpointResult.ok) {
+          return B6LifecycleService.enterUnresolved(ctx, 'CHECKPOINT_PERSISTENCE_UNKNOWN', checkpointResult.error);
+        }
+
         const storeEventResult = SlotRepository.atomicUpdate(newSlot.slot_id, function(freshNew) {
-          if (freshNew.phone !== phone) {
+          if (freshNew.phone !== phone || freshNew.status !== Config.VOCABULARY.STATUS.CONFIRMED) {
             return Result.fail(
               'SLOT_OWNER_MISMATCH',
-              'Slot no longer belongs to this phone before storing calendar_event_id',
+              'Replacement Slot no longer belongs to this confirmed lifecycle',
               { slotId: freshNew.slot_id, phone: phone }
             );
           }
-          return Result.ok({ calendar_event_id: eventResult.data.eventId });
+          return Result.ok({ calendar_event_id: ctx.calendarEventId });
         });
-        if (!storeEventResult.ok) return storeEventResult;
+        if (!storeEventResult.ok) {
+          return B6LifecycleService.enterUnresolved(
+            ctx,
+            'CALENDAR_EVENT_ID_PERSISTENCE_UNKNOWN',
+            storeEventResult.error
+          );
+        }
 
-        // ═══ Core Success مكتمل هنا. الموعد الجديد صالح وفعلي للمريض ═══
+        checkpointResult = B6LifecycleService.recordCheckpoint(
+          ctx,
+          B6LifecycleService.LIFECYCLE_STATES.ACTIVE_POST_EFFECT,
+          B6LifecycleService.OWNERSHIP_STATES.HELD_ACTIVE,
+          B6LifecycleService.CHECKPOINTS.CALENDAR_EVENT_ID_PERSISTED,
+          { calendar_event_id: ctx.calendarEventId, calendar_id: ctx.calendarId }
+        );
+        if (!checkpointResult.ok) {
+          return B6LifecycleService.enterUnresolved(ctx, 'CHECKPOINT_PERSISTENCE_UNKNOWN', checkpointResult.error);
+        }
+
+        const replacementProof = B6LifecycleService.verifyReplacementAppointment(ctx);
+        if (!replacementProof.ok) {
+          return B6LifecycleService.enterUnresolved(
+            ctx,
+            'REPLACEMENT_APPOINTMENT_NOT_PROVEN',
+            replacementProof.error
+          );
+        }
+
+        checkpointResult = B6LifecycleService.recordCheckpoint(
+          ctx,
+          B6LifecycleService.LIFECYCLE_STATES.ACTIVE_POST_EFFECT,
+          B6LifecycleService.OWNERSHIP_STATES.HELD_ACTIVE,
+          B6LifecycleService.CHECKPOINTS.OLD_CALENDAR_DELETE_ATTEMPTED,
+          { details: JSON.stringify({ oldCalendarId: ctx.oldCalendarId, oldCalendarEventId: ctx.oldCalendarEventId }) }
+        );
+        if (!checkpointResult.ok) {
+          return B6LifecycleService.enterUnresolved(ctx, 'CHECKPOINT_PERSISTENCE_UNKNOWN', checkpointResult.error);
+        }
+
+        const oldDeleteResult = CalendarRepository.deleteLifecycleAppointmentEvent(
+          ctx.oldCalendarEventId,
+          ctx.oldCalendarId,
+          null
+        );
+        if (!oldDeleteResult.ok) {
+          return B6LifecycleService.enterUnresolved(
+            ctx,
+            'OLD_CALENDAR_DELETE_OUTCOME_UNKNOWN',
+            oldDeleteResult.error
+          );
+        }
+        ctx.oldCalendarDeleteResult = oldDeleteResult.data;
+
+        checkpointResult = B6LifecycleService.recordCheckpoint(
+          ctx,
+          B6LifecycleService.LIFECYCLE_STATES.ACTIVE_POST_EFFECT,
+          B6LifecycleService.OWNERSHIP_STATES.HELD_ACTIVE,
+          B6LifecycleService.CHECKPOINTS.OLD_CALENDAR_DELETE_CONFIRMED,
+          {
+            details: JSON.stringify({
+              oldCalendarId: ctx.oldCalendarId,
+              oldCalendarEventId: ctx.oldCalendarEventId,
+              deleteConfirmed: ctx.oldCalendarDeleteResult.deleteConfirmed,
+              absenceObserved: ctx.oldCalendarDeleteResult.absenceObserved
+            })
+          }
+        );
+        if (!checkpointResult.ok) {
+          return B6LifecycleService.enterUnresolved(ctx, 'CHECKPOINT_PERSISTENCE_UNKNOWN', checkpointResult.error);
+        }
+
+        const freeResult = SlotRepository.atomicUpdate(oldSlot.slot_id, function(freshOld) {
+          if (freshOld.phone !== phone) {
+            return Result.fail(
+              'SLOT_OWNER_MISMATCH',
+              'Old Slot no longer belongs to this phone',
+              { slotId: freshOld.slot_id, phone: phone }
+            );
+          }
+          const check = Validators.validateTransition(
+            freshOld.status,
+            Config.VOCABULARY.COMMANDS.CANCEL_APPOINTMENT
+          );
+          if (!check.ok) return check;
+          return Result.ok({
+            status: Config.VOCABULARY.STATUS.FREE,
+            patient_name: '',
+            phone: '',
+            calendar_event_id: '',
+            reserved_until: '',
+            reserved_until_unix: ''
+          });
+        });
+        if (!freeResult.ok) {
+          return B6LifecycleService.enterUnresolved(
+            ctx,
+            'OLD_SLOT_FREE_PERSISTENCE_UNKNOWN',
+            freeResult.error
+          );
+        }
+
+        checkpointResult = B6LifecycleService.recordCheckpoint(
+          ctx,
+          B6LifecycleService.LIFECYCLE_STATES.ACTIVE_POST_EFFECT,
+          B6LifecycleService.OWNERSHIP_STATES.HELD_ACTIVE,
+          B6LifecycleService.CHECKPOINTS.OLD_SLOT_FREED,
+          {}
+        );
+        if (!checkpointResult.ok) {
+          return B6LifecycleService.enterUnresolved(ctx, 'CHECKPOINT_PERSISTENCE_UNKNOWN', checkpointResult.error);
+        }
+
+        const terminalProof = B6LifecycleService.verifyTerminalChange(ctx);
+        if (!terminalProof.ok) {
+          return B6LifecycleService.enterUnresolved(
+            ctx,
+            'TERMINAL_CHANGE_PROOF_FAILED',
+            terminalProof.error
+          );
+        }
+
+        const completion = B6LifecycleService.completeTerminalChange(ctx);
+        if (!completion.ok) return completion;
+
         return Result.ok({
           slotId: newSlot.slot_id,
           date: newSlot.date,
           time: newSlot.time,
-          calendarEventId: eventResult.data.eventId,
-          busNumber: busResult.ok ? busResult.data.busNumber : null
+          calendarEventId: ctx.calendarEventId,
+          busNumber: busResult.ok ? busResult.data.busNumber : null,
+          releasePending: completion.data.releasePending === true
         });
-        }
-      );
-    } catch (e) {
-      commandResult = Result.fail('UNEXPECTED_ERROR', e.message, e.stack);
-    }
+      }
+    );
 
-    // B4: normal success and normal failure both release ownership before
-    // post-commit cleanup. Release failure is logged without rewriting an
-    // already-established core appointment outcome.
-    const releaseResult = AppointmentRepository.releaseChangeClaim(phone, claimOwnerToken);
-    if (!releaseResult.ok) {
-      LogRepository.write({
-        timestamp: Clock.now(),
-        command: Config.VOCABULARY.COMMANDS.CHANGE_APPOINTMENT,
-        phone: phone,
-        slotId: oldSlot.slot_id,
-        stage: 'CLAIM_RELEASE_FAILED',
-        success: false,
-        durationMs: null,
-        error: JSON.stringify(releaseResult.error)
-      });
-    }
-
-    if (!commandResult.ok) {
-      return Result.ok({
-        reply: 'تعذّر تغيير موعدك حاليًا. الرجاء المحاولة مرة أخرى أو التواصل مع العيادة.',
-        conversationState: Config.VOCABULARY.CONVERSATION_STATE.BOOKED
-      });
-    }
-
-    // ═══ Post-Commit Cleanup: الخطوتان 7-8. فشلها لا يغيّر رد المستخدم ═══
-    ChangeService._cleanupOldConfirmedAppointment(phone, oldSlot);
+    if (!commandResult.ok) return ChangeService._b6FailureReply();
 
     const confirmedDisplay = 'بتاريخ ' + DateUtils.formatDateDisplay(commandResult.data.date) +
       '\n' + (commandResult.data.busNumber !== null
@@ -375,6 +576,20 @@ const ChangeService = {
     return Result.ok({
       reply: 'تم تغيير موعدك بنجاح.\n' + confirmedDisplay +
         '\nيرجى الحضور ضمن وقت دوام العيادة.',
+      conversationState: Config.VOCABULARY.CONVERSATION_STATE.BOOKED
+    });
+  },
+
+  _b6NoActiveReply() {
+    return Result.ok({
+      reply: 'لا يوجد لديك حجز مؤكَّد حاليًا لتغييره.',
+      conversationState: null
+    });
+  },
+
+  _b6FailureReply() {
+    return Result.ok({
+      reply: 'تعذّر تغيير موعدك حاليًا. الرجاء المحاولة مرة أخرى أو التواصل مع العيادة.',
       conversationState: Config.VOCABULARY.CONVERSATION_STATE.BOOKED
     });
   },
