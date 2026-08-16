@@ -203,14 +203,6 @@ const AppointmentRepository = {
         );
       }
 
-      if (legacy !== null && legacy !== undefined) {
-        return Result.fail(
-          'B6_LEGACY_CLAIM_BLOCKED',
-          'Legacy B4 change claim blocks B6 lifecycle admission',
-          { phone: phone }
-        );
-      }
-
       const activeResult = SlotRepository.queryResult(function(slot) {
         return slot.phone === phone &&
           slot.status === Config.VOCABULARY.STATUS.CONFIRMED;
@@ -224,6 +216,27 @@ const AppointmentRepository = {
       }
 
       const activeAppointments = activeResult.data;
+
+      // B6 distinguishes zero from ambiguity. A patient with no confirmed
+      // appointment creates neither ownership nor recovery state.
+      if (activeAppointments.length === 0) {
+        return Result.ok({
+          status: 'REJECTED_NO_EFFECT',
+          phone: phone,
+          command: command,
+          activeCount: 0,
+          appointment: null
+        });
+      }
+
+      if (legacy !== null && legacy !== undefined) {
+        return Result.fail(
+          'B6_LEGACY_CLAIM_BLOCKED',
+          'Legacy B4 change claim blocks B6 lifecycle admission',
+          { phone: phone }
+        );
+      }
+
       const operationId = 'B6_' + ULID.generate();
       const ownerToken = 'B6OWN_' + ULID.generate();
       const ownershipState = activeAppointments.length === 1
@@ -247,7 +260,7 @@ const AppointmentRepository = {
         return Result.fail('B6_OWNERSHIP_ACQUIRE_FAILED', e.message, e.stack);
       }
 
-      if (activeAppointments.length !== 1) {
+      if (activeAppointments.length > 1) {
         return Result.ok({
           status: 'RECOVERY_REQUIRED',
           operationId: operationId,

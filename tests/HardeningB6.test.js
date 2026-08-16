@@ -58,8 +58,9 @@ sandbox.Lock = {
 
 let b6Sheets = {};
 let lifecycleAppendFailure = false;
+let failReleasedCheckpoint = false;
 let auditAppendFailure = false;
-function resetSheets() { b6Sheets = {}; lifecycleAppendFailure = false; auditAppendFailure = false; }
+function resetSheets() { b6Sheets = {}; lifecycleAppendFailure = false; failReleasedCheckpoint = false; auditAppendFailure = false; }
 function clone(value) { return Object.assign({}, value); }
 sandbox.GoogleSheets = {
   getOrCreateSheet: function(name, headers) {
@@ -76,6 +77,12 @@ sandbox.GoogleSheets = {
       return sandbox.Result.fail('APPEND_FAILED', 'injected append failure');
     }
     if (!b6Sheets[name]) throw new Error('MISSING_SHEET:' + name);
+    if (name === 'B6_LIFECYCLE' && failReleasedCheckpoint) {
+      const stateIndex = b6Sheets[name].headers.indexOf('lifecycle_state');
+      if (rows.some(function(row) { return row[stateIndex] === 'RELEASED'; })) {
+        return sandbox.Result.fail('APPEND_FAILED', 'injected RELEASED checkpoint failure');
+      }
+    }
     rows.forEach(function(row) { b6Sheets[name].rows.push(row.slice()); });
     return sandbox.Result.ok({ inserted: rows.length });
   },
@@ -380,7 +387,7 @@ test('B6-11 — checkpoint persistence ambiguity retains ownership', function() 
   assert.strictEqual(alerts.length, 1);
 });
 
-test('B6-12 — CONFIRMED count != 1 is recovery-required and blocks lifecycle effects', function() {
+test('B6-12 — more than one confirmed appointment is recovery-required and blocks lifecycle effects', function() {
   reset();
   slots.find(function(item) { return item.slot_id === 'A'; }).status = 'CONFIRMED';
   slots.find(function(item) { return item.slot_id === 'A'; }).phone = PHONE;
@@ -392,7 +399,25 @@ test('B6-12 — CONFIRMED count != 1 is recovery-required and blocks lifecycle e
   assert.strictEqual(latest(PHONE).recovery_state, 'RECOVERY_REQUIRED');
 });
 
-test('B6-13 — legacy B4 claim blocks B6 without bypass or destructive migration', function() {
+test('B6-13 — zero confirmed appointments is REJECTED_NO_EFFECT with no claim, audit, or alert', function() {
+  reset();
+  slots.find(function(item) { return item.slot_id === 'OLD'; }).status = 'FREE';
+  slots.find(function(item) { return item.slot_id === 'OLD'; }).phone = '';
+  slots.find(function(item) { return item.slot_id === 'OLD'; }).calendar_event_id = '';
+  const changeResult = publicChange();
+  const cancelResult = publicCancel();
+  assert.strictEqual(changeResult.ok, true);
+  assert.strictEqual(cancelResult.ok, true);
+  assert.ok(changeResult.data.reply.indexOf('لا يوجد لديك حجز مؤك') !== -1);
+  assert.ok(cancelResult.data.reply.indexOf('لا يوجد لديك حجز') !== -1);
+  assert.strictEqual(claim(PHONE), undefined);
+  assert.strictEqual((b6Sheets.B6_LIFECYCLE || { rows: [] }).rows.length, 0);
+  assert.strictEqual(recoveryRows().length, 0);
+  assert.strictEqual(alerts.length, 0);
+  assert.strictEqual(createdEventCount, 0);
+});
+
+test('B6-14 — legacy B4 claim blocks B6 without bypass or destructive migration', function() {
   reset();
   properties['change_claim:' + PHONE] = JSON.stringify({ ownerToken: 'LEGACY', phone: PHONE, oldSlotId: 'OLD', acquiredAtMs: 1 });
   const changeResult = publicChange();
@@ -405,7 +430,7 @@ test('B6-13 — legacy B4 claim blocks B6 without bypass or destructive migratio
   assert.ok(events.OLD_EVENT);
 });
 
-test('B6-14 — old B6 ownership has no TTL or automatic takeover', function() {
+test('B6-15 — old B6 ownership has no TTL or automatic takeover', function() {
   reset();
   properties['b6_lifecycle_claim:' + PHONE] = JSON.stringify({ operation_id: 'B6_OLD', phone: PHONE, ownerToken: 'OLD', ownershipState: 'HELD_UNRESOLVED', acquiredAt: 1 });
   nowMs += 365 * 24 * 60 * 60 * 1000;
@@ -414,7 +439,7 @@ test('B6-14 — old B6 ownership has no TTL or automatic takeover', function() {
   assert.strictEqual(createdEventCount, 0);
 });
 
-test('B6-15 — many operation-tag matches is unresolved, not terminal success', function() {
+test('B6-16 — many operation-tag matches is unresolved, not terminal success', function() {
   reset();
   manyMatches = true;
   publicChange();
@@ -422,7 +447,7 @@ test('B6-15 — many operation-tag matches is unresolved, not terminal success',
   assert.strictEqual(latest(PHONE).lifecycle_state, 'UNRESOLVED');
 });
 
-test('B6-16 — zero operation-tag matches is unresolved, not terminal success', function() {
+test('B6-17 — zero operation-tag matches is unresolved, not terminal success', function() {
   reset();
   const originalFind = sandbox.CalendarRepository.findLifecycleEventsByOperationId;
   sandbox.CalendarRepository.findLifecycleEventsByOperationId = function(operationId, start, end, calendarId) {
@@ -434,7 +459,7 @@ test('B6-16 — zero operation-tag matches is unresolved, not terminal success',
   assert.strictEqual(latest(PHONE).lifecycle_state, 'UNRESOLVED');
 });
 
-test('B6-17 — Calendar absence ambiguity is unresolved, not terminal cancel', function() {
+test('B6-18 — Calendar absence ambiguity is unresolved, not terminal cancel', function() {
   reset();
   deleteFailure = true;
   publicCancel();
@@ -443,7 +468,7 @@ test('B6-17 — Calendar absence ambiguity is unresolved, not terminal cancel', 
   assert.strictEqual(free('OLD').status, 'CONFIRMED');
 });
 
-test('B6-18 — release failure keeps RELEASE_PENDING ownership after terminal proof', function() {
+test('B6-19 — release failure keeps RELEASE_PENDING ownership after terminal proof', function() {
   reset();
   propertyDeleteFailure = true;
   const result = publicChange();
@@ -455,34 +480,135 @@ test('B6-18 — release failure keeps RELEASE_PENDING ownership after terminal p
   assert.strictEqual(recoveryRows().length, 1);
 });
 
-test('B6-19 — recovery core rejects unauthenticated context and performs no release', function() {
+test('B6-20 — RESOLVE_CHANGE proves existing replacement, cleans old resources, and releases', function() {
+  reset();
+  failOldSlotFree = true;
+  publicChange();
+  const recoveryCaseId = latest(PHONE).recovery_case_id;
+  const countBeforeRecovery = createdEventCount;
+  failOldSlotFree = false;
+  const result = sandbox.B6LifecycleService.recoverRecoveryCase(
+    recoveryCaseId,
+    { operatorId: 'doctor-1', authorityType: 'DOCTOR' },
+    { type: 'RESOLVE_CHANGE' }
+  );
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(createdEventCount, countBeforeRecovery);
+  assert.strictEqual(claim(PHONE), undefined);
+  assert.strictEqual(free('OLD').status, 'FREE');
+  assert.strictEqual(confirmed(PHONE).length, 1);
+  assert.strictEqual(confirmed(PHONE)[0].slot_id, 'A');
+  assert.strictEqual(latest(PHONE).lifecycle_state, 'RELEASED');
+});
+
+test('B6-21 — RESOLVE_CANCEL proves absence, frees target, and releases', function() {
+  reset();
+  failOldSlotFree = true;
+  publicCancel();
+  const recoveryCaseId = latest(PHONE).recovery_case_id;
+  failOldSlotFree = false;
+  const result = sandbox.B6LifecycleService.recoverRecoveryCase(
+    recoveryCaseId,
+    { operatorId: 'doctor-1', authorityType: 'DOCTOR' },
+    { type: 'RESOLVE_CANCEL' }
+  );
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(claim(PHONE), undefined);
+  assert.strictEqual(free('OLD').status, 'FREE');
+  assert.strictEqual(confirmed(PHONE).length, 0);
+  assert.strictEqual(latest(PHONE).lifecycle_state, 'RELEASED');
+});
+
+test('B6-22 — RESOLVE_CHANGE without a provable replacement event remains recovery-required and creates no event', function() {
   reset();
   createFailure = true;
   publicChange();
   const recoveryCaseId = latest(PHONE).recovery_case_id;
-  const result = sandbox.B6LifecycleService.recoverRecoveryCase(recoveryCaseId, { operatorId: '', authorityType: 'DOCTOR' });
+  const countBeforeRecovery = createdEventCount;
+  const result = sandbox.B6LifecycleService.recoverRecoveryCase(
+    recoveryCaseId,
+    { operatorId: 'doctor-1', authorityType: 'DOCTOR' },
+    { type: 'RESOLVE_CHANGE' }
+  );
   assert.strictEqual(result.ok, false);
+  assert.strictEqual(createdEventCount, countBeforeRecovery);
+  assert.ok(claim(PHONE));
+  assert.strictEqual(JSON.parse(claim(PHONE)).ownershipState, 'HELD_RECOVERY');
+  assert.strictEqual(latest(PHONE).lifecycle_state, 'RECOVERY_REQUIRED');
+});
+
+test('B6-23 — RELEASE_PENDING journal blocks normal admission until CLOSE_RELEASE_PENDING proves and appends RELEASED', function() {
+  reset();
+  failReleasedCheckpoint = true;
+  publicChange();
+  const recoveryCaseId = latest(PHONE).recovery_case_id;
+  assert.strictEqual(claim(PHONE), undefined);
+  assert.strictEqual(latest(PHONE).lifecycle_state, 'RELEASE_PENDING');
+  const blocked = publicCancel();
+  assert.strictEqual(blocked.ok, true);
+  assert.ok(blocked.data.reply.indexOf('تعذّر إلغاء') !== -1);
+  assert.strictEqual(confirmed(PHONE).length, 1);
+
+  failReleasedCheckpoint = false;
+  const closed = sandbox.B6LifecycleService.recoverRecoveryCase(
+    recoveryCaseId,
+    { operatorId: 'doctor-1', authorityType: 'DOCTOR' },
+    { type: 'CLOSE_RELEASE_PENDING' }
+  );
+  assert.strictEqual(closed.ok, true);
+  assert.strictEqual(claim(PHONE), undefined);
+  assert.strictEqual(latest(PHONE).lifecycle_state, 'RELEASED');
+  const allowed = publicCancel();
+  assert.strictEqual(allowed.ok, true);
+  assert.ok(allowed.data.reply.indexOf('تم إلغاء') !== -1);
+});
+
+test('B6-24 — recovery authorization rejects absent operator and non-Doctor authority', function() {
+  reset();
+  createFailure = true;
+  publicChange();
+  const recoveryCaseId = latest(PHONE).recovery_case_id;
+  const missingOperator = sandbox.B6LifecycleService.recoverRecoveryCase(
+    recoveryCaseId,
+    { operatorId: '', authorityType: 'DOCTOR' },
+    { type: 'RESOLVE_CHANGE' }
+  );
+  const wrongAuthority = sandbox.B6LifecycleService.recoverRecoveryCase(
+    recoveryCaseId,
+    { operatorId: 'operator-1', authorityType: 'ADMIN' },
+    { type: 'RESOLVE_CHANGE' }
+  );
+  const freeFormDecision = sandbox.B6LifecycleService.recoverRecoveryCase(
+    recoveryCaseId,
+    { operatorId: 'doctor-1', authorityType: 'DOCTOR' },
+    { type: 'GUESS_SUCCESS' }
+  );
+  assert.strictEqual(missingOperator.ok, false);
+  assert.strictEqual(wrongAuthority.ok, false);
+  assert.strictEqual(freeFormDecision.ok, false);
   assert.ok(claim(PHONE));
 });
 
-test('B6-20 — trusted Doctor recovery boundary records audit and retains ownership', function() {
+test('B6-25 — recovery audit ambiguity blocks recovery mutation and retains ownership', function() {
   reset();
-  createFailure = true;
+  failOldSlotFree = true;
   publicChange();
   const recoveryCaseId = latest(PHONE).recovery_case_id;
-  const result = sandbox.B6LifecycleService.recoverRecoveryCase(recoveryCaseId, { operatorId: 'doctor-1', authorityType: 'DOCTOR' });
-  assert.strictEqual(result.ok, true);
+  failOldSlotFree = false;
+  auditAppendFailure = true;
+  const result = sandbox.B6LifecycleService.recoverRecoveryCase(
+    recoveryCaseId,
+    { operatorId: 'doctor-1', authorityType: 'DOCTOR' },
+    { type: 'RESOLVE_CHANGE' }
+  );
+  assert.strictEqual(result.ok, false);
+  assert.ok(claim(PHONE));
   assert.strictEqual(JSON.parse(claim(PHONE)).ownershipState, 'HELD_RECOVERY');
-  assert.strictEqual(latest(PHONE).lifecycle_state, 'RECOVERY_REQUIRED');
-  assert.strictEqual(recoveryRows().length, 2);
-  const auditHeaders = b6Sheets.B6_RECOVERY_AUDIT.headers;
-  const latestAudit = b6Sheets.B6_RECOVERY_AUDIT.rows[1];
-  const evidence = latestAudit[auditHeaders.indexOf('evidence_summary')];
-  assert.ok(evidence.indexOf('ZERO_MATCH_UNRESOLVED') !== -1);
-  assert.strictEqual(result.data.automaticResolution, false);
+  assert.strictEqual(confirmed(PHONE).length, 2);
+  assert.ok(events.OLD_EVENT === undefined);
 });
 
-test('B6-21 — ambiguous recovery audit write never releases ownership', function() {
+test('B6-26 — ambiguous recovery audit write never releases ownership', function() {
   reset();
   auditAppendFailure = true;
   createFailure = true;
@@ -491,11 +617,13 @@ test('B6-21 — ambiguous recovery audit write never releases ownership', functi
   assert.strictEqual(JSON.parse(claim(PHONE)).ownershipState, 'HELD_UNRESOLVED');
 });
 
-test('B6-22 — structural: dedicated stores, operation tag, and no public recovery entry are present', function() {
+test('B6-27 — structural: dedicated stores, operation tag, and no public recovery entry are present', function() {
   const lifecycleSource = fs.readFileSync(path.join(ROOT, 'Repositories/B6LifecycleRepository.js'), 'utf8');
   const auditSource = fs.readFileSync(path.join(ROOT, 'Repositories/B6RecoveryAuditRepository.js'), 'utf8');
   const calendarSource = fs.readFileSync(path.join(ROOT, 'Infrastructure/GoogleCalendar.js'), 'utf8');
   const serviceSource = fs.readFileSync(path.join(ROOT, 'Application/B6LifecycleService.js'), 'utf8');
+  const alertRepositorySource = fs.readFileSync(path.join(ROOT, 'Repositories/B6RecoveryAlertRepository.js'), 'utf8');
+  const alertInfrastructureSource = fs.readFileSync(path.join(ROOT, 'Infrastructure/B6RecoveryAlert.js'), 'utf8');
   const webhookSource = fs.readFileSync(path.join(ROOT, 'Webhook.js'), 'utf8');
   assert.ok(lifecycleSource.indexOf("SHEET_NAME: 'B6_LIFECYCLE'") !== -1);
   assert.ok(auditSource.indexOf("SHEET_NAME: 'B6_RECOVERY_AUDIT'") !== -1);
@@ -503,10 +631,19 @@ test('B6-22 — structural: dedicated stores, operation tag, and no public recov
   assert.ok(calendarSource.indexOf('event.setTag') !== -1);
   assert.ok(calendarSource.indexOf('getEvents(startTime, endTime)') !== -1);
   assert.ok(serviceSource.indexOf('recoverRecoveryCase') !== -1);
+  assert.strictEqual(serviceSource.indexOf('PropertiesService'), -1);
+  assert.strictEqual(serviceSource.indexOf('WhatsAppAdapter'), -1);
+  assert.strictEqual(serviceSource.indexOf('CalendarApp'), -1);
+  assert.strictEqual(serviceSource.indexOf('GoogleSheets'), -1);
+  assert.ok(alertRepositorySource.indexOf('B6RecoveryAlert.notifyRecoveryRequired') !== -1);
+  assert.strictEqual(alertRepositorySource.indexOf('PropertiesService'), -1);
+  assert.strictEqual(alertRepositorySource.indexOf('WhatsAppAdapter'), -1);
+  assert.ok(alertInfrastructureSource.indexOf('PropertiesService') !== -1);
+  assert.ok(alertInfrastructureSource.indexOf('WhatsAppAdapter') !== -1);
   assert.strictEqual(webhookSource.indexOf('recoverRecoveryCase'), -1);
 });
 
-test('B6-23 — structural: B6 claim has no TTL/takeover and Change/CANCEL share B6 begin', function() {
+test('B6-28 — structural: B6 claim has no TTL/takeover and Change/CANCEL share B6 begin', function() {
   const appointmentSource = fs.readFileSync(path.join(ROOT, 'AppointmentRepository.js'), 'utf8');
   const changeSource = fs.readFileSync(path.join(ROOT, 'Changeservice.js'), 'utf8');
   const cancelSource = fs.readFileSync(path.join(ROOT, 'Application/CancelService.js'), 'utf8');
@@ -517,7 +654,7 @@ test('B6-23 — structural: B6 claim has no TTL/takeover and Change/CANCEL share
   assert.ok(cancelSource.indexOf('B6LifecycleService.COMMANDS.CANCEL') !== -1);
 });
 
-test('B6-24 — GoogleCalendar lifecycle infrastructure persists and finds exact operation tags', function() {
+test('B6-29 — GoogleCalendar lifecycle infrastructure persists and finds exact operation tags', function() {
   const calendarSource = fs.readFileSync(path.join(ROOT, 'Infrastructure/GoogleCalendar.js'), 'utf8');
   const tagStore = {};
   let deleted = false;

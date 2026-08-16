@@ -54,6 +54,12 @@ const B6LifecycleService = {
     RELEASED: 'RELEASED'
   },
 
+  RECOVERY_DECISIONS: {
+    RESOLVE_CHANGE: 'RESOLVE_CHANGE',
+    RESOLVE_CANCEL: 'RESOLVE_CANCEL',
+    CLOSE_RELEASE_PENDING: 'CLOSE_RELEASE_PENDING'
+  },
+
   begin: function(phone, command) {
     var storesResult = this._ensureStores();
     if (!storesResult.ok) return storesResult;
@@ -75,6 +81,14 @@ const B6LifecycleService = {
     }
 
     var data = ownershipResult.data;
+    if (data.status === 'REJECTED_NO_EFFECT') {
+      return Result.fail(
+        'NO_CONFIRMED_APPOINTMENT',
+        'No confirmed appointment exists for this phone',
+        { phone: phone, command: command }
+      );
+    }
+
     var ctx = {
       operationId: data.operationId,
       ownerToken: data.ownerToken,
@@ -246,7 +260,7 @@ const B6LifecycleService = {
     var terminal = this.recordCheckpoint(
       ctx,
       terminalState,
-      this.OWNERSHIP_STATES.HELD_ACTIVE,
+      ctx.ownershipState || this.OWNERSHIP_STATES.HELD_ACTIVE,
       terminalCheckpoint,
       {}
     );
@@ -258,6 +272,19 @@ const B6LifecycleService = {
     // remains blocked by the RELEASE_PENDING journal entry.
     if (!ctx.recoveryCaseId) ctx.recoveryCaseId = 'RCV_' + ULID.generate();
 
+    // Contract order: durable journal fence first, durable ownership state
+    // second, then claim deletion. A normal admission observes RELEASE_PENDING
+    // and remains blocked even if the final RELEASED append later becomes
+    // ambiguous.
+    var pending = this.recordCheckpoint(
+      ctx,
+      this.LIFECYCLE_STATES.RELEASE_PENDING,
+      this.OWNERSHIP_STATES.RELEASE_PENDING,
+      this.CHECKPOINTS.RELEASE_PENDING,
+      {}
+    );
+    if (!pending.ok) return this.enterUnresolved(ctx, 'CHECKPOINT_PERSISTENCE_UNKNOWN', pending.error);
+
     var stateResult = AppointmentRepository.setB6LifecycleOwnershipState(
       ctx.phone,
       ctx.ownerToken,
@@ -267,15 +294,6 @@ const B6LifecycleService = {
     if (!stateResult.ok) {
       return this.enterUnresolved(ctx, 'RELEASE_PENDING_PERSISTENCE_UNKNOWN', stateResult.error);
     }
-
-    var pending = this.recordCheckpoint(
-      ctx,
-      this.LIFECYCLE_STATES.RELEASE_PENDING,
-      this.OWNERSHIP_STATES.RELEASE_PENDING,
-      this.CHECKPOINTS.RELEASE_PENDING,
-      {}
-    );
-    if (!pending.ok) return this.enterUnresolved(ctx, 'CHECKPOINT_PERSISTENCE_UNKNOWN', pending.error);
 
     var releaseResult = AppointmentRepository.releaseB6LifecycleOwnership(ctx.phone, ctx.ownerToken);
     if (!releaseResult.ok) {
@@ -474,12 +492,19 @@ const B6LifecycleService = {
     return Result.ok({ targetSlot: targetResult.data });
   },
 
-  recoverRecoveryCase: function(recoveryCaseId, authorizationContext) {
+  recoverRecoveryCase: function(recoveryCaseId, authorizationContext, recoveryDecision) {
     if (!authorizationContext || !authorizationContext.operatorId ||
       authorizationContext.authorityType !== 'DOCTOR') {
       return Result.fail(
         'B6_RECOVERY_AUTHORIZATION_REQUIRED',
         'Recovery requires a trusted Doctor authorization context'
+      );
+    }
+
+    if (!recoveryDecision || !this._isAllowedRecoveryDecision(recoveryDecision.type)) {
+      return Result.fail(
+        'B6_RECOVERY_DECISION_INVALID',
+        'Recovery decision must be RESOLVE_CHANGE, RESOLVE_CANCEL, or CLOSE_RELEASE_PENDING'
       );
     }
 
@@ -490,6 +515,26 @@ const B6LifecycleService = {
       return Result.fail('B6_RECOVERY_CASE_NOT_FOUND', 'Recovery case does not exist');
     }
 
+    if (recoveryDecision.type === this.RECOVERY_DECISIONS.CLOSE_RELEASE_PENDING) {
+      return this._closeReleasePending(lifecycle, authorizationContext, recoveryDecision);
+    }
+
+    if (lifecycle.lifecycle_state === this.LIFECYCLE_STATES.RELEASE_PENDING) {
+      return Result.fail(
+        'B6_RECOVERY_DECISION_INVALID',
+        'RELEASE_PENDING may only be closed with CLOSE_RELEASE_PENDING'
+      );
+    }
+
+    if (recoveryDecision.type === this.RECOVERY_DECISIONS.RESOLVE_CHANGE &&
+      lifecycle.command !== this.COMMANDS.CHANGE) {
+      return Result.fail('B6_RECOVERY_DECISION_INVALID', 'RESOLVE_CHANGE requires a CHANGE lifecycle');
+    }
+    if (recoveryDecision.type === this.RECOVERY_DECISIONS.RESOLVE_CANCEL &&
+      lifecycle.command !== this.COMMANDS.CANCEL) {
+      return Result.fail('B6_RECOVERY_DECISION_INVALID', 'RESOLVE_CANCEL requires a CANCEL lifecycle');
+    }
+
     var recoveryOwnership = AppointmentRepository.beginB6RecoveryOwnership(
       lifecycle.phone,
       recoveryCaseId,
@@ -497,75 +542,633 @@ const B6LifecycleService = {
     );
     if (!recoveryOwnership.ok) return recoveryOwnership;
 
-    var recoveryCheckpoint = B6LifecycleRepository.appendCheckpoint({
-      operation_id: lifecycle.operation_id,
-      phone: lifecycle.phone,
-      command: lifecycle.command,
-      old_slot_id: lifecycle.old_slot_id,
-      new_slot_id: lifecycle.new_slot_id,
-      lifecycle_state: this.LIFECYCLE_STATES.RECOVERY_REQUIRED,
-      ownership_state: this.OWNERSHIP_STATES.HELD_RECOVERY,
-      checkpoint: lifecycle.checkpoint,
-      calendar_event_id: lifecycle.calendar_event_id,
-      calendar_correlation_id: lifecycle.calendar_correlation_id,
-      calendar_id: lifecycle.calendar_id,
-      recovery_state: this.LIFECYCLE_STATES.RECOVERY_REQUIRED,
-      recovery_case_id: recoveryCaseId,
-      created_at: lifecycle.created_at,
-      details: this._details({ trustedOperator: authorizationContext.operatorId })
-    });
+    var ctxResult = this._hydrateRecoveryContext(lifecycle, recoveryOwnership.data);
+    if (!ctxResult.ok) {
+      return this._recordRecoveryFailure(
+        null,
+        lifecycle,
+        authorizationContext,
+        recoveryDecision.type,
+        'RECOVERY_CONTEXT_UNAVAILABLE',
+        ctxResult.error
+      );
+    }
+    var ctx = ctxResult.data;
+
+    var recoveryCheckpoint = this.recordCheckpoint(
+      ctx,
+      this.LIFECYCLE_STATES.RECOVERY_REQUIRED,
+      this.OWNERSHIP_STATES.HELD_RECOVERY,
+      ctx.lastCheckpoint || this.CHECKPOINTS.OWNERSHIP_ACQUIRED,
+      {
+        recovery_state: this.LIFECYCLE_STATES.RECOVERY_REQUIRED,
+        recovery_case_id: recoveryCaseId,
+        details: this._details({
+          trustedOperator: authorizationContext.operatorId,
+          recoveryDecision: recoveryDecision.type
+        })
+      }
+    );
     if (!recoveryCheckpoint.ok) {
-      return Result.fail(
-        'B6_CHECKPOINT_PERSISTENCE_UNKNOWN',
-        'Recovery checkpoint write is ambiguous; ownership remains retained',
+      return this._recordRecoveryFailure(
+        ctx,
+        lifecycle,
+        authorizationContext,
+        recoveryDecision.type,
+        'CHECKPOINT_PERSISTENCE_UNKNOWN',
         recoveryCheckpoint.error
       );
     }
 
-    var evidenceResult = this._collectRecoveryEvidence(lifecycle);
-    var evidence = evidenceResult.ok
-      ? evidenceResult.data
-      : { collectionError: evidenceResult.error };
+    var initialEvidenceResult = this._collectRecoveryEvidence(lifecycle);
+    var initialAudit = this._appendRecoveryAudit(
+      ctx,
+      authorizationContext,
+      recoveryDecision.type,
+      initialEvidenceResult.ok ? 'RECOVERY_DECISION_ACCEPTED' : 'RECOVERY_EVIDENCE_INCOMPLETE',
+      'OWNERSHIP_RETAINED',
+      this._details({
+        preMutation: true,
+        evidence: initialEvidenceResult.ok ? initialEvidenceResult.data : initialEvidenceResult.error
+      })
+    );
+    if (!initialAudit.ok) {
+      return this._recordRecoveryFailure(
+        ctx,
+        lifecycle,
+        authorizationContext,
+        recoveryDecision.type,
+        'RECOVERY_AUDIT_PERSISTENCE_UNKNOWN',
+        initialAudit.error
+      );
+    }
+
+    if (recoveryDecision.type === this.RECOVERY_DECISIONS.RESOLVE_CHANGE) {
+      return this._resolveRecoveryChange(ctx, lifecycle, authorizationContext, recoveryDecision);
+    }
+
+    return this._resolveRecoveryCancel(ctx, lifecycle, authorizationContext, recoveryDecision);
+  },
+
+  _resolveRecoveryChange: function(ctx, lifecycle, authorizationContext, recoveryDecision) {
+    var replacementProof = this.verifyReplacementAppointment(ctx);
+    if (!replacementProof.ok) {
+      return this._recordRecoveryFailure(
+        ctx,
+        lifecycle,
+        authorizationContext,
+        recoveryDecision.type,
+        'REPLACEMENT_APPOINTMENT_NOT_PROVEN',
+        replacementProof.error
+      );
+    }
+
+    var calendarResult = this._recoverOldCalendarAbsence(
+      ctx,
+      this.CHECKPOINTS.OLD_CALENDAR_DELETE_ATTEMPTED,
+      this.CHECKPOINTS.OLD_CALENDAR_DELETE_CONFIRMED
+    );
+    if (!calendarResult.ok) {
+      return this._recordRecoveryFailure(
+        ctx,
+        lifecycle,
+        authorizationContext,
+        recoveryDecision.type,
+        'OLD_CALENDAR_ABSENCE_NOT_PROVEN',
+        calendarResult.error
+      );
+    }
+
+    var freeResult = this._recoverFreeOwnedSlot(
+      ctx,
+      this.CHECKPOINTS.OLD_SLOT_FREED
+    );
+    if (!freeResult.ok) {
+      return this._recordRecoveryFailure(
+        ctx,
+        lifecycle,
+        authorizationContext,
+        recoveryDecision.type,
+        'OLD_SLOT_RECONCILIATION_FAILED',
+        freeResult.error
+      );
+    }
+
+    var terminalProof = this.verifyTerminalChange(ctx);
+    if (!terminalProof.ok) {
+      return this._recordRecoveryFailure(
+        ctx,
+        lifecycle,
+        authorizationContext,
+        recoveryDecision.type,
+        'TERMINAL_CHANGE_PROOF_FAILED',
+        terminalProof.error
+      );
+    }
+
+    var preReleaseAudit = this._appendRecoveryAudit(
+      ctx,
+      authorizationContext,
+      recoveryDecision.type,
+      'TERMINAL_CHANGE_PROVEN',
+      'RELEASE_PENDING',
+      this._details({ automaticReconciliation: false, terminalProof: true, preRelease: true })
+    );
+    if (!preReleaseAudit.ok) {
+      return this._recordRecoveryFailure(
+        ctx,
+        lifecycle,
+        authorizationContext,
+        recoveryDecision.type,
+        'RECOVERY_AUDIT_PERSISTENCE_UNKNOWN',
+        preReleaseAudit.error
+      );
+    }
+
+    var completion = this.completeTerminalChange(ctx);
+    if (!completion.ok) {
+      return this._recordRecoveryFailure(
+        ctx,
+        lifecycle,
+        authorizationContext,
+        recoveryDecision.type,
+        'TERMINAL_CHANGE_COMPLETION_FAILED',
+        completion.error
+      );
+    }
+
+    var auditResult = this._appendRecoveryAudit(
+      ctx,
+      authorizationContext,
+      recoveryDecision.type,
+      'TERMINAL_CHANGE_PROVEN',
+      completion.data.releasePending ? 'RELEASE_PENDING' : 'RELEASED',
+      this._details({ automaticReconciliation: false, terminalProof: true, preRelease: false })
+    );
+    if (!auditResult.ok) {
+      return Result.fail(
+        'B6_RECOVERY_AUDIT_PERSISTENCE_UNKNOWN',
+        'Terminal Change is proven but recovery audit write is ambiguous',
+        auditResult.error
+      );
+    }
+
+    return Result.ok({
+      recoveryCaseId: ctx.recoveryCaseId,
+      operationId: ctx.operationId,
+      lifecycleState: this.LIFECYCLE_STATES.RESOLVED_CHANGE,
+      released: completion.data.released === true,
+      releasePending: completion.data.releasePending === true
+    });
+  },
+
+  _resolveRecoveryCancel: function(ctx, lifecycle, authorizationContext, recoveryDecision) {
+    var calendarResult = this._recoverOldCalendarAbsence(
+      ctx,
+      this.CHECKPOINTS.CALENDAR_DELETE_ATTEMPTED,
+      this.CHECKPOINTS.CALENDAR_DELETE_CONFIRMED
+    );
+    if (!calendarResult.ok) {
+      return this._recordRecoveryFailure(
+        ctx,
+        lifecycle,
+        authorizationContext,
+        recoveryDecision.type,
+        'TARGET_CALENDAR_ABSENCE_NOT_PROVEN',
+        calendarResult.error
+      );
+    }
+
+    var freeResult = this._recoverFreeOwnedSlot(
+      ctx,
+      this.CHECKPOINTS.SLOT_FREED
+    );
+    if (!freeResult.ok) {
+      return this._recordRecoveryFailure(
+        ctx,
+        lifecycle,
+        authorizationContext,
+        recoveryDecision.type,
+        'TARGET_SLOT_RECONCILIATION_FAILED',
+        freeResult.error
+      );
+    }
+
+    var terminalProof = this.verifyTerminalCancel(ctx);
+    if (!terminalProof.ok) {
+      return this._recordRecoveryFailure(
+        ctx,
+        lifecycle,
+        authorizationContext,
+        recoveryDecision.type,
+        'TERMINAL_CANCEL_PROOF_FAILED',
+        terminalProof.error
+      );
+    }
+
+    var preReleaseAudit = this._appendRecoveryAudit(
+      ctx,
+      authorizationContext,
+      recoveryDecision.type,
+      'TERMINAL_CANCEL_PROVEN',
+      'RELEASE_PENDING',
+      this._details({ automaticReconciliation: false, terminalProof: true, preRelease: true })
+    );
+    if (!preReleaseAudit.ok) {
+      return this._recordRecoveryFailure(
+        ctx,
+        lifecycle,
+        authorizationContext,
+        recoveryDecision.type,
+        'RECOVERY_AUDIT_PERSISTENCE_UNKNOWN',
+        preReleaseAudit.error
+      );
+    }
+
+    var completion = this.completeTerminalCancel(ctx);
+    if (!completion.ok) {
+      return this._recordRecoveryFailure(
+        ctx,
+        lifecycle,
+        authorizationContext,
+        recoveryDecision.type,
+        'TERMINAL_CANCEL_COMPLETION_FAILED',
+        completion.error
+      );
+    }
+
+    var auditResult = this._appendRecoveryAudit(
+      ctx,
+      authorizationContext,
+      recoveryDecision.type,
+      'TERMINAL_CANCEL_PROVEN',
+      completion.data.releasePending ? 'RELEASE_PENDING' : 'RELEASED',
+      this._details({ automaticReconciliation: false, terminalProof: true, preRelease: false })
+    );
+    if (!auditResult.ok) {
+      return Result.fail(
+        'B6_RECOVERY_AUDIT_PERSISTENCE_UNKNOWN',
+        'Terminal Cancel is proven but recovery audit write is ambiguous',
+        auditResult.error
+      );
+    }
+
+    return Result.ok({
+      recoveryCaseId: ctx.recoveryCaseId,
+      operationId: ctx.operationId,
+      lifecycleState: this.LIFECYCLE_STATES.RESOLVED_CANCEL,
+      released: completion.data.released === true,
+      releasePending: completion.data.releasePending === true
+    });
+  },
+
+  _closeReleasePending: function(lifecycle, authorizationContext, recoveryDecision) {
+    if (lifecycle.lifecycle_state !== this.LIFECYCLE_STATES.RELEASE_PENDING) {
+      return Result.fail(
+        'B6_RECOVERY_DECISION_INVALID',
+        'CLOSE_RELEASE_PENDING requires latest lifecycle state RELEASE_PENDING'
+      );
+    }
+
+    var ownershipResult = AppointmentRepository.getB6LifecycleOwnership(lifecycle.phone);
+    if (!ownershipResult.ok) return ownershipResult;
+    if (ownershipResult.data !== null) {
+      return Result.fail(
+        'B6_RELEASE_PENDING_CLAIM_PRESENT',
+        'Ownership claim still exists; CLOSE_RELEASE_PENDING must not create or delete a claim'
+      );
+    }
+
+    var ctxResult = this._hydrateRecoveryContext(lifecycle, null);
+    if (!ctxResult.ok) {
+      return Result.fail('B6_RELEASE_PENDING_PROOF_FAILED', 'Lifecycle recovery context is unavailable', ctxResult.error);
+    }
+    var ctx = ctxResult.data;
+
+    var terminalProof;
+    if (lifecycle.command === this.COMMANDS.CHANGE) {
+      terminalProof = this.verifyTerminalChange(ctx);
+    } else if (lifecycle.command === this.COMMANDS.CANCEL) {
+      terminalProof = this.verifyTerminalCancel(ctx);
+    } else {
+      return Result.fail('B6_RELEASE_PENDING_PROOF_FAILED', 'Unknown lifecycle command cannot close RELEASE_PENDING');
+    }
+    if (!terminalProof.ok) {
+      return Result.fail(
+        'B6_RELEASE_PENDING_PROOF_FAILED',
+        'Terminal proof is not valid; RELEASE_PENDING remains journal-fenced',
+        terminalProof.error
+      );
+    }
+
+    var released = this.recordCheckpoint(
+      ctx,
+      this.LIFECYCLE_STATES.RELEASED,
+      this.OWNERSHIP_STATES.RELEASED,
+      this.CHECKPOINTS.RELEASED,
+      { recovery_case_id: lifecycle.recovery_case_id || '' }
+    );
+    if (!released.ok) {
+      return Result.fail(
+        'B6_CHECKPOINT_PERSISTENCE_UNKNOWN',
+        'RELEASED checkpoint is ambiguous; RELEASE_PENDING remains journal-fenced',
+        released.error
+      );
+    }
 
     var auditResult = B6RecoveryAuditRepository.append({
-      recovery_case_id: recoveryCaseId,
+      recovery_case_id: lifecycle.recovery_case_id || '',
       operation_id: lifecycle.operation_id,
       operator_id: authorizationContext.operatorId,
       phone: lifecycle.phone,
       old_slot_id: lifecycle.old_slot_id,
       new_slot_id: lifecycle.new_slot_id,
-      initial_state: lifecycle.lifecycle_state,
+      initial_state: this.LIFECYCLE_STATES.RELEASE_PENDING,
       evidence_summary: this._details({
-        recoveryBoundary: 'INTERNAL_ONLY',
-        calendarEvidence: evidence,
-        automaticReconciliation: false
+        recoveryDecision: recoveryDecision.type,
+        claimAbsent: true,
+        terminalProof: true
       }),
-      decision: this.LIFECYCLE_STATES.RECOVERY_REQUIRED,
-      verification_result: evidenceResult.ok ? 'EVIDENCE_COLLECTED_MANUAL_DECISION_REQUIRED' : 'EVIDENCE_COLLECTION_INCOMPLETE',
-      release_result: 'OWNERSHIP_RETAINED'
+      decision: recoveryDecision.type,
+      verification_result: 'TERMINAL_PROVEN',
+      release_result: 'RELEASED'
     });
-
     if (!auditResult.ok) {
       return Result.fail(
         'B6_RECOVERY_AUDIT_PERSISTENCE_UNKNOWN',
-        'Recovery audit write is ambiguous; ownership remains retained',
+        'RELEASED checkpoint exists but recovery audit write is ambiguous',
         auditResult.error
       );
     }
 
-    this._diagnostic('B6_RECOVERY_INSPECTED', lifecycle.phone, lifecycle.old_slot_id, {
-      recoveryCaseId: recoveryCaseId,
+    this._diagnostic('B6_RELEASE_PENDING_CLOSED', lifecycle.phone, lifecycle.old_slot_id, {
+      recoveryCaseId: lifecycle.recovery_case_id || '',
       operationId: lifecycle.operation_id,
       operatorId: authorizationContext.operatorId
     });
 
     return Result.ok({
-      recoveryCaseId: recoveryCaseId,
+      recoveryCaseId: lifecycle.recovery_case_id || '',
       operationId: lifecycle.operation_id,
-      lifecycleState: this.LIFECYCLE_STATES.RECOVERY_REQUIRED,
-      ownershipState: this.OWNERSHIP_STATES.HELD_RECOVERY,
-      automaticResolution: false
+      lifecycleState: this.LIFECYCLE_STATES.RELEASED,
+      released: true
     });
+  },
+
+  _recoverOldCalendarAbsence: function(ctx, attemptedCheckpoint, confirmedCheckpoint) {
+    if (!ctx.oldCalendarEventId || !ctx.oldCalendarId) {
+      return Result.fail('B6_OLD_CALENDAR_IDENTITY_UNAVAILABLE', 'Old Calendar identity is unavailable');
+    }
+
+    var inspection = CalendarRepository.inspectLifecycleAppointmentEvent(
+      ctx.oldCalendarEventId,
+      ctx.oldCalendarId,
+      null
+    );
+    if (!inspection.ok) return inspection;
+
+    if (inspection.data.status === 'MATCH') {
+      var attempted = this.recordCheckpoint(
+        ctx,
+        this.LIFECYCLE_STATES.RECOVERY_REQUIRED,
+        this.OWNERSHIP_STATES.HELD_RECOVERY,
+        attemptedCheckpoint,
+        {
+          details: this._details({
+            oldCalendarId: ctx.oldCalendarId,
+            oldCalendarEventId: ctx.oldCalendarEventId
+          })
+        }
+      );
+      if (!attempted.ok) return attempted;
+
+      var deleted = CalendarRepository.deleteLifecycleAppointmentEvent(
+        ctx.oldCalendarEventId,
+        ctx.oldCalendarId,
+        null
+      );
+      if (!deleted.ok) return deleted;
+      ctx.oldCalendarDeleteResult = deleted.data;
+
+      var confirmed = this.recordCheckpoint(
+        ctx,
+        this.LIFECYCLE_STATES.RECOVERY_REQUIRED,
+        this.OWNERSHIP_STATES.HELD_RECOVERY,
+        confirmedCheckpoint,
+        {
+          details: this._details({
+            oldCalendarId: ctx.oldCalendarId,
+            oldCalendarEventId: ctx.oldCalendarEventId,
+            deleteConfirmed: deleted.data.deleteConfirmed,
+            absenceObserved: deleted.data.absenceObserved
+          })
+        }
+      );
+      if (!confirmed.ok) return confirmed;
+      return Result.ok(deleted.data);
+    }
+
+    if (inspection.data.status === 'NOT_FOUND' && ctx.oldCalendarDeleteResult &&
+      ctx.oldCalendarDeleteResult.deleteConfirmed && ctx.oldCalendarDeleteResult.absenceObserved &&
+      inspection.data.contextResolved) {
+      return Result.ok(ctx.oldCalendarDeleteResult);
+    }
+
+    return Result.fail(
+      'B6_OLD_CALENDAR_ABSENCE_NOT_PROVEN',
+      'Old Calendar event is not uniquely proven absent',
+      inspection.data
+    );
+  },
+
+  _recoverFreeOwnedSlot: function(ctx, checkpoint) {
+    var currentResult = this._getSlotById(ctx.oldSlotId);
+    if (!currentResult.ok) return currentResult;
+    var current = currentResult.data;
+
+    if (this._isFullFreeSlot(current)) return Result.ok(current);
+
+    if (current.status !== Config.VOCABULARY.STATUS.CONFIRMED || current.phone !== ctx.phone) {
+      return Result.fail(
+        'B6_RECOVERY_SLOT_IDENTITY_NOT_PROVEN',
+        'Recovery may free only the authoritative confirmed Slot owned by the phone',
+        { status: current.status, phone: current.phone }
+      );
+    }
+
+    var freeResult = SlotRepository.atomicUpdate(ctx.oldSlotId, function(freshSlot) {
+      if (freshSlot.status !== Config.VOCABULARY.STATUS.CONFIRMED || freshSlot.phone !== ctx.phone) {
+        return Result.fail('B6_RECOVERY_SLOT_IDENTITY_NOT_PROVEN', 'Fresh Slot no longer matches recovery target');
+      }
+      const transition = Validators.validateTransition(
+        freshSlot.status,
+        Config.VOCABULARY.COMMANDS.CANCEL_APPOINTMENT
+      );
+      if (!transition.ok) return transition;
+      return Result.ok({
+        status: Config.VOCABULARY.STATUS.FREE,
+        patient_name: '',
+        phone: '',
+        calendar_event_id: '',
+        reserved_until: '',
+        reserved_until_unix: ''
+      });
+    });
+    if (!freeResult.ok) return freeResult;
+
+    var checkpointResult = this.recordCheckpoint(
+      ctx,
+      this.LIFECYCLE_STATES.RECOVERY_REQUIRED,
+      this.OWNERSHIP_STATES.HELD_RECOVERY,
+      checkpoint,
+      {}
+    );
+    if (!checkpointResult.ok) return checkpointResult;
+
+    return this._getSlotById(ctx.oldSlotId);
+  },
+
+  _hydrateRecoveryContext: function(lifecycle, ownership) {
+    var historyResult = B6LifecycleRepository.findByOperationId(lifecycle.operation_id);
+    if (!historyResult.ok) return historyResult;
+
+    var history = historyResult.data || [];
+    var oldCalendarId = '';
+    var oldCalendarEventId = '';
+    var oldCalendarDeleteResult = null;
+    var lastCheckpoint = lifecycle.checkpoint || '';
+
+    for (var i = 0; i < history.length; i++) {
+      var item = history[i];
+      var details = this._parseDetails(item.details);
+      if (details.oldCalendarId) oldCalendarId = details.oldCalendarId;
+      if (details.oldCalendarEventId) oldCalendarEventId = details.oldCalendarEventId;
+      if (details.deleteConfirmed && details.absenceObserved) {
+        oldCalendarDeleteResult = {
+          deleteConfirmed: true,
+          absenceObserved: true,
+          calendarId: details.oldCalendarId || oldCalendarId,
+          eventId: details.oldCalendarEventId || oldCalendarEventId
+        };
+      }
+      if (item.checkpoint) lastCheckpoint = item.checkpoint;
+    }
+
+    var oldSlotResult = this._getSlotById(lifecycle.old_slot_id);
+    var oldSlot = oldSlotResult.ok ? oldSlotResult.data : null;
+    if (!oldCalendarEventId && oldSlot && oldSlot.calendar_event_id) {
+      oldCalendarEventId = oldSlot.calendar_event_id;
+    }
+
+    return Result.ok({
+      operationId: lifecycle.operation_id,
+      ownerToken: ownership ? ownership.ownerToken : '',
+      phone: lifecycle.phone,
+      command: lifecycle.command,
+      oldSlot: oldSlot,
+      oldSlotId: lifecycle.old_slot_id,
+      newSlot: null,
+      newSlotId: lifecycle.new_slot_id,
+      calendarEventId: lifecycle.calendar_event_id,
+      calendarId: lifecycle.calendar_id,
+      calendarCorrelationId: lifecycle.calendar_correlation_id || lifecycle.operation_id,
+      recoveryCaseId: lifecycle.recovery_case_id || '',
+      lifecycleState: lifecycle.lifecycle_state,
+      ownershipState: ownership ? ownership.ownershipState : lifecycle.ownership_state,
+      lastCheckpoint: lastCheckpoint,
+      createdAt: lifecycle.created_at || Clock.now(),
+      oldCalendarId: oldCalendarId,
+      oldCalendarEventId: oldCalendarEventId,
+      oldCalendarDeleteResult: oldCalendarDeleteResult
+    });
+  },
+
+  _recordRecoveryFailure: function(ctx, lifecycle, authorizationContext, decision, reason, details) {
+    var activeCtx = ctx || {
+      operationId: lifecycle.operation_id,
+      ownerToken: '',
+      phone: lifecycle.phone,
+      command: lifecycle.command,
+      oldSlotId: lifecycle.old_slot_id,
+      newSlotId: lifecycle.new_slot_id,
+      calendarEventId: lifecycle.calendar_event_id,
+      calendarId: lifecycle.calendar_id,
+      calendarCorrelationId: lifecycle.calendar_correlation_id || lifecycle.operation_id,
+      recoveryCaseId: lifecycle.recovery_case_id || '',
+      lifecycleState: lifecycle.lifecycle_state,
+      ownershipState: this.OWNERSHIP_STATES.HELD_RECOVERY,
+      lastCheckpoint: lifecycle.checkpoint,
+      createdAt: lifecycle.created_at || Clock.now()
+    };
+
+    if (ctx) {
+      this.recordCheckpoint(
+        activeCtx,
+        this.LIFECYCLE_STATES.RECOVERY_REQUIRED,
+        this.OWNERSHIP_STATES.HELD_RECOVERY,
+        activeCtx.lastCheckpoint || this.CHECKPOINTS.OWNERSHIP_ACQUIRED,
+        {
+          recovery_state: this.LIFECYCLE_STATES.RECOVERY_REQUIRED,
+          recovery_case_id: activeCtx.recoveryCaseId,
+          details: this._details({ reason: reason, details: details || null, recoveryDecision: decision })
+        }
+      );
+    }
+
+    var auditResult = this._appendRecoveryAudit(
+      activeCtx,
+      authorizationContext,
+      decision,
+      reason,
+      'OWNERSHIP_RETAINED',
+      this._details({ details: details || null, automaticReconciliation: false })
+    );
+
+    this._diagnostic('B6_RECOVERY_PROOF_FAILED', activeCtx.phone, activeCtx.oldSlotId, {
+      reason: reason,
+      operationId: activeCtx.operationId,
+      recoveryCaseId: activeCtx.recoveryCaseId,
+      operatorId: authorizationContext.operatorId,
+      auditRecorded: auditResult.ok
+    });
+
+    return Result.fail(
+      'B6_RECOVERY_PROOF_FAILED',
+      'Recovery decision did not satisfy terminal proof; ownership remains retained',
+      { reason: reason, details: details || null, auditRecorded: auditResult.ok }
+    );
+  },
+
+  _appendRecoveryAudit: function(ctx, authorizationContext, decision, verificationResult, releaseResult, evidenceSummary) {
+    return B6RecoveryAuditRepository.append({
+      recovery_case_id: ctx.recoveryCaseId || '',
+      operation_id: ctx.operationId,
+      operator_id: authorizationContext.operatorId,
+      phone: ctx.phone,
+      old_slot_id: ctx.oldSlotId,
+      new_slot_id: ctx.newSlotId,
+      initial_state: ctx.lifecycleState,
+      evidence_summary: evidenceSummary || '',
+      decision: decision,
+      verification_result: verificationResult,
+      release_result: releaseResult
+    });
+  },
+
+  _isAllowedRecoveryDecision: function(type) {
+    return type === this.RECOVERY_DECISIONS.RESOLVE_CHANGE ||
+      type === this.RECOVERY_DECISIONS.RESOLVE_CANCEL ||
+      type === this.RECOVERY_DECISIONS.CLOSE_RELEASE_PENDING;
+  },
+
+  _parseDetails: function(value) {
+    if (!value || typeof value !== 'string') return {};
+    try {
+      var parsed = JSON.parse(value);
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (e) {
+      return {};
+    }
   },
 
   _collectRecoveryEvidence: function(lifecycle) {

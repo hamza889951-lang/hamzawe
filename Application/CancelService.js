@@ -17,7 +17,12 @@ const CancelService = {
       phone,
       B6LifecycleService.COMMANDS.CANCEL
     );
-    if (!lifecycleResult.ok) return CancelService._b6FailureReply();
+    if (!lifecycleResult.ok) {
+      if (lifecycleResult.error && lifecycleResult.error.code === 'NO_CONFIRMED_APPOINTMENT') {
+        return CancelService._b6NoActiveReply();
+      }
+      return CancelService._b6FailureReply();
+    }
 
     const ctx = lifecycleResult.data;
     const targetSlot = ctx.oldSlot;
@@ -53,7 +58,7 @@ const CancelService = {
       B6LifecycleService.LIFECYCLE_STATES.ACTIVE_PRE_EFFECT,
       B6LifecycleService.OWNERSHIP_STATES.HELD_ACTIVE,
       B6LifecycleService.CHECKPOINTS.TARGET_APPOINTMENT_VERIFIED,
-      { details: JSON.stringify({ oldCalendarId: ctx.oldCalendarId }) }
+      { details: JSON.stringify({ oldCalendarId: ctx.oldCalendarId, oldCalendarEventId: ctx.oldCalendarEventId }) }
     );
     if (!checkpointResult.ok) {
       B6LifecycleService.enterUnresolved(ctx, 'CHECKPOINT_PERSISTENCE_UNKNOWN', checkpointResult.error);
@@ -69,7 +74,7 @@ const CancelService = {
           B6LifecycleService.LIFECYCLE_STATES.ACTIVE_POST_EFFECT,
           B6LifecycleService.OWNERSHIP_STATES.HELD_ACTIVE,
           B6LifecycleService.CHECKPOINTS.CALENDAR_DELETE_ATTEMPTED,
-          {}
+          { details: JSON.stringify({ oldCalendarId: ctx.oldCalendarId, oldCalendarEventId: ctx.oldCalendarEventId }) }
         );
         if (!checkpointResult.ok) {
           return B6LifecycleService.enterUnresolved(ctx, 'CHECKPOINT_PERSISTENCE_UNKNOWN', checkpointResult.error);
@@ -95,7 +100,15 @@ const CancelService = {
           B6LifecycleService.LIFECYCLE_STATES.ACTIVE_POST_EFFECT,
           B6LifecycleService.OWNERSHIP_STATES.HELD_ACTIVE,
           B6LifecycleService.CHECKPOINTS.CALENDAR_DELETE_CONFIRMED,
-          { calendar_id: ctx.oldCalendarId }
+          {
+            calendar_id: ctx.oldCalendarId,
+            details: JSON.stringify({
+              oldCalendarId: ctx.oldCalendarId,
+              oldCalendarEventId: ctx.oldCalendarEventId,
+              deleteConfirmed: ctx.oldCalendarDeleteResult.deleteConfirmed,
+              absenceObserved: ctx.oldCalendarDeleteResult.absenceObserved
+            })
+          }
         );
         if (!checkpointResult.ok) {
           return B6LifecycleService.enterUnresolved(ctx, 'CHECKPOINT_PERSISTENCE_UNKNOWN', checkpointResult.error);
@@ -162,6 +175,13 @@ const CancelService = {
     return Result.ok({
       reply: 'تم إلغاء حجزك بنجاح. يمكنك حجز موعد جديد بإرسال أي رسالة.',
       conversationState: Config.VOCABULARY.CONVERSATION_STATE.MENU_MAIN
+    });
+  },
+
+  _b6NoActiveReply() {
+    return Result.ok({
+      reply: 'لا يوجد لديك حجز مؤكد حالياً لإلغائه.',
+      conversationState: null
     });
   },
 

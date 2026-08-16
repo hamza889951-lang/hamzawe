@@ -228,7 +228,12 @@ const ChangeService = {
       phone,
       B6LifecycleService.COMMANDS.CHANGE
     );
-    if (!lifecycleResult.ok) return ChangeService._b6FailureReply();
+    if (!lifecycleResult.ok) {
+      if (lifecycleResult.error && lifecycleResult.error.code === 'NO_CONFIRMED_APPOINTMENT') {
+        return ChangeService._b6NoActiveReply();
+      }
+      return ChangeService._b6FailureReply();
+    }
 
     const ctx = lifecycleResult.data;
     const oldSlot = ctx.oldSlot;
@@ -264,7 +269,7 @@ const ChangeService = {
       B6LifecycleService.LIFECYCLE_STATES.ACTIVE_PRE_EFFECT,
       B6LifecycleService.OWNERSHIP_STATES.HELD_ACTIVE,
       B6LifecycleService.CHECKPOINTS.OLD_APPOINTMENT_VERIFIED,
-      { details: JSON.stringify({ oldCalendarId: ctx.oldCalendarId }) }
+      { details: JSON.stringify({ oldCalendarId: ctx.oldCalendarId, oldCalendarEventId: ctx.oldCalendarEventId }) }
     );
     if (!checkpointResult.ok) {
       B6LifecycleService.enterUnresolved(ctx, 'CHECKPOINT_PERSISTENCE_UNKNOWN', checkpointResult.error);
@@ -459,7 +464,7 @@ const ChangeService = {
           B6LifecycleService.LIFECYCLE_STATES.ACTIVE_POST_EFFECT,
           B6LifecycleService.OWNERSHIP_STATES.HELD_ACTIVE,
           B6LifecycleService.CHECKPOINTS.OLD_CALENDAR_DELETE_ATTEMPTED,
-          {}
+          { details: JSON.stringify({ oldCalendarId: ctx.oldCalendarId, oldCalendarEventId: ctx.oldCalendarEventId }) }
         );
         if (!checkpointResult.ok) {
           return B6LifecycleService.enterUnresolved(ctx, 'CHECKPOINT_PERSISTENCE_UNKNOWN', checkpointResult.error);
@@ -484,7 +489,14 @@ const ChangeService = {
           B6LifecycleService.LIFECYCLE_STATES.ACTIVE_POST_EFFECT,
           B6LifecycleService.OWNERSHIP_STATES.HELD_ACTIVE,
           B6LifecycleService.CHECKPOINTS.OLD_CALENDAR_DELETE_CONFIRMED,
-          {}
+          {
+            details: JSON.stringify({
+              oldCalendarId: ctx.oldCalendarId,
+              oldCalendarEventId: ctx.oldCalendarEventId,
+              deleteConfirmed: ctx.oldCalendarDeleteResult.deleteConfirmed,
+              absenceObserved: ctx.oldCalendarDeleteResult.absenceObserved
+            })
+          }
         );
         if (!checkpointResult.ok) {
           return B6LifecycleService.enterUnresolved(ctx, 'CHECKPOINT_PERSISTENCE_UNKNOWN', checkpointResult.error);
@@ -565,6 +577,13 @@ const ChangeService = {
       reply: 'تم تغيير موعدك بنجاح.\n' + confirmedDisplay +
         '\nيرجى الحضور ضمن وقت دوام العيادة.',
       conversationState: Config.VOCABULARY.CONVERSATION_STATE.BOOKED
+    });
+  },
+
+  _b6NoActiveReply() {
+    return Result.ok({
+      reply: 'لا يوجد لديك حجز مؤكَّد حاليًا لتغييره.',
+      conversationState: null
     });
   },
 
