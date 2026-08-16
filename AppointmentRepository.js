@@ -328,7 +328,7 @@ const AppointmentRepository = {
         return Result.fail('B6_OWNERSHIP_MALFORMED', e.message, e.stack);
       }
 
-      if (!claim || claim.ownerToken !== ownerToken) {
+      if (!claim || !AppointmentRepository._matchesB6OwnershipToken(claim, ownerToken)) {
         return Result.fail('B6_OWNERSHIP_TOKEN_MISMATCH', 'B6 lifecycle ownership belongs to another operation');
       }
 
@@ -350,7 +350,7 @@ const AppointmentRepository = {
     });
   },
 
-  beginB6RecoveryOwnership(phone, recoveryCaseId, operationId) {
+  beginB6RecoveryOwnership(phone, recoveryCaseId, operationId, operatorId) {
     const key = this._b6LifecycleClaimKey(phone);
 
     return Lock.runExclusive('b6-lifecycle-claim:' + phone, function() {
@@ -366,13 +366,16 @@ const AppointmentRepository = {
       }
 
       if (raw === null || raw === undefined) {
+        const recoveryOwnerToken = 'B6REC_' + ULID.generate();
         claim = {
           operation_id: operationId || '',
           phone: phone,
-          ownerToken: 'B6REC_' + ULID.generate(),
+          ownerToken: recoveryOwnerToken,
           ownershipState: 'HELD_RECOVERY',
           acquiredAt: Clock.now().getTime(),
-          recoveryCaseId: recoveryCaseId
+          recoveryCaseId: recoveryCaseId,
+          recoveryOperatorId: operatorId,
+          recoveryOwnerToken: recoveryOwnerToken
         };
         try {
           properties.setProperty(key, JSON.stringify(claim));
@@ -388,12 +391,36 @@ const AppointmentRepository = {
         return Result.fail('B6_OWNERSHIP_MALFORMED', e.message, e.stack);
       }
 
-      if (claim.recoveryCaseId && claim.recoveryCaseId !== recoveryCaseId) {
-        return Result.fail('B6_RECOVERY_CASE_MISMATCH', 'Ownership belongs to another recovery case');
+      if (claim.ownershipState === 'HELD_RECOVERY') {
+        if (claim.recoveryCaseId !== recoveryCaseId ||
+          claim.recoveryOperatorId !== operatorId ||
+          !claim.recoveryOwnerToken) {
+          return Result.fail(
+            'B6_RECOVERY_ALREADY_OWNED',
+            'Recovery lifecycle is already owned by another operator or recovery owner',
+            { phone: phone, recoveryCaseId: claim.recoveryCaseId || '' }
+          );
+        }
+
+        // Same trusted Doctor and same recovery case continues with the
+        // existing recovery owner token; no new ownership is created.
+        return Result.ok(claim);
       }
 
+      if ((claim.recoveryCaseId && claim.recoveryCaseId !== recoveryCaseId) ||
+        (claim.recoveryOperatorId && claim.recoveryOperatorId !== operatorId)) {
+        return Result.fail(
+          'B6_RECOVERY_ALREADY_OWNED',
+          'Recovery lifecycle belongs to another recovery case or operator',
+          { phone: phone, recoveryCaseId: claim.recoveryCaseId || '' }
+        );
+      }
+
+      const recoveryOwnerToken = 'B6REC_' + ULID.generate();
       claim.ownershipState = 'HELD_RECOVERY';
       claim.recoveryCaseId = recoveryCaseId;
+      claim.recoveryOperatorId = operatorId;
+      claim.recoveryOwnerToken = recoveryOwnerToken;
       claim.updatedAt = Clock.now().getTime();
 
       try {
@@ -431,7 +458,7 @@ const AppointmentRepository = {
         return Result.fail('B6_OWNERSHIP_MALFORMED', e.message, e.stack);
       }
 
-      if (!claim || claim.ownerToken !== ownerToken) {
+      if (!claim || !AppointmentRepository._matchesB6OwnershipToken(claim, ownerToken)) {
         return Result.fail('B6_OWNERSHIP_TOKEN_MISMATCH', 'B6 lifecycle ownership belongs to another operation');
       }
 
@@ -455,6 +482,12 @@ const AppointmentRepository = {
         phone: phone
       });
     });
+  },
+
+  _matchesB6OwnershipToken(claim, token) {
+    if (!claim || !token) return false;
+    if (claim.recoveryOwnerToken) return claim.recoveryOwnerToken === token;
+    return claim.ownerToken === token;
   },
 
   _changeClaimKey(phone) {

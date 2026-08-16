@@ -543,7 +543,8 @@ const B6LifecycleService = {
     var recoveryOwnership = AppointmentRepository.beginB6RecoveryOwnership(
       lifecycle.phone,
       recoveryCaseId,
-      lifecycle.operation_id
+      lifecycle.operation_id,
+      authorizationContext.operatorId
     );
     if (!recoveryOwnership.ok) return recoveryOwnership;
 
@@ -1096,7 +1097,7 @@ const B6LifecycleService = {
 
     return Result.ok({
       operationId: lifecycle.operation_id,
-      ownerToken: ownership ? ownership.ownerToken : '',
+      ownerToken: ownership ? (ownership.recoveryOwnerToken || ownership.ownerToken) : '',
       phone: lifecycle.phone,
       command: lifecycle.command,
       oldSlot: oldSlot,

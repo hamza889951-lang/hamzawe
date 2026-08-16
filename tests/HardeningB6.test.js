@@ -744,7 +744,54 @@ test('B6-31 — ACTIVE and RESOLVED lifecycle records reject recovery without cr
   assert.strictEqual(free('OLD').status, 'CONFIRMED');
 });
 
-test('B6-32 — GoogleCalendar lifecycle infrastructure persists and finds exact operation tags', function() {
+test('B6-32 — same recovery case is exclusively owned by one Doctor while HELD_RECOVERY', function() {
+  reset();
+  createFailure = true;
+  publicChange();
+  const recoveryCaseId = latest(PHONE).recovery_case_id;
+
+  const doctorAFirst = sandbox.B6LifecycleService.recoverRecoveryCase(
+    recoveryCaseId,
+    { operatorId: 'doctor-A', authorityType: 'DOCTOR' },
+    { type: 'RESOLVE_CHANGE' }
+  );
+  assert.strictEqual(doctorAFirst.ok, false);
+  const claimAfterA = JSON.parse(claim(PHONE));
+  assert.strictEqual(claimAfterA.ownershipState, 'HELD_RECOVERY');
+  assert.strictEqual(claimAfterA.recoveryOperatorId, 'doctor-A');
+  assert.ok(claimAfterA.recoveryOwnerToken);
+
+  const eventCountBeforeB = createdEventCount;
+  const doctorB = sandbox.B6LifecycleService.recoverRecoveryCase(
+    recoveryCaseId,
+    { operatorId: 'doctor-B', authorityType: 'DOCTOR' },
+    { type: 'RESOLVE_CHANGE' }
+  );
+  assert.strictEqual(doctorB.ok, false);
+  assert.strictEqual(doctorB.error.code, 'B6_RECOVERY_ALREADY_OWNED');
+  const claimAfterB = JSON.parse(claim(PHONE));
+  assert.strictEqual(claimAfterB.recoveryOperatorId, 'doctor-A');
+  assert.strictEqual(claimAfterB.recoveryOwnerToken, claimAfterA.recoveryOwnerToken);
+  assert.strictEqual(createdEventCount, eventCountBeforeB);
+
+  const doctorAContinue = sandbox.B6LifecycleService.recoverRecoveryCase(
+    recoveryCaseId,
+    { operatorId: 'doctor-A', authorityType: 'DOCTOR' },
+    { type: 'RESOLVE_CHANGE' }
+  );
+  assert.strictEqual(doctorAContinue.ok, false);
+  assert.notStrictEqual(doctorAContinue.error.code, 'B6_RECOVERY_ALREADY_OWNED');
+
+  const normalChange = publicChange();
+  const normalCancel = publicCancel();
+  assert.strictEqual(normalChange.ok, true);
+  assert.strictEqual(normalCancel.ok, true);
+  assert.ok(normalChange.data.reply.indexOf('تعذّر تغيير') !== -1);
+  assert.ok(normalCancel.data.reply.indexOf('تعذّر إلغاء') !== -1);
+  assert.strictEqual(createdEventCount, eventCountBeforeB);
+});
+
+test('B6-33 — GoogleCalendar lifecycle infrastructure persists and finds exact operation tags', function() {
   const calendarSource = fs.readFileSync(path.join(ROOT, 'Infrastructure/GoogleCalendar.js'), 'utf8');
   const tagStore = {};
   let deleted = false;
