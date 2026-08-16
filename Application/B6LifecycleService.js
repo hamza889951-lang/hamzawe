@@ -519,10 +519,15 @@ const B6LifecycleService = {
       return this._closeReleasePending(lifecycle, authorizationContext, recoveryDecision);
     }
 
-    if (lifecycle.lifecycle_state === this.LIFECYCLE_STATES.RELEASE_PENDING) {
+    // Recovery resolution may start only from an unresolved lifecycle record.
+    // A recovery case ID is an identifier, not permission to resurrect an
+    // ACTIVE, terminal, rejected, or already-released operation.
+    if (lifecycle.lifecycle_state !== this.LIFECYCLE_STATES.UNRESOLVED &&
+      lifecycle.lifecycle_state !== this.LIFECYCLE_STATES.RECOVERY_REQUIRED) {
       return Result.fail(
-        'B6_RECOVERY_DECISION_INVALID',
-        'RELEASE_PENDING may only be closed with CLOSE_RELEASE_PENDING'
+        'B6_RECOVERY_NOT_ELIGIBLE',
+        'Recovery resolution is allowed only from UNRESOLVED or RECOVERY_REQUIRED',
+        { lifecycleState: lifecycle.lifecycle_state, operationId: lifecycle.operation_id }
       );
     }
 

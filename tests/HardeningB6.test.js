@@ -681,7 +681,70 @@ test('B6-29 — structural: B6 claim has no TTL/takeover and Change/CANCEL share
   assert.ok(cancelSource.indexOf('B6LifecycleService.COMMANDS.CANCEL') !== -1);
 });
 
-test('B6-30 — GoogleCalendar lifecycle infrastructure persists and finds exact operation tags', function() {
+test('B6-30 — completed RELEASED lifecycle rejects a second recovery attempt with the same recovery case', function() {
+  reset();
+  publicChange();
+  const completed = latest(PHONE);
+  const eventCountBeforeRecovery = createdEventCount;
+  const result = sandbox.B6LifecycleService.recoverRecoveryCase(
+    completed.recovery_case_id,
+    { operatorId: 'doctor-1', authorityType: 'DOCTOR' },
+    { type: 'RESOLVE_CHANGE' }
+  );
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.error.code, 'B6_RECOVERY_NOT_ELIGIBLE');
+  assert.strictEqual(claim(PHONE), undefined);
+  assert.strictEqual(latest(PHONE).lifecycle_state, 'RELEASED');
+  assert.strictEqual(createdEventCount, eventCountBeforeRecovery);
+});
+
+test('B6-31 — ACTIVE and RESOLVED lifecycle records reject recovery without creating ownership or mutating resources', function() {
+  reset();
+  const activeRecord = sandbox.B6LifecycleRepository.appendCheckpoint({
+    operation_id: 'B6_ACTIVE_CASE',
+    phone: PHONE,
+    command: 'CANCEL',
+    old_slot_id: 'OLD',
+    lifecycle_state: 'ACTIVE_POST_EFFECT',
+    ownership_state: 'HELD_ACTIVE',
+    checkpoint: 'CALENDAR_DELETE_ATTEMPTED',
+    recovery_case_id: 'RCV_ACTIVE_CASE'
+  });
+  const resolvedRecord = sandbox.B6LifecycleRepository.appendCheckpoint({
+    operation_id: 'B6_RESOLVED_CASE',
+    phone: PHONE,
+    command: 'CANCEL',
+    old_slot_id: 'OLD',
+    lifecycle_state: 'RESOLVED_CANCEL',
+    ownership_state: 'RELEASED',
+    checkpoint: 'RELEASED',
+    recovery_case_id: 'RCV_RESOLVED_CASE'
+  });
+  assert.strictEqual(activeRecord.ok, true);
+  assert.strictEqual(resolvedRecord.ok, true);
+
+  const eventCountBefore = createdEventCount;
+  const activeAttempt = sandbox.B6LifecycleService.recoverRecoveryCase(
+    'RCV_ACTIVE_CASE',
+    { operatorId: 'doctor-1', authorityType: 'DOCTOR' },
+    { type: 'RESOLVE_CANCEL' }
+  );
+  const resolvedAttempt = sandbox.B6LifecycleService.recoverRecoveryCase(
+    'RCV_RESOLVED_CASE',
+    { operatorId: 'doctor-1', authorityType: 'DOCTOR' },
+    { type: 'RESOLVE_CANCEL' }
+  );
+  assert.strictEqual(activeAttempt.ok, false);
+  assert.strictEqual(activeAttempt.error.code, 'B6_RECOVERY_NOT_ELIGIBLE');
+  assert.strictEqual(resolvedAttempt.ok, false);
+  assert.strictEqual(resolvedAttempt.error.code, 'B6_RECOVERY_NOT_ELIGIBLE');
+  assert.strictEqual(claim(PHONE), undefined);
+  assert.strictEqual(createdEventCount, eventCountBefore);
+  assert.ok(events.OLD_EVENT);
+  assert.strictEqual(free('OLD').status, 'CONFIRMED');
+});
+
+test('B6-32 — GoogleCalendar lifecycle infrastructure persists and finds exact operation tags', function() {
   const calendarSource = fs.readFileSync(path.join(ROOT, 'Infrastructure/GoogleCalendar.js'), 'utf8');
   const tagStore = {};
   let deleted = false;
