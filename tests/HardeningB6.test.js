@@ -563,7 +563,34 @@ test('B6-23 — RELEASE_PENDING journal blocks normal admission until CLOSE_RELE
   assert.ok(allowed.data.reply.indexOf('تم إلغاء') !== -1);
 });
 
-test('B6-24 — recovery authorization rejects absent operator and non-Doctor authority', function() {
+test('B6-24 — CLOSE_RELEASE_PENDING audit failure retains RELEASE_PENDING and blocks normal admission', function() {
+  reset();
+  failReleasedCheckpoint = true;
+  publicChange();
+  const recoveryCaseId = latest(PHONE).recovery_case_id;
+  const eventsBeforeClose = createdEventCount;
+  assert.strictEqual(claim(PHONE), undefined);
+  assert.strictEqual(latest(PHONE).lifecycle_state, 'RELEASE_PENDING');
+
+  failReleasedCheckpoint = false;
+  auditAppendFailure = true;
+  const closeResult = sandbox.B6LifecycleService.recoverRecoveryCase(
+    recoveryCaseId,
+    { operatorId: 'doctor-1', authorityType: 'DOCTOR' },
+    { type: 'CLOSE_RELEASE_PENDING' }
+  );
+  assert.strictEqual(closeResult.ok, false);
+  assert.strictEqual(claim(PHONE), undefined);
+  assert.strictEqual(latest(PHONE).lifecycle_state, 'RELEASE_PENDING');
+
+  const blocked = publicCancel();
+  assert.strictEqual(blocked.ok, true);
+  assert.ok(blocked.data.reply.indexOf('تعذّر إلغاء') !== -1);
+  assert.strictEqual(claim(PHONE), undefined);
+  assert.strictEqual(createdEventCount, eventsBeforeClose);
+});
+
+test('B6-25 — recovery authorization rejects absent operator and non-Doctor authority', function() {
   reset();
   createFailure = true;
   publicChange();
@@ -589,7 +616,7 @@ test('B6-24 — recovery authorization rejects absent operator and non-Doctor au
   assert.ok(claim(PHONE));
 });
 
-test('B6-25 — recovery audit ambiguity blocks recovery mutation and retains ownership', function() {
+test('B6-26 — recovery audit ambiguity blocks recovery mutation and retains ownership', function() {
   reset();
   failOldSlotFree = true;
   publicChange();
@@ -608,7 +635,7 @@ test('B6-25 — recovery audit ambiguity blocks recovery mutation and retains ow
   assert.ok(events.OLD_EVENT === undefined);
 });
 
-test('B6-26 — ambiguous recovery audit write never releases ownership', function() {
+test('B6-27 — ambiguous recovery audit write never releases ownership', function() {
   reset();
   auditAppendFailure = true;
   createFailure = true;
@@ -617,7 +644,7 @@ test('B6-26 — ambiguous recovery audit write never releases ownership', functi
   assert.strictEqual(JSON.parse(claim(PHONE)).ownershipState, 'HELD_UNRESOLVED');
 });
 
-test('B6-27 — structural: dedicated stores, operation tag, and no public recovery entry are present', function() {
+test('B6-28 — structural: dedicated stores, operation tag, and no public recovery entry are present', function() {
   const lifecycleSource = fs.readFileSync(path.join(ROOT, 'Repositories/B6LifecycleRepository.js'), 'utf8');
   const auditSource = fs.readFileSync(path.join(ROOT, 'Repositories/B6RecoveryAuditRepository.js'), 'utf8');
   const calendarSource = fs.readFileSync(path.join(ROOT, 'Infrastructure/GoogleCalendar.js'), 'utf8');
@@ -643,7 +670,7 @@ test('B6-27 — structural: dedicated stores, operation tag, and no public recov
   assert.strictEqual(webhookSource.indexOf('recoverRecoveryCase'), -1);
 });
 
-test('B6-28 — structural: B6 claim has no TTL/takeover and Change/CANCEL share B6 begin', function() {
+test('B6-29 — structural: B6 claim has no TTL/takeover and Change/CANCEL share B6 begin', function() {
   const appointmentSource = fs.readFileSync(path.join(ROOT, 'AppointmentRepository.js'), 'utf8');
   const changeSource = fs.readFileSync(path.join(ROOT, 'Changeservice.js'), 'utf8');
   const cancelSource = fs.readFileSync(path.join(ROOT, 'Application/CancelService.js'), 'utf8');
@@ -654,7 +681,7 @@ test('B6-28 — structural: B6 claim has no TTL/takeover and Change/CANCEL share
   assert.ok(cancelSource.indexOf('B6LifecycleService.COMMANDS.CANCEL') !== -1);
 });
 
-test('B6-29 — GoogleCalendar lifecycle infrastructure persists and finds exact operation tags', function() {
+test('B6-30 — GoogleCalendar lifecycle infrastructure persists and finds exact operation tags', function() {
   const calendarSource = fs.readFileSync(path.join(ROOT, 'Infrastructure/GoogleCalendar.js'), 'utf8');
   const tagStore = {};
   let deleted = false;

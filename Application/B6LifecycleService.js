@@ -861,6 +861,35 @@ const B6LifecycleService = {
       );
     }
 
+    // Closure approval/audit is durable before RELEASED becomes the latest
+    // lifecycle state. If this write is ambiguous, RELEASE_PENDING remains the
+    // latest journal fence and normal admission stays blocked.
+    var closureAudit = B6RecoveryAuditRepository.append({
+      recovery_case_id: lifecycle.recovery_case_id || '',
+      operation_id: lifecycle.operation_id,
+      operator_id: authorizationContext.operatorId,
+      phone: lifecycle.phone,
+      old_slot_id: lifecycle.old_slot_id,
+      new_slot_id: lifecycle.new_slot_id,
+      initial_state: this.LIFECYCLE_STATES.RELEASE_PENDING,
+      evidence_summary: this._details({
+        recoveryDecision: recoveryDecision.type,
+        claimAbsent: true,
+        terminalProof: true,
+        closureApproved: true
+      }),
+      decision: recoveryDecision.type,
+      verification_result: 'TERMINAL_PROVEN',
+      release_result: 'RELEASE_PENDING_CLOSURE_APPROVED'
+    });
+    if (!closureAudit.ok) {
+      return Result.fail(
+        'B6_RECOVERY_AUDIT_PERSISTENCE_UNKNOWN',
+        'Recovery closure audit is ambiguous; RELEASE_PENDING remains journal-fenced',
+        closureAudit.error
+      );
+    }
+
     var released = this.recordCheckpoint(
       ctx,
       this.LIFECYCLE_STATES.RELEASED,
@@ -876,7 +905,10 @@ const B6LifecycleService = {
       );
     }
 
-    var auditResult = B6RecoveryAuditRepository.append({
+    // This post-release audit is additive. The pre-release closure approval
+    // above is the durable admission gate; a failure here must not rewrite an
+    // already-proven RELEASED lifecycle state.
+    var finalAudit = B6RecoveryAuditRepository.append({
       recovery_case_id: lifecycle.recovery_case_id || '',
       operation_id: lifecycle.operation_id,
       operator_id: authorizationContext.operatorId,
@@ -887,18 +919,15 @@ const B6LifecycleService = {
       evidence_summary: this._details({
         recoveryDecision: recoveryDecision.type,
         claimAbsent: true,
-        terminalProof: true
+        terminalProof: true,
+        postRelease: true
       }),
       decision: recoveryDecision.type,
       verification_result: 'TERMINAL_PROVEN',
       release_result: 'RELEASED'
     });
-    if (!auditResult.ok) {
-      return Result.fail(
-        'B6_RECOVERY_AUDIT_PERSISTENCE_UNKNOWN',
-        'RELEASED checkpoint exists but recovery audit write is ambiguous',
-        auditResult.error
-      );
+    if (!finalAudit.ok) {
+      this._diagnostic('B6_RELEASE_PENDING_FINAL_AUDIT_FAILED', lifecycle.phone, lifecycle.old_slot_id, finalAudit.error);
     }
 
     this._diagnostic('B6_RELEASE_PENDING_CLOSED', lifecycle.phone, lifecycle.old_slot_id, {
