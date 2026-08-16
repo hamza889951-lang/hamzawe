@@ -100,6 +100,7 @@ sandbox.GoogleSheets = {
 let slots = [];
 let failEventIdPersistence = false;
 let failOldSlotFree = false;
+let recoveryInterleave = null;
 function slot(id, status, phone) {
   return {
     slot_id: id,
@@ -132,6 +133,11 @@ sandbox.SlotRepository = {
     if (!persisted) return sandbox.Result.fail('SLOT_NOT_FOUND', 'missing');
     const decision = decisionFn(clone(persisted));
     if (!decision.ok) return decision;
+    if (recoveryInterleave && slotId === 'OLD' && decision.data.status === sandbox.Config.VOCABULARY.STATUS.FREE) {
+      const fn = recoveryInterleave;
+      recoveryInterleave = null;
+      fn();
+    }
     if (failEventIdPersistence && slotId !== 'OLD' && decision.data.calendar_event_id) {
       return sandbox.Result.fail('UPDATE_FAILED', 'event id persistence injected failure');
     }
@@ -226,6 +232,7 @@ function reset() {
   resetSheets();
   failEventIdPersistence = false;
   failOldSlotFree = false;
+  recoveryInterleave = null;
   createFailure = false;
   deleteFailure = false;
   manyMatches = false;
@@ -563,31 +570,54 @@ test('B6-23 — RELEASE_PENDING journal blocks normal admission until CLOSE_RELE
   assert.ok(allowed.data.reply.indexOf('تم إلغاء') !== -1);
 });
 
-test('B6-24 — CLOSE_RELEASE_PENDING audit failure retains RELEASE_PENDING and blocks normal admission', function() {
+test('B6-24 — CLOSE_RELEASE_PENDING requires the recovery execution token on re-entry', function() {
   reset();
   failReleasedCheckpoint = true;
   publicChange();
   const recoveryCaseId = latest(PHONE).recovery_case_id;
-  const eventsBeforeClose = createdEventCount;
   assert.strictEqual(claim(PHONE), undefined);
   assert.strictEqual(latest(PHONE).lifecycle_state, 'RELEASE_PENDING');
 
   failReleasedCheckpoint = false;
   auditAppendFailure = true;
-  const closeResult = sandbox.B6LifecycleService.recoverRecoveryCase(
+  const firstClose = sandbox.B6LifecycleService.recoverRecoveryCase(
     recoveryCaseId,
     { operatorId: 'doctor-1', authorityType: 'DOCTOR' },
     { type: 'CLOSE_RELEASE_PENDING' }
   );
-  assert.strictEqual(closeResult.ok, false);
-  assert.strictEqual(claim(PHONE), undefined);
+  assert.strictEqual(firstClose.ok, false);
+  const executionClaim = JSON.parse(claim(PHONE));
+  const token = firstClose.error.details.recoveryOwnerToken;
+  assert.strictEqual(executionClaim.ownershipState, 'HELD_RECOVERY');
+  assert.strictEqual(executionClaim.recoveryOwnerToken, token);
   assert.strictEqual(latest(PHONE).lifecycle_state, 'RELEASE_PENDING');
 
-  const blocked = publicCancel();
-  assert.strictEqual(blocked.ok, true);
-  assert.ok(blocked.data.reply.indexOf('تعذّر إلغاء') !== -1);
+  const missingToken = sandbox.B6LifecycleService.recoverRecoveryCase(
+    recoveryCaseId,
+    { operatorId: 'doctor-1', authorityType: 'DOCTOR' },
+    { type: 'CLOSE_RELEASE_PENDING' }
+  );
+  const wrongToken = sandbox.B6LifecycleService.recoverRecoveryCase(
+    recoveryCaseId,
+    { operatorId: 'doctor-1', authorityType: 'DOCTOR' },
+    { type: 'CLOSE_RELEASE_PENDING' },
+    'WRONG_TOKEN'
+  );
+  assert.strictEqual(missingToken.ok, false);
+  assert.strictEqual(missingToken.error.code, 'B6_RECOVERY_ALREADY_OWNED');
+  assert.strictEqual(wrongToken.ok, false);
+  assert.strictEqual(wrongToken.error.code, 'B6_RECOVERY_ALREADY_OWNED');
+
+  auditAppendFailure = false;
+  const closed = sandbox.B6LifecycleService.recoverRecoveryCase(
+    recoveryCaseId,
+    { operatorId: 'doctor-1', authorityType: 'DOCTOR' },
+    { type: 'CLOSE_RELEASE_PENDING' },
+    token
+  );
+  assert.strictEqual(closed.ok, true);
   assert.strictEqual(claim(PHONE), undefined);
-  assert.strictEqual(createdEventCount, eventsBeforeClose);
+  assert.strictEqual(latest(PHONE).lifecycle_state, 'RELEASED');
 });
 
 test('B6-25 — recovery authorization rejects absent operator and non-Doctor authority', function() {
@@ -744,54 +774,89 @@ test('B6-31 — ACTIVE and RESOLVED lifecycle records reject recovery without cr
   assert.strictEqual(free('OLD').status, 'CONFIRMED');
 });
 
-test('B6-32 — same recovery case is exclusively owned by one Doctor while HELD_RECOVERY', function() {
+test('B6-32 — deterministic recovery interleave blocks a second execution and normal lifecycle commands', function() {
+  reset();
+  failOldSlotFree = true;
+  publicChange();
+  const recoveryCaseId = latest(PHONE).recovery_case_id;
+  failOldSlotFree = false;
+  const eventCountBeforeRecovery = createdEventCount;
+  let executionBRecovery;
+  let executionBChange;
+  let executionBCancel;
+
+  recoveryInterleave = function() {
+    executionBRecovery = sandbox.B6LifecycleService.recoverRecoveryCase(
+      recoveryCaseId,
+      { operatorId: 'doctor-A', authorityType: 'DOCTOR' },
+      { type: 'RESOLVE_CHANGE' }
+    );
+    executionBChange = publicChange();
+    executionBCancel = publicCancel();
+  };
+
+  const doctorA = sandbox.B6LifecycleService.recoverRecoveryCase(
+    recoveryCaseId,
+    { operatorId: 'doctor-A', authorityType: 'DOCTOR' },
+    { type: 'RESOLVE_CHANGE' }
+  );
+
+  assert.strictEqual(doctorA.ok, true);
+  assert.strictEqual(executionBRecovery.ok, false);
+  assert.strictEqual(executionBRecovery.error.code, 'B6_RECOVERY_ALREADY_OWNED');
+  assert.strictEqual(executionBChange.ok, true);
+  assert.strictEqual(executionBCancel.ok, true);
+  assert.ok(executionBChange.data.reply.indexOf('تعذّر تغيير') !== -1);
+  assert.ok(executionBCancel.data.reply.indexOf('تعذّر إلغاء') !== -1);
+  assert.strictEqual(createdEventCount, eventCountBeforeRecovery);
+  assert.strictEqual(claim(PHONE), undefined);
+  assert.strictEqual(latest(PHONE).lifecycle_state, 'RELEASED');
+});
+
+test('B6-33 — same operator re-entry requires the exact recoveryOwnerToken', function() {
   reset();
   createFailure = true;
   publicChange();
   const recoveryCaseId = latest(PHONE).recovery_case_id;
 
-  const doctorAFirst = sandbox.B6LifecycleService.recoverRecoveryCase(
+  const first = sandbox.B6LifecycleService.recoverRecoveryCase(
     recoveryCaseId,
     { operatorId: 'doctor-A', authorityType: 'DOCTOR' },
     { type: 'RESOLVE_CHANGE' }
   );
-  assert.strictEqual(doctorAFirst.ok, false);
-  const claimAfterA = JSON.parse(claim(PHONE));
-  assert.strictEqual(claimAfterA.ownershipState, 'HELD_RECOVERY');
-  assert.strictEqual(claimAfterA.recoveryOperatorId, 'doctor-A');
-  assert.ok(claimAfterA.recoveryOwnerToken);
+  assert.strictEqual(first.ok, false);
+  const token = first.error.details.recoveryOwnerToken;
+  const claimAfterFirst = JSON.parse(claim(PHONE));
+  assert.strictEqual(claimAfterFirst.ownershipState, 'HELD_RECOVERY');
+  assert.strictEqual(claimAfterFirst.recoveryOwnerToken, token);
 
-  const eventCountBeforeB = createdEventCount;
-  const doctorB = sandbox.B6LifecycleService.recoverRecoveryCase(
-    recoveryCaseId,
-    { operatorId: 'doctor-B', authorityType: 'DOCTOR' },
-    { type: 'RESOLVE_CHANGE' }
-  );
-  assert.strictEqual(doctorB.ok, false);
-  assert.strictEqual(doctorB.error.code, 'B6_RECOVERY_ALREADY_OWNED');
-  const claimAfterB = JSON.parse(claim(PHONE));
-  assert.strictEqual(claimAfterB.recoveryOperatorId, 'doctor-A');
-  assert.strictEqual(claimAfterB.recoveryOwnerToken, claimAfterA.recoveryOwnerToken);
-  assert.strictEqual(createdEventCount, eventCountBeforeB);
-
-  const doctorAContinue = sandbox.B6LifecycleService.recoverRecoveryCase(
+  const missingToken = sandbox.B6LifecycleService.recoverRecoveryCase(
     recoveryCaseId,
     { operatorId: 'doctor-A', authorityType: 'DOCTOR' },
     { type: 'RESOLVE_CHANGE' }
   );
-  assert.strictEqual(doctorAContinue.ok, false);
-  assert.notStrictEqual(doctorAContinue.error.code, 'B6_RECOVERY_ALREADY_OWNED');
-
-  const normalChange = publicChange();
-  const normalCancel = publicCancel();
-  assert.strictEqual(normalChange.ok, true);
-  assert.strictEqual(normalCancel.ok, true);
-  assert.ok(normalChange.data.reply.indexOf('تعذّر تغيير') !== -1);
-  assert.ok(normalCancel.data.reply.indexOf('تعذّر إلغاء') !== -1);
-  assert.strictEqual(createdEventCount, eventCountBeforeB);
+  const wrongToken = sandbox.B6LifecycleService.recoverRecoveryCase(
+    recoveryCaseId,
+    { operatorId: 'doctor-A', authorityType: 'DOCTOR' },
+    { type: 'RESOLVE_CHANGE' },
+    'WRONG_TOKEN'
+  );
+  const correctToken = sandbox.B6LifecycleService.recoverRecoveryCase(
+    recoveryCaseId,
+    { operatorId: 'doctor-A', authorityType: 'DOCTOR' },
+    { type: 'RESOLVE_CHANGE' },
+    token
+  );
+  assert.strictEqual(missingToken.ok, false);
+  assert.strictEqual(missingToken.error.code, 'B6_RECOVERY_ALREADY_OWNED');
+  assert.strictEqual(wrongToken.ok, false);
+  assert.strictEqual(wrongToken.error.code, 'B6_RECOVERY_ALREADY_OWNED');
+  assert.strictEqual(correctToken.ok, false);
+  assert.notStrictEqual(correctToken.error.code, 'B6_RECOVERY_ALREADY_OWNED');
+  assert.strictEqual(JSON.parse(claim(PHONE)).recoveryOwnerToken, token);
 });
 
-test('B6-33 — GoogleCalendar lifecycle infrastructure persists and finds exact operation tags', function() {
+test('B6-34 — GoogleCalendar lifecycle infrastructure persists and finds exact operation tags', function() {
   const calendarSource = fs.readFileSync(path.join(ROOT, 'Infrastructure/GoogleCalendar.js'), 'utf8');
   const tagStore = {};
   let deleted = false;

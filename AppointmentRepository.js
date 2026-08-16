@@ -350,7 +350,7 @@ const AppointmentRepository = {
     });
   },
 
-  beginB6RecoveryOwnership(phone, recoveryCaseId, operationId, operatorId) {
+  beginB6RecoveryOwnership(phone, recoveryCaseId, operationId, operatorId, recoveryOwnerToken) {
     const key = this._b6LifecycleClaimKey(phone);
 
     return Lock.runExclusive('b6-lifecycle-claim:' + phone, function() {
@@ -366,16 +366,16 @@ const AppointmentRepository = {
       }
 
       if (raw === null || raw === undefined) {
-        const recoveryOwnerToken = 'B6REC_' + ULID.generate();
+        const newRecoveryOwnerToken = 'B6REC_' + ULID.generate();
         claim = {
           operation_id: operationId || '',
           phone: phone,
-          ownerToken: recoveryOwnerToken,
+          ownerToken: newRecoveryOwnerToken,
           ownershipState: 'HELD_RECOVERY',
           acquiredAt: Clock.now().getTime(),
           recoveryCaseId: recoveryCaseId,
           recoveryOperatorId: operatorId,
-          recoveryOwnerToken: recoveryOwnerToken
+          recoveryOwnerToken: newRecoveryOwnerToken
         };
         try {
           properties.setProperty(key, JSON.stringify(claim));
@@ -394,16 +394,18 @@ const AppointmentRepository = {
       if (claim.ownershipState === 'HELD_RECOVERY') {
         if (claim.recoveryCaseId !== recoveryCaseId ||
           claim.recoveryOperatorId !== operatorId ||
-          !claim.recoveryOwnerToken) {
+          !claim.recoveryOwnerToken ||
+          !recoveryOwnerToken ||
+          claim.recoveryOwnerToken !== recoveryOwnerToken) {
           return Result.fail(
             'B6_RECOVERY_ALREADY_OWNED',
-            'Recovery lifecycle is already owned by another operator or recovery owner',
+            'Recovery lifecycle is already owned by an active recovery execution',
             { phone: phone, recoveryCaseId: claim.recoveryCaseId || '' }
           );
         }
 
-        // Same trusted Doctor and same recovery case continues with the
-        // existing recovery owner token; no new ownership is created.
+        // Same recovery case, trusted operator, and execution token continue
+        // with the existing execution fence; no new ownership is created.
         return Result.ok(claim);
       }
 
@@ -416,11 +418,11 @@ const AppointmentRepository = {
         );
       }
 
-      const recoveryOwnerToken = 'B6REC_' + ULID.generate();
+      const newRecoveryOwnerToken = 'B6REC_' + ULID.generate();
       claim.ownershipState = 'HELD_RECOVERY';
       claim.recoveryCaseId = recoveryCaseId;
       claim.recoveryOperatorId = operatorId;
-      claim.recoveryOwnerToken = recoveryOwnerToken;
+      claim.recoveryOwnerToken = newRecoveryOwnerToken;
       claim.updatedAt = Clock.now().getTime();
 
       try {

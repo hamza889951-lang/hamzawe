@@ -492,7 +492,7 @@ const B6LifecycleService = {
     return Result.ok({ targetSlot: targetResult.data });
   },
 
-  recoverRecoveryCase: function(recoveryCaseId, authorizationContext, recoveryDecision) {
+  recoverRecoveryCase: function(recoveryCaseId, authorizationContext, recoveryDecision, recoveryOwnerToken) {
     if (!authorizationContext || !authorizationContext.operatorId ||
       authorizationContext.authorityType !== 'DOCTOR') {
       return Result.fail(
@@ -516,7 +516,7 @@ const B6LifecycleService = {
     }
 
     if (recoveryDecision.type === this.RECOVERY_DECISIONS.CLOSE_RELEASE_PENDING) {
-      return this._closeReleasePending(lifecycle, authorizationContext, recoveryDecision);
+      return this._closeReleasePending(lifecycle, authorizationContext, recoveryDecision, recoveryOwnerToken);
     }
 
     // Recovery resolution may start only from an unresolved lifecycle record.
@@ -544,14 +544,30 @@ const B6LifecycleService = {
       lifecycle.phone,
       recoveryCaseId,
       lifecycle.operation_id,
-      authorizationContext.operatorId
+      authorizationContext.operatorId,
+      recoveryOwnerToken
     );
     if (!recoveryOwnership.ok) return recoveryOwnership;
 
     var ctxResult = this._hydrateRecoveryContext(lifecycle, recoveryOwnership.data);
     if (!ctxResult.ok) {
       return this._recordRecoveryFailure(
-        null,
+        {
+          operationId: lifecycle.operation_id,
+          ownerToken: recoveryOwnership.data.recoveryOwnerToken || '',
+          phone: lifecycle.phone,
+          command: lifecycle.command,
+          oldSlotId: lifecycle.old_slot_id,
+          newSlotId: lifecycle.new_slot_id,
+          calendarEventId: lifecycle.calendar_event_id,
+          calendarId: lifecycle.calendar_id,
+          calendarCorrelationId: lifecycle.calendar_correlation_id || lifecycle.operation_id,
+          recoveryCaseId: lifecycle.recovery_case_id || recoveryCaseId,
+          lifecycleState: lifecycle.lifecycle_state,
+          ownershipState: this.OWNERSHIP_STATES.HELD_RECOVERY,
+          lastCheckpoint: lifecycle.checkpoint,
+          createdAt: lifecycle.created_at || Clock.now()
+        },
         lifecycle,
         authorizationContext,
         recoveryDecision.type,
@@ -828,7 +844,7 @@ const B6LifecycleService = {
     });
   },
 
-  _closeReleasePending: function(lifecycle, authorizationContext, recoveryDecision) {
+  _closeReleasePending: function(lifecycle, authorizationContext, recoveryDecision, recoveryOwnerToken) {
     if (lifecycle.lifecycle_state !== this.LIFECYCLE_STATES.RELEASE_PENDING) {
       return Result.fail(
         'B6_RECOVERY_DECISION_INVALID',
@@ -836,18 +852,32 @@ const B6LifecycleService = {
       );
     }
 
-    var ownershipResult = AppointmentRepository.getB6LifecycleOwnership(lifecycle.phone);
-    if (!ownershipResult.ok) return ownershipResult;
-    if (ownershipResult.data !== null) {
+    var existingOwnership = AppointmentRepository.getB6LifecycleOwnership(lifecycle.phone);
+    if (!existingOwnership.ok) return existingOwnership;
+    if (existingOwnership.data !== null && existingOwnership.data.ownershipState !== this.OWNERSHIP_STATES.HELD_RECOVERY) {
       return Result.fail(
         'B6_RELEASE_PENDING_CLAIM_PRESENT',
-        'Ownership claim still exists; CLOSE_RELEASE_PENDING must not create or delete a claim'
+        'RELEASE_PENDING closure cannot supersede an existing lifecycle ownership claim'
       );
     }
 
-    var ctxResult = this._hydrateRecoveryContext(lifecycle, null);
+    var recoveryOwnership = AppointmentRepository.beginB6RecoveryOwnership(
+      lifecycle.phone,
+      lifecycle.recovery_case_id || recoveryDecision.recoveryCaseId || '',
+      lifecycle.operation_id,
+      authorizationContext.operatorId,
+      recoveryOwnerToken
+    );
+    if (!recoveryOwnership.ok) return recoveryOwnership;
+    var executionToken = recoveryOwnership.data.recoveryOwnerToken || '';
+
+    var ctxResult = this._hydrateRecoveryContext(lifecycle, recoveryOwnership.data);
     if (!ctxResult.ok) {
-      return Result.fail('B6_RELEASE_PENDING_PROOF_FAILED', 'Lifecycle recovery context is unavailable', ctxResult.error);
+      return Result.fail(
+        'B6_RELEASE_PENDING_PROOF_FAILED',
+        'Lifecycle recovery context is unavailable',
+        { error: ctxResult.error, recoveryOwnerToken: executionToken }
+      );
     }
     var ctx = ctxResult.data;
 
@@ -863,7 +893,7 @@ const B6LifecycleService = {
       return Result.fail(
         'B6_RELEASE_PENDING_PROOF_FAILED',
         'Terminal proof is not valid; RELEASE_PENDING remains journal-fenced',
-        terminalProof.error
+        { error: terminalProof.error, recoveryOwnerToken: ctx.ownerToken }
       );
     }
 
@@ -892,7 +922,30 @@ const B6LifecycleService = {
       return Result.fail(
         'B6_RECOVERY_AUDIT_PERSISTENCE_UNKNOWN',
         'Recovery closure audit is ambiguous; RELEASE_PENDING remains journal-fenced',
-        closureAudit.error
+        { error: closureAudit.error, recoveryOwnerToken: ctx.ownerToken }
+      );
+    }
+
+    var releaseState = AppointmentRepository.setB6LifecycleOwnershipState(
+      ctx.phone,
+      ctx.ownerToken,
+      this.OWNERSHIP_STATES.RELEASE_PENDING,
+      { recoveryCaseId: ctx.recoveryCaseId }
+    );
+    if (!releaseState.ok) {
+      return Result.fail(
+        'B6_RELEASE_PENDING_CLAIM_STATE_UNKNOWN',
+        'Recovery execution claim could not enter RELEASE_PENDING',
+        { error: releaseState.error, recoveryOwnerToken: ctx.ownerToken }
+      );
+    }
+
+    var releaseExecution = AppointmentRepository.releaseB6LifecycleOwnership(ctx.phone, ctx.ownerToken);
+    if (!releaseExecution.ok) {
+      return Result.fail(
+        'B6_OWNERSHIP_RELEASE_FAILED',
+        'Recovery execution claim release failed; RELEASE_PENDING remains fenced',
+        { error: releaseExecution.error, recoveryOwnerToken: ctx.ownerToken }
       );
     }
 
@@ -907,7 +960,7 @@ const B6LifecycleService = {
       return Result.fail(
         'B6_CHECKPOINT_PERSISTENCE_UNKNOWN',
         'RELEASED checkpoint is ambiguous; RELEASE_PENDING remains journal-fenced',
-        released.error
+        { error: released.error, recoveryOwnerToken: ctx.ownerToken }
       );
     }
 
@@ -946,7 +999,8 @@ const B6LifecycleService = {
       recoveryCaseId: lifecycle.recovery_case_id || '',
       operationId: lifecycle.operation_id,
       lifecycleState: this.LIFECYCLE_STATES.RELEASED,
-      released: true
+      released: true,
+      recoveryOwnerToken: recoveryOwnership.data.recoveryOwnerToken || ''
     });
   },
 
@@ -1170,7 +1224,12 @@ const B6LifecycleService = {
     return Result.fail(
       'B6_RECOVERY_PROOF_FAILED',
       'Recovery decision did not satisfy terminal proof; ownership remains retained',
-      { reason: reason, details: details || null, auditRecorded: auditResult.ok }
+      {
+        reason: reason,
+        details: details || null,
+        auditRecorded: auditResult.ok,
+        recoveryOwnerToken: activeCtx.ownerToken || ''
+      }
     );
   },
 
