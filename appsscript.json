@@ -17,7 +17,8 @@
   ],
   "addOns": {
     "common": {
-      "name": "HAMZAWE Attendance"
+      "name": "HAMZAWE Attendance",
+      "logoUrl": "https://ssl.gstatic.com/docs/script/images/logo/script-64.png"
     },
     "calendar": {
       "eventOpenTrigger": {

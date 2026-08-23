@@ -1049,6 +1049,11 @@ test('M0-MANIFEST — appsscript.json declares the verified Calendar Add-on conf
   assert.ok(manifest.addOns && manifest.addOns.calendar, 'addOns.calendar required');
   assert.strictEqual(manifest.addOns.calendar.eventOpenTrigger.runFunction, 'onCalendarEventOpen');
   assert.ok(addOnSrc.indexOf('function onCalendarEventOpen') !== -1, 'trigger function must exist in source');
+  // addOns.common: name + logoUrl are REQUIRED by the real Apps Script API
+  // (verified against the live manifest validation — push error:
+  //  "Missing required field: addOns.common.logoUrl")
+  assert.strictEqual(manifest.addOns.common.name, 'HAMZAWE Attendance');
+  assert.ok(typeof manifest.addOns.common.logoUrl === 'string' && manifest.addOns.common.logoUrl.length > 0, 'addOns.common.logoUrl required by the real API');
 
   // event access mode: METADATA = event ID + calendar ID only (verified)
   assert.strictEqual(manifest.addOns.calendar.currentEventAccess, 'METADATA');
