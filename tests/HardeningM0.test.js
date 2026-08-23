@@ -1134,6 +1134,35 @@ test('M0-S1 — structural: AttendanceService stays in the Application layer', f
   assert.ok(src.indexOf('ATTENDANCE_OPERATOR_UNAUTHORIZED') !== -1);
 });
 
+test('M0-S3 — file-evaluation order independence (clasp alphabetical order: AttendanceService BEFORE Config)', function() {
+  // Reproduces the live add-on runtime failure: the Apps Script V8 runtime
+  // evaluates project files in project file order; a clasp-pushed project
+  // orders them alphabetically, so Application/AttendanceService.js is
+  // evaluated BEFORE Config.js. The service file must therefore be
+  // evaluable with Config not yet bound (no top-level Config reference),
+  // and the decision mapping must still resolve from Config at call time.
+  const sb = vm.createContext({ console: console });
+
+  // 1) Evaluate AttendanceService.js FIRST (before Config exists) — must not throw
+  const svcSrc = fs.readFileSync(path.join(ROOT, 'Application/AttendanceService.js'), 'utf8');
+  vm.runInContext(svcSrc + '\nthis.AttendanceService = AttendanceService;', sb, {
+    filename: 'Application/AttendanceService.js'
+  });
+
+  // 2) Now evaluate Config.js (as the runtime would, later in file order)
+  const cfgSrc = fs.readFileSync(path.join(ROOT, 'Config.js'), 'utf8');
+  vm.runInContext(cfgSrc + '\nthis.Config = Config;', sb, { filename: 'Config.js' });
+
+  // 3) The decision → StateMachine-vocabulary mapping resolves at call time
+  assert.strictEqual(sb.AttendanceService._decisionCommand('MARK_COMPLETED'), 'CompleteAppointment');
+  assert.strictEqual(sb.AttendanceService._decisionTarget('MARK_COMPLETED'), 'COMPLETED');
+  assert.strictEqual(sb.AttendanceService._decisionCommand('MARK_NO_SHOW'), 'MarkNoShow');
+  assert.strictEqual(sb.AttendanceService._decisionTarget('MARK_NO_SHOW'), 'NO_SHOW');
+  // unknown decision → falsy (rejected as ATTENDANCE_DECISION_INVALID)
+  assert.ok(!sb.AttendanceService._decisionCommand('FREE_FORM'));
+  assert.ok(!sb.AttendanceService._decisionTarget('FREE_FORM'));
+});
+
 test('M0-S2 — structural: audit store is append-only; Config and StateMachine untouched by M0', function() {
   const repo = sandbox.AttendanceAuditRepository;
   assert.deepStrictEqual(

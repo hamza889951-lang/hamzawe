@@ -80,15 +80,37 @@ const AttendanceService = {
    * Mapping from attendance decision → existing StateMachine command and
    * existing vocabulary target status. No new command or status is
    * introduced; Config.VOCABULARY is untouched.
+   *
+   * RESOLVED LAZILY (at call time, inside functions) — deliberately NOT as
+   * top-level object-initializer values. The Apps Script V8 runtime
+   * evaluates project files in the project's file order; in clasp-pushed
+   * projects that order is alphabetical, which places
+   * Application/AttendanceService.js BEFORE Config.js. A top-level
+   * reference to `Config` would then hit a not-yet-evaluated binding
+   * (ReferenceError at add-on runtime). Resolving inside functions means
+   * every file has been evaluated before any attendance call executes, so
+   * the service is independent of project file order.
    */
-  _DECISION_COMMANDS: {
-    MARK_COMPLETED: Config.VOCABULARY.COMMANDS.COMPLETE_APPOINTMENT,
-    MARK_NO_SHOW: Config.VOCABULARY.COMMANDS.MARK_NO_SHOW
+  _decisionCommand: function(decision) {
+    // Closed set: only the two explicit decisions map to commands.
+    if (decision === AttendanceService.DECISIONS.MARK_COMPLETED) {
+      return Config.VOCABULARY.COMMANDS.COMPLETE_APPOINTMENT;
+    }
+    if (decision === AttendanceService.DECISIONS.MARK_NO_SHOW) {
+      return Config.VOCABULARY.COMMANDS.MARK_NO_SHOW;
+    }
+    return null;
   },
 
-  _DECISION_TARGETS: {
-    MARK_COMPLETED: Config.VOCABULARY.STATUS.COMPLETED,
-    MARK_NO_SHOW: Config.VOCABULARY.STATUS.NO_SHOW
+  _decisionTarget: function(decision) {
+    // Closed set: only the two explicit decisions map to target statuses.
+    if (decision === AttendanceService.DECISIONS.MARK_COMPLETED) {
+      return Config.VOCABULARY.STATUS.COMPLETED;
+    }
+    if (decision === AttendanceService.DECISIONS.MARK_NO_SHOW) {
+      return Config.VOCABULARY.STATUS.NO_SHOW;
+    }
+    return null;
   },
 
   _AUDIT_OUTCOMES: {
@@ -126,8 +148,8 @@ const AttendanceService = {
     var logCommand = 'ATTENDANCE_' + decision;
 
     // 1) Explicit decision only — no free-form status accepted.
-    var command = this._DECISION_COMMANDS[decision];
-    var target = this._DECISION_TARGETS[decision];
+    var command = this._decisionCommand(decision);
+    var target = this._decisionTarget(decision);
     if (!command || !target) {
       return Result.fail(
         'ATTENDANCE_DECISION_INVALID',
