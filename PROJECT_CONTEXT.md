@@ -45,6 +45,7 @@ Result.js                         { ok:true,data } | { ok:false, error:{code,mes
 StateMachine.js                   Slot state transitions (root level, despite Domain/ mention)
 Clock.js                          Clock.now() — single time source
 Webhook.js                        doPost entry → parse → idempotency → Router → reply
+AttendanceAddOn.js                M0 Calendar Add-on entry surface (CardService UI only) — extracts event identity + operator (Session), calls AttendanceService, renders Result; no business logic, no storage writes
 Scheduler.js                      Daily orchestrator (Archive→Maintenance→Horizon→Reminders→HealthCheck) + Liveness
 ArchiveService.js                 SYSTEM_LOG archive policy (90d) only — no storage details (Phase A done)
 LogArchiveRepository.js           Storage for log archiving: findOlderThan / appendToArchive(+verify) / deleteRecords (Phase A, new)
@@ -66,8 +67,10 @@ Application/BookingService.js     Full booking journey + ReserveSlot/ConfirmRese
 Application/CancelService.js      Cancel confirmed appointment
 Application/CommandExecutor.js    Wraps commands: logs START/END, converts exceptions to Result.fail
 Application/MaintenanceService.js runCleanup (expired RESERVED→FREE) + runExpiration (FREE past→EXPIRED)
+Application/AttendanceService.js  M0 attendance boundary: markCompleted/markNoShow (MARK_COMPLETED / MARK_NO_SHOW) — trusted operator context + event→slot correlation (calendar_event_id, exactly-one) → StateMachine transition inside SlotRepository.atomicUpdate
 Repositories/SlotRepository.js    Slot CRUD; atomicUpdate (ScriptLock + fresh re-read + decisionFn)
 Repositories/CalendarRepository.js Wraps GoogleCalendar → Result
+Repositories/AttendanceAuditRepository.js M0 append-only attendance decision evidence (ATTENDANCE_AUDIT sheet) — NOT the Availability source of truth; no read/delete functions; first APPLIED row timestamp = ATTENDANCE_ACTIVATION_AT
 Infrastructure/GoogleSheets.js    ONLY SpreadsheetApp access (getAllRows, updateBatch, appendRow, ...)
 Infrastructure/GoogleCalendar.js  ONLY CalendarApp access (createEvent/deleteEvent)
 Infrastructure/Lock.js            Lock.runExclusive(key, fn) — ScriptLock wrapper; "the only file knowing LockService"
@@ -301,6 +304,11 @@ Ranked by severity (P0=worst). All confirmed by code inspection.
 
 ## 15. Current Project Status
 
+- **M0 (Phase 1.1 — Management Intelligence) — PR #10, live verification COMPLETE, awaiting second architectural review:** Attendance Capture Foundation. New: `Application/AttendanceService.js` (MARK_COMPLETED / MARK_NO_SHOW, explicit only), `Repositories/AttendanceAuditRepository.js` (append-only ATTENDANCE_AUDIT evidence), `AttendanceAddOn.js` (Calendar Add-on surface), `tests/HardeningM0.test.js` (33 tests).
+  - **Live-verified on a separate TEST Apps Script project (owner-executed, scriptId ≠ production):** manifest = PR version (READ + current.event.read, empirically demonstrated: METADATA does not deliver the event context); the runtime delivers the documented Calendar-event fields flattened under top-level `e.calendar` where `calendar.id` = opened EVENT id (decisively verified via CalendarApp.getEventById) and `calendar.calendarId` = parent calendar; 4 live experiments (MARK COMPLETED / duplicate / MARK NO-SHOW / negative path) returned the expected results — Availability transitions + APPLIED/ALREADY_APPLIED audit rows on the TEST spreadsheet only.
+  - **Remediated (architectural review blockers):** verified CardService APIs (7 fixes), contract-faithful test mock, `addOns.common.logoUrl` (real-API requirement), file-evaluation-order-safe service (lazy Config resolution), operator authorization as a DERIVED trust boundary (identity from Session + `ATTENDANCE_OPERATOR_EMAIL` deployment policy; service derives DOCTOR on exact match; entry layer never claims authority; unconfigured policy / unauthorized identity fail explicitly with zero side effects).
+  - **Evidence status:** local = M0 33/33 + B1–B6 116/116 PASS; live = captured event-object JSON + decisive identity probe in the TEST project Cloud logs + owner-confirmed 4-experiment results. READ level retained (no write scope, no READ_WRITE, no event mutation — T5 closed).
+  - Correlation by slot-row `calendar_event_id` (stable id, exactly-one rule). Transitions only via StateMachine inside `SlotRepository.atomicUpdate` (duplicate = deterministic no-op `ALREADY_APPLIED`, zero cell writes; conflicting concurrent decisions cannot both win — `INVALID_TRANSITION` on fresh re-read or `LOCK_TIMEOUT`). Attendance correction (COMPLETED↔NO_SHOW editing) is out of scope — future Attendance Correction Contract.
 - **Stable v1.0**; constitution v3.2; hardening roadmap officially complete.
 - **Recently completed:** ArchiveService for SYSTEM_LOG (last commits); Scheduler archive stage; Liveness fix; HealthCheck; horizon maintainer; webhook idempotency.
 - **Implemented (Phase A — decouple ArchiveService from storage):** `LogArchiveRepository` created (findOlderThan / appendToArchive with read-back verify / deleteRecords with identity rule); `ArchiveService` is now policy-only (no `SpreadsheetApp`, no sheet names, no row numbers, no delete logic, no `_rowNumber`); `GoogleSheets` gained generic `getOrCreateSheet`, `deleteRowsByNumbers`, and `_openSpreadsheet`. Batch delete (merged ranges, no `deleteRow` loop). No Scheduler/LogRepository/Config/Result changes.
