@@ -71,11 +71,20 @@ var ATTENDANCE_OPERATOR_PROPERTY_KEY = 'ATTENDANCE_OPERATOR_EMAIL';
  */
 function onCalendarEventOpen(e) {
   var identity = _extractEventIdentity(e);
+  // TEMPORARY (M0 live verification): with Script Property ATTENDANCE_DEBUG
+  // = "true", dump the actual event-object shape (Logger + card section) so
+  // the real runtime shape can be confirmed before finalizing
+  // _extractEventIdentity. Disabled by default; remove after verification.
+  var diagnostic = null;
+  if (_isDebugEnabled()) {
+    diagnostic = _buildEventDiagnostic(e, identity);
+  }
   return _buildCard({
     eventId: identity.eventId,
     calendarId: identity.calendarId,
     decision: '',
-    result: null
+    result: null,
+    diagnostic: diagnostic
   });
 }
 
@@ -194,6 +203,10 @@ function _resolveOperatorContext() {
  *   e.selectedEvent.id / e.selectedEvent.title, e.calendar.id, or the
  *   top-level e.id / e.calendarId.
  *
+ * The live runtime shape is being confirmed via the ATTENDANCE_DEBUG
+ * diagnostic (M0 live verification); this function is the single place
+ * to adjust if the observed shape differs.
+ *
  * If neither shape yields an event ID, returns empty identity and the
  * card offers no decisions (fail-safe; the service would reject anyway).
  */
@@ -222,6 +235,57 @@ function _extractEventIdentity(e) {
     eventId: eventId ? String(eventId).trim() : '',
     calendarId: calendarId ? String(calendarId).trim() : ''
   };
+}
+
+/**
+ * TEMPORARY (M0 live verification) — diagnostic mode toggle.
+ */
+function _isDebugEnabled() {
+  try {
+    return String(
+      PropertiesService.getScriptProperties().getProperty('ATTENDANCE_DEBUG') || ''
+    ).toLowerCase() === 'true';
+  } catch (err) {
+    return false;
+  }
+}
+
+/**
+ * TEMPORARY (M0 live verification) — dumps the actual event-object shape:
+ * full JSON to the execution log (Editor → Executions) and a compact
+ * key-map on the card. Never includes user data beyond the object's own
+ * keys and the extracted stable IDs.
+ */
+function _buildEventDiagnostic(e, identity) {
+  var lines = [];
+  try {
+    Logger.log('M0_DIAG_EVENT_OBJECT_BEGIN');
+    Logger.log(JSON.stringify(e));
+    Logger.log('M0_DIAG_EVENT_OBJECT_END');
+  } catch (dumpErr) {
+    lines.push('Full JSON dump failed: ' + dumpErr.message);
+  }
+  lines.push('Top keys: ' + _keysOf(e));
+  if (e && e.calendarEventObject) {
+    lines.push(
+      'calendarEventObject keys: ' + _keysOf(e.calendarEventObject) +
+      (e.calendarEventObject.calendar
+        ? ' | .calendar keys: ' + _keysOf(e.calendarEventObject.calendar)
+        : '')
+    );
+  }
+  if (e && e.calendar) lines.push('calendar keys: ' + _keysOf(e.calendar));
+  if (e && e.selectedEvent) lines.push('selectedEvent keys: ' + _keysOf(e.selectedEvent));
+  if (e && e.commonEventObject) lines.push('commonEventObject keys: ' + _keysOf(e.commonEventObject));
+  lines.push('Extracted: eventId=' + (identity.eventId || '<empty>') +
+    ', calendarId=' + (identity.calendarId || '<empty>'));
+  return lines.join('\n');
+}
+
+function _keysOf(obj) {
+  if (!obj || typeof obj !== 'object') return '(absent)';
+  var keys = Object.keys(obj);
+  return keys.length ? '[' + keys.join(', ') + ']' : '[]';
 }
 
 /**
@@ -277,11 +341,18 @@ function _buildCard(fields) {
     );
   }
 
-  return CardService.newCardBuilder()
-    .setHeader(CardService.newCardHeader().setTitle('Attendance Capture'))
-    .addSection(contextSection)
-    .addSection(decisionSection)
-    .build();
+  var builder = CardService.newCardBuilder()
+    .setHeader(CardService.newCardHeader().setTitle('Attendance Capture'));
+  builder.addSection(contextSection);
+  if (fields.diagnostic) {
+    builder.addSection(
+      CardService.newCardSection()
+        .setHeader('DIAGNOSTIC (event object)')
+        .addWidget(CardService.newTextParagraph().setText(fields.diagnostic))
+    );
+  }
+  builder.addSection(decisionSection);
+  return builder.build();
 }
 
 /**

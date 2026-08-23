@@ -196,7 +196,8 @@ function createCoreSandbox() {
     cellWrites: 0,
     lockHeld: false,
     sessionEmail: OPERATOR_EMAIL,
-    properties: {}
+    properties: {},
+    loggerLines: []
   };
 
   sandbox.Clock = { now: function() { return new Date(state.nowMs); } };
@@ -281,6 +282,9 @@ function createCoreSandbox() {
     }
   };
 
+  // ── Logger seam (add-on diagnostic mode dumps the event-object shape) ──
+  sandbox.Logger = { log: function(line) { state.loggerLines.push(String(line)); } };
+
   // ── PropertiesService seam (add-on surface reads the deployment policy) ──
   sandbox.PropertiesService = {
     getScriptProperties: function() {
@@ -338,6 +342,7 @@ function createCoreSandbox() {
     state.cellWrites = 0;
     state.lockHeld = false;
     state.properties = { ATTENDANCE_OPERATOR_EMAIL: OPERATOR_EMAIL };
+    state.loggerLines = [];
   }
 
   return { sandbox: sandbox, state: state, makeSlot: makeSlot, reset: reset };
@@ -1003,6 +1008,33 @@ test('M0-I5 — Add-on operator boundary: untrusted / unconfigured → explicit 
   assert.ok(cardText(responseCard(unconfigured)).indexOf('FAILED: ATTENDANCE_TRUST_POLICY_UNCONFIGURED') !== -1);
   assert.strictEqual(addOnState.availabilityRows[0].status, 'CONFIRMED');
   assert.strictEqual(addOnState.auditRows.length, 0);
+});
+
+test('M0-I7 — debug mode dumps the live event-object shape (for runtime shape verification)', function() {
+  addOn.core.reset();
+  addOnState.properties.ATTENDANCE_DEBUG = 'true';
+  const card = addOnSandbox.onCalendarEventOpen(
+    currentEventObject(EVENT_ID, 'CAL_DEFAULT')
+  );
+  const diag = sectionsOf(card).find(function(s) { return sectionHeaderOf(s) === 'DIAGNOSTIC (event object)'; });
+  assert.ok(diag, 'diagnostic section present when ATTENDANCE_DEBUG=true');
+  const text = cardText(diag);
+  assert.ok(text.indexOf('Top keys: [commonEventObject, calendarEventObject]') !== -1);
+  assert.ok(text.indexOf('calendarEventObject keys: [calendar] | .calendar keys: [id, calendarId]') !== -1);
+  assert.ok(text.indexOf('Extracted: eventId=' + EVENT_ID) !== -1);
+  // full JSON was captured in the execution log for offline inspection
+  const idx = addOnState.loggerLines.indexOf('M0_DIAG_EVENT_OBJECT_BEGIN');
+  assert.ok(idx !== -1, 'diagnostic dump markers logged');
+  assert.ok(addOnState.loggerLines[idx + 1].indexOf(EVENT_ID) !== -1, 'full JSON contains the event id');
+  assert.strictEqual(addOnState.loggerLines[idx + 2], 'M0_DIAG_EVENT_OBJECT_END');
+
+  // debug OFF by default → no diagnostic section
+  addOn.core.reset();
+  const card2 = addOnSandbox.onCalendarEventOpen(
+    currentEventObject(EVENT_ID, 'CAL_DEFAULT')
+  );
+  const diag2 = sectionsOf(card2).find(function(s) { return sectionHeaderOf(s) === 'DIAGNOSTIC (event object)'; });
+  assert.ok(!diag2, 'no diagnostic section when ATTENDANCE_DEBUG is not set');
 });
 
 test('M0-I6 — structural: Add-on uses ONLY verified CardService factories and no forbidden references', function() {
