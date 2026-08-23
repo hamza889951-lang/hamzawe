@@ -13,7 +13,8 @@
     "https://www.googleapis.com/auth/script.external_request",
     "https://www.googleapis.com/auth/script.scriptapp",
     "https://www.googleapis.com/auth/userinfo.email",
-    "https://www.googleapis.com/auth/calendar.addons.execute"
+    "https://www.googleapis.com/auth/calendar.addons.execute",
+    "https://www.googleapis.com/auth/calendar.addons.current.event.read"
   ],
   "addOns": {
     "common": {
@@ -24,7 +25,7 @@
       "eventOpenTrigger": {
         "runFunction": "onCalendarEventOpen"
       },
-      "currentEventAccess": "METADATA"
+      "currentEventAccess": "READ"
     }
   }
 }

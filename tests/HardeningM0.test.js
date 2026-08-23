@@ -1087,23 +1087,28 @@ test('M0-MANIFEST — appsscript.json declares the verified Calendar Add-on conf
   assert.strictEqual(manifest.addOns.common.name, 'HAMZAWE Attendance');
   assert.ok(typeof manifest.addOns.common.logoUrl === 'string' && manifest.addOns.common.logoUrl.length > 0, 'addOns.common.logoUrl required by the real API');
 
-  // event access mode: METADATA = event ID + calendar ID only (verified)
-  assert.strictEqual(manifest.addOns.calendar.currentEventAccess, 'METADATA');
+  // event access mode: READ — empirically required (M0 live capture
+  // evidence): at METADATA the runtime delivers e.calendar.{id, calendarId,
+  // organizer, capabilities} but NOT the opened event's ID (no
+  // selectedEvent / calendarEventObject / top-level id). READ is the
+  // documented level providing "all provided event fields including the
+  // metadata" and its documented scope requirement is
+  // calendar.addons.current.event.read (read-only: no write scope, no
+  // READ_WRITE, no event mutation).
+  assert.strictEqual(manifest.addOns.calendar.currentEventAccess, 'READ');
 
-  // scopes: the documented Calendar metadata scope is present; no
-  // user-generated-data scopes; the pre-existing production scopes are
-  // preserved (explicit list replaces auto-inference — deployment impact
-  // documented in the PR).
+  // scopes: the documented Calendar scopes are present (metadata +
+  // current-event read, empirically required); no current-event WRITE scope.
   const scopes = manifest.oauthScopes.slice().sort();
   assert.deepStrictEqual(scopes, [
     'https://www.googleapis.com/auth/calendar',
+    'https://www.googleapis.com/auth/calendar.addons.current.event.read',
     'https://www.googleapis.com/auth/calendar.addons.execute',
     'https://www.googleapis.com/auth/script.external_request',
     'https://www.googleapis.com/auth/script.scriptapp',
     'https://www.googleapis.com/auth/spreadsheets',
     'https://www.googleapis.com/auth/userinfo.email'
   ]);
-  assert.strictEqual(scopes.indexOf('https://www.googleapis.com/auth/calendar.addons.current.event.read'), -1);
   assert.strictEqual(scopes.indexOf('https://www.googleapis.com/auth/calendar.addons.current.event.write'), -1);
 
   // production webapp (v7) configuration untouched

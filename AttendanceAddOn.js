@@ -20,19 +20,29 @@
  *      not here. This entry layer never asserts authority.
  *   4. Display the Result as a Card (re-rendered via Navigation.updateCard).
  *
- * Verified against the official Google documentation (M0 remediation):
+ * Verified against the official Google documentation AND live test
+ * captures (M0 remediation):
  *   - Manifest: addOns.calendar.eventOpenTrigger.runFunction +
- *     currentEventAccess = "METADATA" (event ID + calendar ID are
- *     metadata; no user-generated data is requested). Scope
+ *     currentEventAccess. Scope
  *     https://www.googleapis.com/auth/calendar.addons.execute is the
- *     documented requirement for Calendar event metadata access
- *     (developers.google.com/workspace/add-ons/concepts/workspace-scopes).
- *   - Event object: the Calendar event object carries
- *     e.calendarEventObject.calendar.id (event ID) and
- *     e.calendarEventObject.calendar.calendarId (calendar ID).
- *     The official field table does NOT include summary/start/end at any
- *     access level — therefore this card displays stable identity only
- *     (the operator sees the event itself in the Calendar UI).
+ *     documented requirement for Calendar event metadata access.
+ *   - LIVE CAPTURE (M0 test deployment, METADATA level): the runtime
+ *     delivered e = { clientPlatform, hostApp, commonEventObject:
+ *     {hostApp, platform}, calendar: { id, calendarId, organizer,
+ *     capabilities } } — i.e. CALENDAR context only; the opened event's
+ *     ID was NOT present (no selectedEvent, no calendarEventObject, no
+ *     top-level id). Conclusion: METADATA is insufficient for M0
+ *     correlation; the documented READ level ("all provided event fields
+ *     including the metadata") is an empirically demonstrated necessity,
+ *     with its documented scope calendar.addons.current.event.read
+ *     (READ-ONLY: no write scope, no READ_WRITE, no event mutation —
+ *     attendance state lives in Availability, never in the event).
+ *   - The exact field path of the event ID under READ is being finalized
+ *     from the live READ capture (diagnostic mode); _extractEventIdentity
+ *     is the single function holding the extraction contract. The card
+ *     displays stable identity only (the official field table does not
+ *     include summary/start/end at any level; the operator sees the event
+ *     itself in the Calendar UI).
  *   - Action parameters: e.commonEventObject.parameters (the current
  *     documented location; Action.setParameters is the current API).
  *   - CardService: newCardBuilder/setHeader/newCardHeader.setTitle/
