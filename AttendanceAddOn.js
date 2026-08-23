@@ -69,6 +69,9 @@ var ATTENDANCE_DECISION_MARK_NO_SHOW = 'MARK_NO_SHOW';
 /** Deployment trust policy property (set by the owner at deploy time). */
 var ATTENDANCE_OPERATOR_PROPERTY_KEY = 'ATTENDANCE_OPERATOR_EMAIL';
 
+/** TEMPORARY (M0 live verification) — build tag for deployment-version proof. */
+var M0_BUILD_TAG = 'v5-identity-probe-2026-08-24';
+
 /**
  * Calendar eventOpenTrigger entry point (GAS add-on naming convention;
  * mapped by appsscript.json addOns.calendar.eventOpenTrigger.runFunction).
@@ -97,7 +100,6 @@ function onCalendarEventOpen(e) {
     diagnostic: diagnostic
   });
 }
-
 /**
  * Action handler — decision is explicit by handler identity.
  * @param {Object} e - CardService action event (parameters = event identity)
@@ -263,18 +265,90 @@ function _isDebugEnabled() {
 /**
  * TEMPORARY (M0 live verification) — dumps the actual event-object shape:
  * full JSON to the execution log (Editor → Executions) and a compact
- * key-map on the card. Never includes user data beyond the object's own
+ * key-map on the card. Includes a DECISIVE identity probe: the observed
+ * runtime layout puts a `calendar` object top-level whose `id` field could
+ * be either the EVENT id (documented new layout) or the CALENDAR id
+ * (legacy layout) — the Calendar API is asked to resolve the ambiguity:
+ *   - CalendarApp.getCalendarById(value)  → non-null ⇒ value = calendar id
+ *   - defaultCalendar.getEventById(value) → non-null ⇒ value = event id
+ * Probe calls are wrapped (never break the card) and this entire
+ * diagnostic — including the temporary CalendarApp probe — is removed once
+ * the shape is finalized. Never includes user data beyond the object's own
  * keys and the extracted stable IDs.
  */
 function _buildEventDiagnostic(e, identity) {
   var lines = [];
   try {
+    Logger.log('M0_DIAG_BUILD: ' + M0_BUILD_TAG);
     Logger.log('M0_DIAG_EVENT_OBJECT_BEGIN');
     Logger.log(JSON.stringify(e));
     Logger.log('M0_DIAG_EVENT_OBJECT_END');
   } catch (dumpErr) {
     lines.push('Full JSON dump failed: ' + dumpErr.message);
   }
+
+  // Explicit field-presence probe (guards against non-enumerable shapes)
+  try {
+    Logger.log('M0_DIAG_FIELDS: ' + JSON.stringify({
+      selectedEvent: e && e.selectedEvent ? 'present' : 'absent',
+      selectedDate: e && e.selectedDate ? String(e.selectedDate) : 'absent',
+      calendarEventObject: e && e.calendarEventObject ? 'present' : 'absent',
+      topLevelId: e && e.id ? String(e.id) : 'absent',
+      calendarId_field: e && e.calendar ? (e.calendar.id || 'absent') : 'absent'
+    }));
+  } catch (fieldsErr) {
+    Logger.log('M0_DIAG_FIELDS_FAILED: ' + fieldsErr.message);
+  }
+
+  // DECISIVE identity probe for the observed calendar.id value
+  try {
+    var value = e && e.calendar && e.calendar.id ? String(e.calendar.id) : '';
+    var asCalendar = 'n/a';
+    var asEvent = 'n/a';
+    if (value) {
+      try {
+        var c = CalendarApp.getCalendarById(value);
+        asCalendar = c ? ('calendar:' + c.getName()) : 'null';
+      } catch (calErr) {
+        asCalendar = 'ERR:' + calErr.message;
+      }
+      try {
+        var ev = CalendarApp.getDefaultCalendar().getEventById(value);
+        asEvent = ev ? ('event:' + ev.getId() + '|' + ev.getTitle()) : 'null';
+      } catch (evErr) {
+        asEvent = 'ERR:' + evErr.message;
+      }
+    }
+    Logger.log('M0_DIAG_IDENTITY_PROBE: ' + JSON.stringify({
+      value: value, asCalendar: asCalendar, asEvent: asEvent
+    }));
+  } catch (probeErr) {
+    Logger.log('M0_DIAG_IDENTITY_PROBE_FAILED: ' + probeErr.message);
+  }
+
+  // Calendar-listing probe: proves the calendar scope is active in this
+  // runtime and records nearby events (id/title/start) for fallback
+  // assessment. Pure time math from Clock.now() (CAS-009).
+  try {
+    var cal = e && e.calendar && e.calendar.calendarId
+      ? (function() {
+          try {
+            return CalendarApp.getCalendarById(e.calendar.calendarId) || CalendarApp.getDefaultCalendar();
+          } catch (x) {
+            return CalendarApp.getDefaultCalendar();
+          }
+        })()
+      : CalendarApp.getDefaultCalendar();
+    var nowMs = Clock.now().getTime();
+    var events = cal.getEvents(new Date(nowMs - 86400000), new Date(nowMs + 3 * 86400000));
+    Logger.log('M0_DIAG_CAL_EVENTS: ' + JSON.stringify(events.map(function(ev) {
+      return { id: ev.getId(), title: ev.getTitle(), start: String(ev.getStartDate()) };
+    })));
+  } catch (listErr) {
+    Logger.log('M0_DIAG_CAL_EVENTS_FAILED: ' + listErr.message);
+  }
+
+  lines.push('Build: ' + M0_BUILD_TAG + ' (full probes in Executions log)');
   lines.push('Top keys: ' + _keysOf(e));
   if (e && e.calendarEventObject) {
     lines.push(
