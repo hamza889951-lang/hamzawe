@@ -196,8 +196,7 @@ function createCoreSandbox() {
     cellWrites: 0,
     lockHeld: false,
     sessionEmail: OPERATOR_EMAIL,
-    properties: {},
-    loggerLines: []
+    properties: {}
   };
 
   sandbox.Clock = { now: function() { return new Date(state.nowMs); } };
@@ -282,9 +281,6 @@ function createCoreSandbox() {
     }
   };
 
-  // ── Logger seam (add-on diagnostic mode dumps the event-object shape) ──
-  sandbox.Logger = { log: function(line) { state.loggerLines.push(String(line)); } };
-
   // ── PropertiesService seam (add-on surface reads the deployment policy) ──
   sandbox.PropertiesService = {
     getScriptProperties: function() {
@@ -341,8 +337,8 @@ function createCoreSandbox() {
     state.storageReads = 0;
     state.cellWrites = 0;
     state.lockHeld = false;
+    state.sessionEmail = OPERATOR_EMAIL; // no cross-test identity leakage
     state.properties = { ATTENDANCE_OPERATOR_EMAIL: OPERATOR_EMAIL };
-    state.loggerLines = [];
   }
 
   return { sandbox: sandbox, state: state, makeSlot: makeSlot, reset: reset };
@@ -421,6 +417,33 @@ function currentEventObject(eventId, calendarId) {
     commonEventObject: { platform: 'WEB', hostApp: 'CALENDAR', parameters: {} },
     calendarEventObject: {
       calendar: { id: eventId, calendarId: calendarId }
+    }
+  };
+}
+
+/**
+ * OBSERVED runtime shape (M0 live capture, READ level, build v5): the
+ * documented event fields flattened to top-level e.calendar, with
+ * user-generated fields (attendees) present. e.calendar.id = EVENT id
+ * (live-verified via CalendarApp.getEventById).
+ */
+function observedRuntimeEventObject(eventId, calendarId, attendeeEmail) {
+  return {
+    commonEventObject: { hostApp: 'CALENDAR', platform: 'WEB' },
+    clientPlatform: 'web',
+    hostApp: 'calendar',
+    calendar: {
+      id: eventId,
+      calendarId: calendarId,
+      organizer: { email: calendarId },
+      capabilities: { canSeeAttendees: true, canSeeConferenceData: true },
+      attendees: [{
+        email: attendeeEmail,
+        self: true,
+        organizer: true,
+        responseStatus: 'accepted',
+        displayName: attendeeEmail
+      }]
     }
   };
 }
@@ -1010,37 +1033,30 @@ test('M0-I5 — Add-on operator boundary: untrusted / unconfigured → explicit 
   assert.strictEqual(addOnState.auditRows.length, 0);
 });
 
-test('M0-I7 — debug mode dumps the live event-object shape (for runtime shape verification)', function() {
+test('M0-I7 — observed runtime layout (live capture shape) is extracted end-to-end; attendee PII never rendered', function() {
+  // The exact shape captured from the M0 test deployment (READ level):
+  // flattened top-level e.calendar where calendar.id = EVENT id.
+  const attendeeEmail = 'attendee.pii@example.com';
   addOn.core.reset();
-  addOnState.properties.ATTENDANCE_DEBUG = 'true';
   const card = addOnSandbox.onCalendarEventOpen(
-    currentEventObject(EVENT_ID, 'CAL_DEFAULT')
+    observedRuntimeEventObject(EVENT_ID, 'hamza.test@gmail.com', attendeeEmail)
   );
-  const diag = sectionsOf(card).find(function(s) { return sectionHeaderOf(s) === 'DIAGNOSTIC (event object)'; });
-  assert.ok(diag, 'diagnostic section present when ATTENDANCE_DEBUG=true');
-  const text = cardText(diag);
-  assert.ok(text.indexOf('Build: v5-identity-probe-2026-08-24') !== -1, 'build tag on card (deployment-version proof)');
-  assert.ok(text.indexOf('Top keys: [commonEventObject, calendarEventObject]') !== -1);
-  assert.ok(text.indexOf('calendarEventObject keys: [calendar] | .calendar keys: [id, calendarId]') !== -1);
-  assert.ok(text.indexOf('Extracted: eventId=' + EVENT_ID) !== -1);
-  // full JSON was captured in the execution log for offline inspection
-  const idx = addOnState.loggerLines.indexOf('M0_DIAG_EVENT_OBJECT_BEGIN');
-  assert.ok(idx !== -1, 'diagnostic dump markers logged');
-  assert.ok(addOnState.loggerLines[idx + 1].indexOf(EVENT_ID) !== -1, 'full JSON contains the event id');
-  assert.strictEqual(addOnState.loggerLines[idx + 2], 'M0_DIAG_EVENT_OBJECT_END');
-  // build tag + probes logged (probes degrade gracefully without CalendarApp)
-  assert.ok(addOnState.loggerLines.indexOf('M0_DIAG_BUILD: v5-identity-probe-2026-08-24') !== -1);
-  assert.ok(addOnState.loggerLines.some(function(l) { return l.indexOf('M0_DIAG_FIELDS:') === 0; }));
-  assert.ok(addOnState.loggerLines.some(function(l) { return l.indexOf('M0_DIAG_IDENTITY_PROBE') === 0; }));
-  assert.ok(addOnState.loggerLines.some(function(l) { return l.indexOf('M0_DIAG_CAL_EVENTS') === 0; }));
 
-  // debug OFF by default → no diagnostic section
+  // stable identity extracted from the observed layout
+  const contextSection = sectionsOf(card).find(function(s) { return sectionHeaderOf(s) === 'Event context'; });
+  assert.ok(cardText(contextSection).indexOf('Event ID: ' + EVENT_ID) !== -1);
+  assert.ok(cardText(contextSection).indexOf('Calendar ID: hamza.test@gmail.com') !== -1);
+
+  // attendee PII is NEVER read into the card (PII discipline)
+  assert.ok(cardText(card).indexOf(attendeeEmail) === -1, 'attendee email must not leak into the UI');
+
+  // full path with the observed shape: action → service → Availability
   addOn.core.reset();
-  const card2 = addOnSandbox.onCalendarEventOpen(
-    currentEventObject(EVENT_ID, 'CAL_DEFAULT')
+  const response = addOnSandbox.onMarkCompleted(
+    currentActionEvent({ eventId: EVENT_ID, calendarId: 'hamza.test@gmail.com' })
   );
-  const diag2 = sectionsOf(card2).find(function(s) { return sectionHeaderOf(s) === 'DIAGNOSTIC (event object)'; });
-  assert.ok(!diag2, 'no diagnostic section when ATTENDANCE_DEBUG is not set');
+  assert.strictEqual(addOnState.availabilityRows[0].status, 'COMPLETED');
+  assert.ok(cardText(responseCard(response)).indexOf('Recorded: COMPLETED') !== -1);
 });
 
 test('M0-I6 — structural: Add-on uses ONLY verified CardService factories and no forbidden references', function() {
@@ -1065,19 +1081,11 @@ test('M0-I6 — structural: Add-on uses ONLY verified CardService factories and 
   // newTextButton takes no arguments in the verified API
   assert.ok(!/newTextButton\(\s*[^)\s]/.test(src), 'newTextButton() takes no arguments');
 
-  // no business/storage/calendar-mutation dependencies.
-  // NOTE: 'CalendarApp' is banned EXCEPT inside the clearly marked TEMPORARY
-  // diagnostic function (_buildEventDiagnostic), which carries a temporary
-  // identity probe until the live event-object shape is finalized and the
-  // diagnostic is removed. The ban below applies to everything else.
-  var srcWithoutTempDiagnostic = src.replace(
-    /function _buildEventDiagnostic[\s\S]*?\n}\n/,
-    ''
-  );
+  // no business/storage/calendar-mutation dependencies (the temporary
+  // live-verification diagnostic has been REMOVED — the ban is total)
   ['SpreadsheetApp', 'GoogleSheets', 'CalendarApp', 'StateMachine',
    'SlotRepository', 'atomicUpdate', 'updateRow', 'LockService'].forEach(function(forbidden) {
-    assert.strictEqual(srcWithoutTempDiagnostic.indexOf(forbidden), -1,
-      'Add-on must not reference ' + forbidden + ' outside the temporary diagnostic');
+    assert.strictEqual(src.indexOf(forbidden), -1, 'Add-on must not reference ' + forbidden);
   });
   assert.ok(src.indexOf('AttendanceService.markCompleted') !== -1);
   assert.ok(src.indexOf('AttendanceService.markNoShow') !== -1);
