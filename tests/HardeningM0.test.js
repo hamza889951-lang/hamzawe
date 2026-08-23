@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * HardeningM0.test.js — M0 Attendance Capture Foundation
+ * HardeningM0.test.js — M0 Attendance Capture Foundation (REMEDIATED)
  *
  * Proves the M0 contract:
  *   A — CONFIRMED → COMPLETED (MARK_COMPLETED)
@@ -10,19 +10,33 @@
  *       COMPLETED → NO_SHOW) + StateMachine table unchanged
  *   D — idempotent duplicates (deterministic no-op, no second record)
  *   E — concurrency: conflicting decisions cannot both win
- *       (E1: interleaved attempt under the held lock → LOCK_TIMEOUT;
- *        E2: stale read → A wins → B re-reads fresh state → INVALID_TRANSITION)
- *   F — untrusted/missing operator context rejected before any storage read
+ *   F — operator trust boundary: anonymous / unconfigured policy /
+ *       untrusted identity rejected before any storage read; authority
+ *       DERIVED by the service (never claimed by the caller)
  *   G — event correlation failure (unknown / ambiguous / invalid context /
  *       read failure) — no availability mutation
  *   H — persistence failure never produces a false COMPLETED / NO_SHOW
- *   I — Calendar Add-on callback reaches AttendanceService with the trusted
- *       operator context and displays the Result
- *   J — regression (B1–B6) is executed separately against the same tree
+ *   I — Calendar Add-on callback (REAL-API-contract CardService, verified
+ *       event-object shapes, trusted operator context, result display)
+ *   MANIFEST — appsscript.json declares the verified Calendar Add-on
+ *   M1 — activation boundary + PENDING ATTENDANCE derivation
+ *   J — regression (B1–B6) executed separately against the same tree
  *
- * The harness loads the REAL production SlotRepository, Lock, and
- * AttendanceAuditRepository (only LockService/GoogleSheets/Clock are
- * mocked), so the atomic-update path under test is the production path.
+ * EVIDENCE CLASSIFICATION (M0 remediation — inherited PoC vs verified):
+ *   - The CardService API contract below was VERIFIED against the official
+ *     Apps Script reference (see CARD_SERVICE_CONTRACT sources). The mock
+ *     implements ONLY that verified surface and THROWS on any other call —
+ *     a mock cannot mask a non-existent production API.
+ *   - The event-object structure e.calendarEventObject.calendar.{id,
+ *     calendarId} and e.commonEventObject.parameters were VERIFIED against
+ *     the official Workspace add-on event-object reference.
+ *   - The LEGACY event shape (e.selectedEvent / e.calendar / top-level
+ *     e.id / e.calendarId) is INHERITED PoC evidence (handed off from
+ *     another engineer; not executed by this developer). It is supported
+ *     as a documented fallback and tested as such — NOT claimed as
+ *     self-proven live behavior.
+ *   - Live Google Calendar execution (real deployment) is a separate
+ *     owner-executed step; see the PR remediation report.
  */
 
 const assert = require('assert');
@@ -39,7 +53,7 @@ const EVENT_ID = 'TEST_EVENT_001';
 const OTHER_SLOT_ID = 'SLT_TEST_002';
 const OTHER_EVENT_ID = 'TEST_EVENT_002';
 const OPERATOR_EMAIL = 'doctor.test@hamzawe.clinic';
-const OPERATOR = { operatorId: OPERATOR_EMAIL, authorityType: 'DOCTOR' };
+const OTHER_ACCOUNT_EMAIL = 'stranger.test@hamzawe.clinic';
 
 function stripComments(source) {
   return source
@@ -47,8 +61,113 @@ function stripComments(source) {
     .replace(/^\s*\/\/.*$/gm, '');
 }
 
+// ═══════════════════════════════════════════════════════════════
+// VERIFIED CardService contract (M0 remediation)
+// ═══════════════════════════════════════════════════════════════
+// Every factory and builder method below was verified against the
+// OFFICIAL Apps Script reference at remediation time:
+//   - developers.google.com/apps-script/reference/card-service
+//     (CardService factories, ActionResponseBuilder, CardBuilder,
+//      CardSection, TextParagraph, TextButton)
+//   - developers.google.com/apps-script/reference/card-service/action
+//     (Action: setFunctionName, setParameters, addRequiredWidget, ...)
+//   - developers.google.com/workspace/add-ons/calendar/calendar-actions
+//     (official Calendar add-on example: newTextButton().setText().
+//      setOnClickAction(newAction().setFunctionName().setParameters()))
+// The mock implements ONLY this surface. Any production call to a method
+// outside it THROWS → the test fails. A mock therefore cannot pass a test
+// for an API that does not exist in the real service.
+const CARD_SERVICE_CONTRACT = {
+  newCardBuilder: {
+    state: 'cardBuilder',
+    methods: ['setHeader', 'addSection', 'addWidget', 'build']
+  },
+  newCardHeader: {
+    state: 'cardHeader',
+    methods: ['setTitle', 'setSubtitle']
+  },
+  newCardSection: {
+    state: 'cardSection',
+    methods: ['setHeader', 'addWidget']
+  },
+  newTextParagraph: {
+    state: 'textParagraph',
+    methods: ['setText', 'setMaxLines']
+  },
+  newTextButton: {
+    state: 'textButton',
+    methods: ['setText', 'setOnClickAction', 'setDisabled']
+  },
+  newAction: {
+    state: 'action',
+    methods: ['setFunctionName', 'setParameters', 'addRequiredWidget', 'setAllWidgetsAreRequired']
+  },
+  newNavigation: {
+    state: 'navigation',
+    methods: ['updateCard', 'pushCard', 'popCard', 'popToRoot']
+  },
+  newActionResponseBuilder: {
+    state: 'actionResponseBuilder',
+    methods: ['setNavigation', 'setNotification', 'setOpenLink', 'setStateChanged', 'build']
+  }
+};
+
 /**
- * Builds a vm sandbox with the real production M0 stack:
+ * Contract-faithful CardService mock. Validates every call against
+ * CARD_SERVICE_CONTRACT and records structure for assertions.
+ */
+function makeContractCardService() {
+  function makeObject(factoryName) {
+    const spec = CARD_SERVICE_CONTRACT[factoryName];
+    if (!spec) {
+      throw new Error('CARD_SERVICE_CONTRACT_VIOLATION: CardService.' + factoryName + ' is not a verified real API');
+    }
+    const state = { factory: factoryName, kind: spec.state, title: '', subtitle: '', header: '', widgets: [], text: '', action: null, parameters: null, functionName: '', card: null, navigation: null, stateChanged: null, built: null };
+    const object = { state: state };
+    spec.methods.forEach(function(method) {
+      object[method] = function() {
+        const args = Array.prototype.slice.call(arguments);
+        switch (method) {
+          case 'setHeader': state.header = (args[0] && args[0].state) ? args[0].state : args[0]; break;
+          case 'addSection': state.widgets.push(args[0].state); break;
+          case 'addWidget': state.widgets.push(args[0].state); break;
+          case 'setTitle': state.title = args[0]; break;
+          case 'setSubtitle': state.subtitle = args[0]; break;
+          case 'setText': state.text = args[0]; break;
+          case 'setOnClickAction': state.action = args[0].state; break;
+          case 'setFunctionName': state.functionName = args[0]; break;
+          case 'setParameters': state.parameters = args[0]; break;
+          case 'updateCard': state.card = args[0]; break;
+          case 'pushCard': state.card = args[0]; break;
+          case 'setNavigation': state.navigation = args[0].state; break;
+          case 'setNotification': state.navigation = null; break;
+          case 'setStateChanged': state.stateChanged = args[0]; break;
+          case 'setDisabled': break;
+          case 'build':
+            state.built = { kind: spec.state, title: state.title, header: state.header, widgets: state.widgets, navigation: state.navigation, stateChanged: state.stateChanged };
+            return state.built;
+        }
+        return object;
+      };
+    });
+    return object;
+  }
+
+  const service = {};
+  Object.keys(CARD_SERVICE_CONTRACT).forEach(function(factoryName) {
+    service[factoryName] = function() {
+      // The real factories take no arguments for this contract.
+      if (arguments.length > 0) {
+        throw new Error('CARD_SERVICE_CONTRACT_VIOLATION: CardService.' + factoryName + ' does not take arguments in the verified API');
+      }
+      return makeObject(factoryName);
+    };
+  });
+  return service;
+}
+
+/**
+ * Builds the vm sandbox with the real production M0 stack:
  *   Result, Config, StateMachine, Validators, Lock, SlotRepository,
  *   AttendanceAuditRepository, LogRepository, AttendanceService
  * with deterministic in-memory GoogleSheets/LockService/Clock seams.
@@ -76,7 +195,8 @@ function createCoreSandbox() {
     storageReads: 0,
     cellWrites: 0,
     lockHeld: false,
-    sessionEmail: OPERATOR_EMAIL
+    sessionEmail: OPERATOR_EMAIL,
+    properties: {}
   };
 
   sandbox.Clock = { now: function() { return new Date(state.nowMs); } };
@@ -161,6 +281,19 @@ function createCoreSandbox() {
     }
   };
 
+  // ── PropertiesService seam (add-on surface reads the deployment policy) ──
+  sandbox.PropertiesService = {
+    getScriptProperties: function() {
+      return {
+        getProperty: function(key) {
+          return Object.prototype.hasOwnProperty.call(state.properties, key) ? state.properties[key] : null;
+        },
+        setProperty: function(key, value) { state.properties[key] = value; },
+        deleteProperty: function(key) { delete state.properties[key]; }
+      };
+    }
+  };
+
   load('Result.js', 'Result');
   load('Config.js', 'Config');
   load('StateMachine.js', 'StateMachine');
@@ -204,12 +337,13 @@ function createCoreSandbox() {
     state.storageReads = 0;
     state.cellWrites = 0;
     state.lockHeld = false;
+    state.properties = { ATTENDANCE_OPERATOR_EMAIL: OPERATOR_EMAIL };
   }
 
   return { sandbox: sandbox, state: state, makeSlot: makeSlot, reset: reset };
 }
 
-/** Core stack (tests A–H, M1-readiness, structural) */
+/** Core stack (tests A–H, MANIFEST, M1-readiness, structural) */
 const core = createCoreSandbox();
 const sandbox = core.sandbox;
 const state = core.state;
@@ -229,104 +363,104 @@ function outcomeCount(outcome) {
 function ctx(overrides) {
   const o = overrides || {};
   return {
-    operator: o.operator === undefined ? OPERATOR : o.operator,
+    operator: o.operator === undefined ? { operatorId: OPERATOR_EMAIL } : o.operator,
+    deployment: o.deployment === undefined ? { trustedOperatorEmail: OPERATOR_EMAIL } : o.deployment,
     calendarEvent: o.calendarEvent === undefined
       ? { eventId: EVENT_ID, calendarId: 'CAL_DEFAULT' }
       : o.calendarEvent
   };
 }
 
-/** Add-on stack (test I): same production stack + CardService/Session seams */
+/**
+ * Add-on stack (test I): same production stack + contract CardService +
+ * Session + the real AttendanceAddOn.js source.
+ */
 function createAddOnSandbox() {
   const c = createCoreSandbox();
   const s = c.sandbox;
 
-  let capture = null;
-  s.CardService = {
-    newCardBuilder: function() {
-      const cardState = { title: '', sections: [] };
-      capture = cardState;
-      const builder = {
-        setTitle: function(t) { cardState.title = t; return this; },
-        setSection: function(sec) { cardState.sections.push(sec.state); return this; },
-        build: function() { return cardState; }
-      };
-      builder.state = cardState;
-      return builder;
-    },
-    newSection: function() {
-      const stateObj = { header: '', widgets: [] };
-      const section = {
-        setHeaderTitle: function(h) { stateObj.header = h; return this; },
-        addWidget: function(w) { stateObj.widgets.push(w.state); return this; }
-      };
-      section.state = stateObj;
-      return section;
-    },
-    newTextParagraph: function() {
-      const stateObj = { text: '' };
-      const para = { setText: function(t) { stateObj.text = t; return this; } };
-      para.state = stateObj;
-      return para;
-    },
-    newTextButton: function() {
-      const stateObj = { text: '', action: null };
-      const button = {
-        setText: function(t) { stateObj.text = t; return this; },
-        setOnClickAction: function(a) { stateObj.action = a.state; return this; }
-      };
-      button.state = stateObj;
-      return button;
-    },
-    newAction: function() {
-      const stateObj = { functionName: '', params: {} };
-      const action = {
-        setFunctionName: function(f) { stateObj.functionName = f; return this; },
-        setParams: function(p) { stateObj.params = p; return this; }
-      };
-      action.state = stateObj;
-      return action;
-    },
-    newActionResponse: function() {
-      const stateObj = { card: null };
-      const response = {
-        setRenderCard: function(card) { stateObj.card = card; return this; },
-        build: function() { return stateObj; }
-      };
-      response.state = stateObj;
-      return response;
-    }
-  };
+  const cardService = makeContractCardService();
+  s.CardService = cardService;
 
   s.Session = {
     getActiveUser: function() {
-      return { getEmail: function() { return c.state.sessionEmail; } };
+      return {
+        getEmail: function() {
+          if (!c.state.sessionEmail) throw new Error('SESSION_EMAIL_UNAVAILABLE');
+          return c.state.sessionEmail;
+        }
+      };
     }
   };
 
   const addOnSource = fs.readFileSync(path.join(ROOT, 'AttendanceAddOn.js'), 'utf8');
   vm.runInContext(
     addOnSource +
-    '\nthis.onOpen = onOpen;' +
+    '\nthis.onCalendarEventOpen = onCalendarEventOpen;' +
     '\nthis.onMarkCompleted = onMarkCompleted;' +
     '\nthis.onMarkNoShow = onMarkNoShow;',
     s,
     { filename: 'AttendanceAddOn.js' }
   );
 
-  return { core: c, getCard: function() { return capture; } };
+  return { core: c, cardService: cardService };
 }
 
-const addOn = createAddOnSandbox();
-const addOnSandbox = addOn.core.sandbox;
-const addOnState = addOn.core.state;
+/**
+ * Verified CURRENT event-object shape (official Workspace add-on
+ * event-object reference): the Calendar event object carries the metadata
+ * fields calendar.id (event ID) and calendar.calendarId (calendar ID).
+ */
+function currentEventObject(eventId, calendarId) {
+  return {
+    commonEventObject: { platform: 'WEB', hostApp: 'CALENDAR', parameters: {} },
+    calendarEventObject: {
+      calendar: { id: eventId, calendarId: calendarId }
+    }
+  };
+}
+
+/**
+ * INHERITED PoC evidence shape (handed off from another engineer; older
+ * add-on runtime). Supported as a documented fallback — NOT self-proven.
+ */
+function legacyEventObject(eventId, calendarId) {
+  return {
+    id: eventId,
+    calendarId: calendarId,
+    calendar: { id: calendarId },
+    selectedEvent: {
+      id: eventId,
+      title: 'TEST APPOINTMENT',
+      startDate: new Date(NOW_MS)
+    }
+  };
+}
+
+/** Verified CURRENT action-parameters shape: e.commonEventObject.parameters */
+function currentActionEvent(params) {
+  return { action: { name: 'ATTENDANCE' }, commonEventObject: { parameters: params || {} } };
+}
+
+/** Deprecated (documented) top-level fallback shape: e.parameters */
+function legacyActionEvent(params) {
+  return { action: { name: 'ATTENDANCE' }, parameters: params || {} };
+}
 
 function cardText(card) {
   return JSON.stringify(card);
 }
-function decisionButtons(card) {
-  const section = card.sections.find(function(sec) { return sec.header === 'Attendance decision'; });
-  return section ? section.widgets.filter(function(w) { return w.action; }) : [];
+function sectionsOf(builtCard) {
+  return builtCard.widgets; // cardBuilder state stores sections in widgets
+}
+function buttonsInSection(section) {
+  return (section.widgets || []).filter(function(w) { return w.kind === 'textButton'; });
+}
+function sectionHeaderOf(section) {
+  return section.header;
+}
+function responseCard(actionResponse) {
+  return actionResponse.navigation ? actionResponse.navigation.card : null;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -338,7 +472,7 @@ function test(name, fn) { tests.push({ name: name, fn: fn }); }
 
 // ── A — Normal Completion ─────────────────────────────────────
 
-test('M0-A — CONFIRMED → MARK_COMPLETED → COMPLETED with full audit record', function() {
+test('M0-A — CONFIRMED → MARK_COMPLETED → COMPLETED with derived authority + full audit', function() {
   Reset();
   const result = sandbox.AttendanceService.markCompleted(ctx());
   assert.strictEqual(result.ok, true);
@@ -348,7 +482,8 @@ test('M0-A — CONFIRMED → MARK_COMPLETED → COMPLETED with full audit record
   assert.strictEqual(result.data.status, 'COMPLETED');
   assert.strictEqual(result.data.fromStatus, 'CONFIRMED');
   assert.strictEqual(result.data.slotId, SLOT_ID);
-  assert.strictEqual(result.data.operatorId, OPERATOR.operatorId);
+  assert.strictEqual(result.data.operatorId, OPERATOR_EMAIL);
+  assert.strictEqual(result.data.authorizedAs, 'DOCTOR');
   assert.strictEqual(result.data.calendarEventId, EVENT_ID);
   assert.strictEqual(result.data.calendarId, 'CAL_DEFAULT');
   assert.strictEqual(result.data.auditRecorded, true);
@@ -358,7 +493,7 @@ test('M0-A — CONFIRMED → MARK_COMPLETED → COMPLETED with full audit record
 
   assert.strictEqual(state.auditRows.length, 1);
   const a = auditObject(0);
-  assert.strictEqual(a.operator_id, OPERATOR.operatorId);
+  assert.strictEqual(a.operator_id, OPERATOR_EMAIL);
   assert.strictEqual(a.calendar_event_id, EVENT_ID);
   assert.strictEqual(a.calendar_id, 'CAL_DEFAULT');
   assert.strictEqual(a.slot_id, SLOT_ID);
@@ -375,7 +510,7 @@ test('M0-A — CONFIRMED → MARK_COMPLETED → COMPLETED with full audit record
   assert.strictEqual(state.logEntries[0].success, true);
   assert.strictEqual(state.logEntries[0].slotId, SLOT_ID);
   const details = JSON.parse(state.logEntries[0].error);
-  assert.strictEqual(details.operatorId, OPERATOR.operatorId);
+  assert.strictEqual(details.operatorId, OPERATOR_EMAIL);
   assert.strictEqual(details.calendarEventId, EVENT_ID);
   assert.strictEqual(details.outcome, 'APPLIED');
 });
@@ -389,6 +524,7 @@ test('M0-B — CONFIRMED → MARK_NO_SHOW → NO_SHOW with full audit record', f
   assert.strictEqual(result.data.applied, true);
   assert.strictEqual(result.data.decision, 'MARK_NO_SHOW');
   assert.strictEqual(result.data.status, 'NO_SHOW');
+  assert.strictEqual(result.data.authorizedAs, 'DOCTOR');
   assert.strictEqual(result.data.slotId, SLOT_ID);
   assert.strictEqual(state.availabilityRows[0].status, 'NO_SHOW');
   assert.strictEqual(state.auditRows.length, 1);
@@ -556,16 +692,14 @@ test('M0-E2 — stale read: B observed CONFIRMED, A wins, B re-reads fresh state
   assert.strictEqual(auditObject(1).decision, 'MARK_NO_SHOW');
 });
 
-// ── F — Operator context ──────────────────────────────────────
+// ── F — Operator trust boundary ───────────────────────────────
 
-test('M0-F — untrusted/missing operator context fails before any storage access', function() {
+test('M0-F1 — untrusted/missing operator inputs fail before any storage access', function() {
   const cases = [
     ['missing context', undefined, 'ATTENDANCE_CONTEXT_INVALID'],
-    ['missing operator', { operator: null, calendarEvent: { eventId: EVENT_ID } }, 'ATTENDANCE_OPERATOR_INVALID'],
-    ['empty operatorId', { operator: { operatorId: '   ', authorityType: 'DOCTOR' }, calendarEvent: { eventId: EVENT_ID } }, 'ATTENDANCE_OPERATOR_INVALID'],
-    ['non-string operatorId', { operator: { operatorId: 42, authorityType: 'DOCTOR' }, calendarEvent: { eventId: EVENT_ID } }, 'ATTENDANCE_OPERATOR_INVALID'],
-    ['non-Doctor authority', { operator: { operatorId: 'x@y.z', authorityType: 'ADMIN' }, calendarEvent: { eventId: EVENT_ID } }, 'ATTENDANCE_OPERATOR_INVALID'],
-    ['missing authorityType', { operator: { operatorId: 'x@y.z' }, calendarEvent: { eventId: EVENT_ID } }, 'ATTENDANCE_OPERATOR_INVALID']
+    ['missing operator', { operator: null, deployment: { trustedOperatorEmail: OPERATOR_EMAIL }, calendarEvent: { eventId: EVENT_ID } }, 'ATTENDANCE_OPERATOR_INVALID'],
+    ['empty operatorId', { operator: { operatorId: '   ' }, deployment: { trustedOperatorEmail: OPERATOR_EMAIL }, calendarEvent: { eventId: EVENT_ID } }, 'ATTENDANCE_OPERATOR_INVALID'],
+    ['non-string operatorId', { operator: { operatorId: 42 }, deployment: { trustedOperatorEmail: OPERATOR_EMAIL }, calendarEvent: { eventId: EVENT_ID } }, 'ATTENDANCE_OPERATOR_INVALID']
   ];
   cases.forEach(function(c) {
     Reset();
@@ -580,6 +714,62 @@ test('M0-F — untrusted/missing operator context fails before any storage acces
     assert.strictEqual(state.availabilityRows[0].status, 'CONFIRMED', c[0]);
     assert.strictEqual(state.cellWrites, 0, c[0]);
   });
+});
+
+test('M0-F2 — unconfigured trust policy disables attendance capture explicitly', function() {
+  Reset();
+  const missingDeployment = sandbox.AttendanceService.markCompleted(ctx({ deployment: null }));
+  assert.strictEqual(missingDeployment.ok, false);
+  assert.strictEqual(missingDeployment.error.code, 'ATTENDANCE_TRUST_POLICY_UNCONFIGURED');
+  assert.strictEqual(state.storageReads, 0);
+  assert.strictEqual(state.auditRows.length, 0);
+  assert.strictEqual(state.availabilityRows[0].status, 'CONFIRMED');
+
+  Reset();
+  const nullDeployment = sandbox.AttendanceService.markCompleted(ctx({
+    operator: { operatorId: OPERATOR_EMAIL },
+    deployment: null,
+    calendarEvent: { eventId: EVENT_ID }
+  }));
+  assert.strictEqual(nullDeployment.ok, false);
+  assert.strictEqual(nullDeployment.error.code, 'ATTENDANCE_TRUST_POLICY_UNCONFIGURED');
+  const emptyPolicy = sandbox.AttendanceService.markCompleted(ctx({ deployment: { trustedOperatorEmail: '  ' } }));
+  assert.strictEqual(emptyPolicy.ok, false);
+  assert.strictEqual(emptyPolicy.error.code, 'ATTENDANCE_TRUST_POLICY_UNCONFIGURED');
+  assert.strictEqual(state.availabilityRows[0].status, 'CONFIRMED');
+});
+
+test('M0-F3 — identity present but not the configured trusted operator → UNAUTHORIZED (no authority claim possible)', function() {
+  Reset();
+  const stranger = sandbox.AttendanceService.markCompleted(ctx({
+    operator: { operatorId: OTHER_ACCOUNT_EMAIL },
+    deployment: { trustedOperatorEmail: OPERATOR_EMAIL }
+  }));
+  assert.strictEqual(stranger.ok, false);
+  assert.strictEqual(stranger.error.code, 'ATTENDANCE_OPERATOR_UNAUTHORIZED');
+  assert.strictEqual(state.storageReads, 0);
+  assert.strictEqual(state.auditRows.length, 0);
+  assert.strictEqual(state.availabilityRows[0].status, 'CONFIRMED');
+
+  // and a caller cannot "claim" DOCTOR: the envelope has no authority
+  // field; only the service derivation grants it.
+  Reset();
+  const claimed = sandbox.AttendanceService.markCompleted(ctx({
+    operator: { operatorId: OTHER_ACCOUNT_EMAIL, authorityType: 'DOCTOR' },
+    deployment: { trustedOperatorEmail: OPERATOR_EMAIL }
+  }));
+  assert.strictEqual(claimed.ok, false);
+  assert.strictEqual(claimed.error.code, 'ATTENDANCE_OPERATOR_UNAUTHORIZED');
+  assert.strictEqual(state.availabilityRows[0].status, 'CONFIRMED');
+});
+
+test('M0-F4 — trusted identity + configured policy → authority DERIVED (recorded in result)', function() {
+  Reset();
+  const result = sandbox.AttendanceService.markCompleted(ctx());
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.data.operatorId, OPERATOR_EMAIL);
+  assert.strictEqual(result.data.authorizedAs, 'DOCTOR');
+  assert.strictEqual(result.data.applied, true);
 });
 
 // ── G — Event correlation failures ────────────────────────────
@@ -669,11 +859,16 @@ test('M0-H3 — audit persistence failure is explicit (never silent, never block
   assert.strictEqual(state.availabilityRows[0].status, 'FREE');
 });
 
-// ── I — Calendar Add-on callback ──────────────────────────────
+// ── I — Calendar Add-on callback (contract-faithful) ──────────
 
-test('M0-I1 — Add-on action reaches AttendanceService with trusted context and transitions Availability', function() {
+const addOn = createAddOnSandbox();
+const addOnSandbox = addOn.core.sandbox;
+const addOnState = addOn.core.state;
+
+test('M0-I1 — Add-on action (verified event object) reaches AttendanceService and transitions Availability', function() {
   addOn.core.reset();
-  addOnState.sessionEmail = 'operator.live@hamzawe.clinic';
+  addOnState.sessionEmail = OPERATOR_EMAIL;
+  addOnState.properties.ATTENDANCE_OPERATOR_EMAIL = OPERATOR_EMAIL;
 
   let capturedContext = null;
   const original = addOnSandbox.AttendanceService.markCompleted;
@@ -682,86 +877,202 @@ test('M0-I1 — Add-on action reaches AttendanceService with trusted context and
     return original.call(this, context);
   };
 
-  const response = addOnSandbox.onMarkCompleted({
-    params: { eventId: EVENT_ID, calendarId: 'CAL_DEFAULT', eventTitle: 'TEST APPOINTMENT' }
-  });
+  const response = addOnSandbox.onMarkCompleted(
+    currentActionEvent({ eventId: EVENT_ID, calendarId: 'CAL_DEFAULT' })
+  );
 
   addOnSandbox.AttendanceService.markCompleted = original;
 
-  // service received the exact trusted context
+  // the service received the exact envelope: identity + policy + event
   assert.ok(capturedContext, 'AttendanceService.markCompleted must be invoked');
-  assert.strictEqual(capturedContext.operator.operatorId, 'operator.live@hamzawe.clinic');
-  assert.strictEqual(capturedContext.operator.authorityType, 'DOCTOR');
+  assert.strictEqual(capturedContext.operator.operatorId, OPERATOR_EMAIL);
+  assert.strictEqual(capturedContext.deployment.trustedOperatorEmail, OPERATOR_EMAIL);
   assert.strictEqual(capturedContext.calendarEvent.eventId, EVENT_ID);
   assert.strictEqual(capturedContext.calendarEvent.calendarId, 'CAL_DEFAULT');
+  // the envelope carries NO authority claim
+  assert.strictEqual(capturedContext.operator.authorityType, undefined);
 
   // end-to-end effect: actual Availability transition happened
   assert.strictEqual(addOnState.availabilityRows[0].status, 'COMPLETED');
   assert.strictEqual(addOnState.auditRows.length, 1);
 
-  // result displayed on the card (explicit success with identities)
-  assert.ok(cardText(response.card).indexOf('Recorded: COMPLETED') !== -1);
-  assert.ok(cardText(response.card).indexOf('operator.live@hamzawe.clinic') !== -1);
+  // result displayed on the re-rendered card (explicit success + identities)
+  const card = responseCard(response);
+  assert.ok(card, 'action response must re-render a card');
+  assert.ok(cardText(card).indexOf('Recorded: COMPLETED') !== -1);
+  assert.ok(cardText(card).indexOf(OPERATOR_EMAIL) !== -1);
+  assert.ok(cardText(card).indexOf('Authority: DOCTOR') !== -1);
 });
 
-test('M0-I2 — Add-on onOpen card carries stable event identity and exactly two explicit decisions', function() {
+test('M0-I2 — Add-on eventOpen card: verified event object → stable identity + exactly two explicit decisions', function() {
   addOn.core.reset();
-  const card = addOnSandbox.onOpen({
-    calendar: { getId: function() { return 'CAL_DEFAULT'; } },
-    selectedEvent: {
-      getId: function() { return EVENT_ID; },
-      getTitle: function() { return 'TEST APPOINTMENT'; },
-      getStartDate: function() { return new Date(NOW_MS); }
-    }
-  });
+  const card = addOnSandbox.onCalendarEventOpen(
+    currentEventObject(EVENT_ID, 'CAL_DEFAULT')
+  );
 
-  assert.strictEqual(card.title, 'Attendance Capture');
-  const contextSection = card.sections.find(function(s) { return s.header === 'Event context'; });
+  // CardBuilder.setHeader(newCardHeader().setTitle(...)) — verified API
+  assert.strictEqual(card.kind, 'cardBuilder');
+  assert.strictEqual(card.header.kind, 'cardHeader');
+  assert.strictEqual(card.header.title, 'Attendance Capture');
+
+  const sections = sectionsOf(card);
+  assert.strictEqual(sections.length, 2);
+  const contextSection = sections.find(function(s) { return sectionHeaderOf(s) === 'Event context'; });
+  const decisionSection = sections.find(function(s) { return sectionHeaderOf(s) === 'Attendance decision'; });
   assert.ok(contextSection, 'event context section required');
-  assert.ok(cardText(contextSection).indexOf('TEST APPOINTMENT') !== -1); // display only
-  assert.ok(cardText(contextSection).indexOf(EVENT_ID) !== -1);
+  assert.ok(decisionSection, 'attendance decision section required');
 
-  const buttons = decisionButtons(card);
+  // stable identity displayed (event title/start are NOT in the event
+  // object at any access level — verified against the official field table)
+  assert.ok(cardText(contextSection).indexOf('Event ID: ' + EVENT_ID) !== -1);
+  assert.ok(cardText(contextSection).indexOf('Calendar ID: CAL_DEFAULT') !== -1);
+  assert.ok(cardText(contextSection).indexOf('TEST APPOINTMENT') === -1, 'title must not come from the event object');
+
+  const buttons = buttonsInSection(decisionSection);
   assert.strictEqual(buttons.length, 2);
   assert.deepStrictEqual(
     buttons.map(function(b) { return b.action.functionName; }).sort(),
     ['onMarkCompleted', 'onMarkNoShow']
   );
   buttons.forEach(function(b) {
-    assert.strictEqual(b.action.params.eventId, EVENT_ID);
-    assert.strictEqual(b.action.params.calendarId, 'CAL_DEFAULT');
+    // verified API: Action.setParameters
+    assert.strictEqual(b.action.parameters.eventId, EVENT_ID);
+    assert.strictEqual(b.action.parameters.calendarId, 'CAL_DEFAULT');
+    // display text only — never a correlation key
+    assert.ok(b.text.indexOf('MARK') !== -1);
   });
 });
 
-test('M0-I3 — Add-on event without stable identity: no decisions offered, safe failure display', function() {
+test('M0-I3 — legacy event object shape (INHERITED PoC evidence) is handled by the documented fallback', function() {
   addOn.core.reset();
-  const card = addOnSandbox.onOpen({
-    calendar: { getId: function() { return 'CAL_DEFAULT'; } },
-    selectedEvent: { getId: function() { return ''; }, getTitle: function() { return 'X'; } }
-  });
-  assert.strictEqual(decisionButtons(card).length, 0);
+  const card = addOnSandbox.onCalendarEventOpen(
+    legacyEventObject(EVENT_ID, 'CAL_DEFAULT')
+  );
+  const sections = sectionsOf(card);
+  const contextSection = sections.find(function(s) { return sectionHeaderOf(s) === 'Event context'; });
+  assert.ok(cardText(contextSection).indexOf('Event ID: ' + EVENT_ID) !== -1);
+  assert.ok(cardText(contextSection).indexOf('Calendar ID: CAL_DEFAULT') !== -1);
+
+  // legacy parameter location (deprecated top-level e.parameters) fallback
+  addOn.core.reset();
+  const response = addOnSandbox.onMarkNoShow(
+    legacyActionEvent({ eventId: EVENT_ID, calendarId: 'CAL_DEFAULT' })
+  );
+  const resultCard = responseCard(response);
+  assert.ok(cardText(resultCard).indexOf('Recorded: NO_SHOW') !== -1);
+  assert.strictEqual(addOnState.availabilityRows[0].status, 'NO_SHOW');
+});
+
+test('M0-I4 — Add-on fail-safe: no identity → no decisions; missing/unknown params → explicit FAILED card', function() {
+  addOn.core.reset();
+
+  // event without stable identity (no current shape, no legacy shape)
+  const emptyCard = addOnSandbox.onCalendarEventOpen({ commonEventObject: {} });
+  const emptySections = sectionsOf(emptyCard);
+  const emptyDecision = emptySections.find(function(s) { return sectionHeaderOf(s) === 'Attendance decision'; });
+  assert.strictEqual(buttonsInSection(emptyDecision).length, 0);
 
   // missing params on action → explicit failure card, no state change
-  const response = addOnSandbox.onMarkNoShow({ params: {} });
-  assert.ok(cardText(response.card).indexOf('FAILED: ADDON_EVENT_IDENTITY_MISSING') !== -1);
+  addOn.core.reset();
+  const missing = addOnSandbox.onMarkNoShow(currentActionEvent({}));
+  assert.ok(cardText(responseCard(missing)).indexOf('FAILED: ADDON_EVENT_IDENTITY_MISSING') !== -1);
   assert.strictEqual(addOnState.availabilityRows[0].status, 'CONFIRMED');
 
   // unknown event through the full path → FAILED card (not success)
-  const response2 = addOnSandbox.onMarkNoShow({ params: { eventId: 'UNKNOWN_EVENT', calendarId: 'CAL_DEFAULT' } });
-  assert.ok(cardText(response2.card).indexOf('FAILED: ATTENDANCE_EVENT_NOT_CORRELATED') !== -1);
+  addOn.core.reset();
+  const unknown = addOnSandbox.onMarkNoShow(currentActionEvent({ eventId: 'UNKNOWN_EVENT', calendarId: 'CAL_DEFAULT' }));
+  assert.ok(cardText(responseCard(unknown)).indexOf('FAILED: ATTENDANCE_EVENT_NOT_CORRELATED') !== -1);
   assert.strictEqual(addOnState.availabilityRows[0].status, 'CONFIRMED');
 });
 
-test('M0-I4 — structural: Add-on has no business/storage/calendar-mutation dependencies', function() {
+test('M0-I5 — Add-on operator boundary: untrusted / unconfigured → explicit FAILED, no state change', function() {
+  // untrusted identity (Session account ≠ configured policy)
+  addOn.core.reset();
+  addOnState.sessionEmail = OTHER_ACCOUNT_EMAIL;
+  addOnState.properties.ATTENDANCE_OPERATOR_EMAIL = OPERATOR_EMAIL;
+  const unauthorized = addOnSandbox.onMarkCompleted(currentActionEvent({ eventId: EVENT_ID, calendarId: 'CAL_DEFAULT' }));
+  assert.ok(cardText(responseCard(unauthorized)).indexOf('FAILED: ATTENDANCE_OPERATOR_UNAUTHORIZED') !== -1);
+  assert.strictEqual(addOnState.availabilityRows[0].status, 'CONFIRMED');
+  assert.strictEqual(addOnState.auditRows.length, 0);
+  assert.strictEqual(addOnState.cellWrites, 0);
+
+  // unconfigured deployment policy
+  addOn.core.reset();
+  addOnState.properties.ATTENDANCE_OPERATOR_EMAIL = '';
+  const unconfigured = addOnSandbox.onMarkCompleted(currentActionEvent({ eventId: EVENT_ID, calendarId: 'CAL_DEFAULT' }));
+  assert.ok(cardText(responseCard(unconfigured)).indexOf('FAILED: ATTENDANCE_TRUST_POLICY_UNCONFIGURED') !== -1);
+  assert.strictEqual(addOnState.availabilityRows[0].status, 'CONFIRMED');
+  assert.strictEqual(addOnState.auditRows.length, 0);
+});
+
+test('M0-I6 — structural: Add-on uses ONLY verified CardService factories and no forbidden references', function() {
   const src = stripComments(fs.readFileSync(path.join(ROOT, 'AttendanceAddOn.js'), 'utf8'));
+
+  // every CardService factory used in the source is in the verified contract
+  const factoryRefs = src.match(/CardService\.(\w+)\s*\(/g) || [];
+  assert.ok(factoryRefs.length > 0, 'Add-on must use CardService');
+  factoryRefs.forEach(function(ref) {
+    const name = ref.match(/CardService\.(\w+)/)[1];
+    assert.ok(
+      CARD_SERVICE_CONTRACT.hasOwnProperty(name),
+      'CardService.' + name + ' is NOT in the verified real API contract'
+    );
+  });
+
+  // APIs verified REMOVED/absent from the current CardService reference
+  ['CardService.newSection(', 'setHeaderTitle(', 'setSection(', 'CardService.newActionResponse(',
+   'setRenderCard(', '.setParams('].forEach(function(forbidden) {
+    assert.strictEqual(src.indexOf(forbidden), -1, 'Add-on must not use removed/unknown API: ' + forbidden);
+  });
+  // newTextButton takes no arguments in the verified API
+  assert.ok(!/newTextButton\(\s*[^)\s]/.test(src), 'newTextButton() takes no arguments');
+
+  // no business/storage/calendar-mutation dependencies
   ['SpreadsheetApp', 'GoogleSheets', 'CalendarApp', 'StateMachine',
-   'SlotRepository', 'atomicUpdate', 'updateRow', 'LockService', 'PropertiesService'].forEach(function(forbidden) {
+   'SlotRepository', 'atomicUpdate', 'updateRow', 'LockService'].forEach(function(forbidden) {
     assert.strictEqual(src.indexOf(forbidden), -1, 'Add-on must not reference ' + forbidden);
   });
   assert.ok(src.indexOf('AttendanceService.markCompleted') !== -1);
   assert.ok(src.indexOf('AttendanceService.markNoShow') !== -1);
   assert.ok(src.indexOf('Session.getActiveUser') !== -1);
-  assert.ok(src.indexOf('CardService') !== -1);
+  // the Entry layer never asserts authority
+  assert.strictEqual(src.indexOf('authorityType'), -1, 'Entry layer must not claim authorityType');
+});
+
+// ── MANIFEST — appsscript.json (verified Calendar Add-on integration) ──
+
+test('M0-MANIFEST — appsscript.json declares the verified Calendar Add-on configuration', function() {
+  const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'appsscript.json'), 'utf8'));
+  const addOnSrc = fs.readFileSync(path.join(ROOT, 'AttendanceAddOn.js'), 'utf8');
+
+  // trigger wiring: object form with runFunction (verified manifest reference)
+  assert.ok(manifest.addOns && manifest.addOns.calendar, 'addOns.calendar required');
+  assert.strictEqual(manifest.addOns.calendar.eventOpenTrigger.runFunction, 'onCalendarEventOpen');
+  assert.ok(addOnSrc.indexOf('function onCalendarEventOpen') !== -1, 'trigger function must exist in source');
+
+  // event access mode: METADATA = event ID + calendar ID only (verified)
+  assert.strictEqual(manifest.addOns.calendar.currentEventAccess, 'METADATA');
+
+  // scopes: the documented Calendar metadata scope is present; no
+  // user-generated-data scopes; the pre-existing production scopes are
+  // preserved (explicit list replaces auto-inference — deployment impact
+  // documented in the PR).
+  const scopes = manifest.oauthScopes.slice().sort();
+  assert.deepStrictEqual(scopes, [
+    'https://www.googleapis.com/auth/calendar',
+    'https://www.googleapis.com/auth/calendar.addons.execute',
+    'https://www.googleapis.com/auth/script.external_request',
+    'https://www.googleapis.com/auth/script.scriptapp',
+    'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/userinfo.email'
+  ]);
+  assert.strictEqual(scopes.indexOf('https://www.googleapis.com/auth/calendar.addons.current.event.read'), -1);
+  assert.strictEqual(scopes.indexOf('https://www.googleapis.com/auth/calendar.addons.current.event.write'), -1);
+
+  // production webapp (v7) configuration untouched
+  assert.deepStrictEqual(manifest.webapp, { executeAs: 'USER_DEPLOYING', access: 'ANYONE_ANONYMOUS' });
+  assert.strictEqual(manifest.timeZone, 'Asia/Baghdad');
+  assert.strictEqual(manifest.runtimeVersion, 'V8');
 });
 
 // ── M1 readiness + structural boundaries ──────────────────────
@@ -813,6 +1124,9 @@ test('M0-S1 — structural: AttendanceService stays in the Application layer', f
   assert.ok(src.indexOf('SlotRepository.atomicUpdate') !== -1);
   assert.ok(src.indexOf('AttendanceAuditRepository.append') !== -1);
   assert.ok(src.indexOf('Clock.now()') !== -1);
+  // authority is derived from identity + deployment policy
+  assert.ok(src.indexOf('ATTENDANCE_TRUST_POLICY_UNCONFIGURED') !== -1);
+  assert.ok(src.indexOf('ATTENDANCE_OPERATOR_UNAUTHORIZED') !== -1);
 });
 
 test('M0-S2 — structural: audit store is append-only; Config and StateMachine untouched by M0', function() {
@@ -832,7 +1146,7 @@ test('M0-S2 — structural: audit store is append-only; Config and StateMachine 
   assert.strictEqual(smSrc.indexOf('ATTENDANCE'), -1, 'StateMachine must stay untouched');
 });
 
-// ── Runner ───────────────────────────────────────────────────
+// ── Runner ──────────────────────────────────────────────────
 
 let failures = 0;
 tests.forEach(function(entry) {

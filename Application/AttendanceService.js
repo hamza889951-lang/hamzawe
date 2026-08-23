@@ -18,11 +18,22 @@
  *     CONFIRMED → NO_SHOW (MarkNoShow). This service never assigns a slot
  *     status directly; every decision goes through Validators.validateTransition
  *     (→ StateMachine) inside SlotRepository.atomicUpdate.
- *   - Operator context is required and validated:
- *       { operatorId: <non-empty string>, authorityType: 'DOCTOR' }
- *     This follows the B6 trusted-operator convention. Calendar access alone
- *     is NOT business authorization; anonymous operations are rejected
- *     before any storage read.
+ *   - Operator trust boundary (M0 remediation): the context envelope
+ *     carries TWO separate inputs —
+ *       operator:   { operatorId }  — the Google user identity
+ *                     (resolved server-side by the add-on from Session)
+ *       deployment: { trustedOperatorEmail } — the deployment trust
+ *                     policy (Script Property ATTENDANCE_OPERATOR_EMAIL,
+ *                     set by the owner at deploy time)
+ *     The identity alone is NOT authorization. This service derives the
+ *     authority: the operator is authorized (and derives
+ *     authorityType 'DOCTOR') if and only if the deployment policy is
+ *     configured and the identity matches it exactly. This is the
+ *     "trusted single-doctor deployment" boundary (documented M0
+ *     decision). No authentication system is built; multi-operator
+ *     support is a future Doctor Dashboard milestone. Calendar access
+ *     alone is NOT business authorization; anonymous operations and
+ *     untrusted identities are rejected before any storage read.
  *   - Event → appointment correlation uses a stable identifier only:
  *     the slot row's calendar_event_id must match the supplied eventId
  *     exactly once. Patient name, event title, and time are never
@@ -59,6 +70,10 @@ const AttendanceService = {
     MARK_NO_SHOW: 'MARK_NO_SHOW'
   },
 
+  /**
+   * The authority label DERIVED (not claimed) when the operator identity
+   * is validated against the deployment trust policy.
+   */
   OPERATOR_AUTHORITY: 'DOCTOR',
 
   /**
@@ -85,7 +100,8 @@ const AttendanceService = {
 
   /**
    * MARK_COMPLETED — CONFIRMED → COMPLETED.
-   * @param {{operator: {operatorId: string, authorityType: string},
+   * @param {{operator: {operatorId: string},
+   *          deployment: {trustedOperatorEmail: string},
    *          calendarEvent: {eventId: string, calendarId?: string}}} context
    * @returns {Result}
    */
@@ -120,7 +136,9 @@ const AttendanceService = {
       );
     }
 
-    // 2) Trusted operator context — before ANY storage access.
+    // 2) Operator trust boundary — before ANY storage access.
+    //    Identity (who) + deployment policy (who is trusted) are separate
+    //    inputs; the authority is DERIVED here, never claimed by a caller.
     var operatorCheck = this._validateOperator(context);
     if (!operatorCheck.ok) {
       this._diagnostic(logCommand, '', operatorCheck, null, null);
@@ -286,6 +304,7 @@ const AttendanceService = {
       fromStatus: freshStatus || null,
       status: target,
       operatorId: operator.operatorId,
+      authorizedAs: operator.authorityType,
       calendarEventId: event.eventId,
       calendarId: event.calendarId,
       auditRecorded: successAudit.ok
@@ -298,8 +317,14 @@ const AttendanceService = {
   },
 
   /**
-   * Trusted operator context validation (B6 convention). Fails before any
-   * storage read; anonymous or non-Doctor authority is rejected.
+   * Operator trust boundary (derived authority — trusted single-doctor
+   * deployment). Inputs are deliberately separate:
+   *   - operator.identity: the Google user identity (WHO acted)
+   *   - deployment policy: the configured trusted operator (WHO is trusted)
+   * The authority label 'DOCTOR' is DERIVED only when the policy is
+   * configured and the identity matches it exactly (trimmed, exact).
+   * No caller can claim authority; Calendar access alone is not
+   * authorization. Fails before any storage read.
    */
   _validateOperator: function(context) {
     if (!context || typeof context !== 'object') {
@@ -309,11 +334,13 @@ const AttendanceService = {
         null
       );
     }
+
+    // 1) Identity (who) — anonymous operations are rejected.
     var operator = context.operator;
     if (!operator || typeof operator !== 'object') {
       return Result.fail(
         'ATTENDANCE_OPERATOR_INVALID',
-        'Trusted operator context is required',
+        'Operator identity context is required',
         null
       );
     }
@@ -324,14 +351,37 @@ const AttendanceService = {
         null
       );
     }
-    if (operator.authorityType !== AttendanceService.OPERATOR_AUTHORITY) {
+    var operatorId = operator.operatorId.trim();
+
+    // 2) Deployment trust policy (who is trusted).
+    var deployment = context.deployment;
+    var trustedEmail = deployment && typeof deployment.trustedOperatorEmail === 'string'
+      ? deployment.trustedOperatorEmail.trim()
+      : '';
+    if (!trustedEmail) {
       return Result.fail(
-        'ATTENDANCE_OPERATOR_INVALID',
-        'authorityType must be DOCTOR for attendance capture',
-        { authorityType: typeof operator.authorityType === 'string' ? operator.authorityType : '' }
+        'ATTENDANCE_TRUST_POLICY_UNCONFIGURED',
+        'The ATTENDANCE_OPERATOR_EMAIL deployment property is not configured — attendance capture is disabled until the owner configures it',
+        null
       );
     }
-    return Result.ok({ operatorId: operator.operatorId.trim() });
+
+    // 3) Authorization decision: identity must match the configured
+    //    trusted operator exactly. Mismatch is an explicit failure, never
+    //    a silent downgrade.
+    if (operatorId !== trustedEmail) {
+      return Result.fail(
+        'ATTENDANCE_OPERATOR_UNAUTHORIZED',
+        'Operator identity is not the configured trusted operator for this deployment',
+        { operatorId: operatorId }
+      );
+    }
+
+    // 4) Authority DERIVED from the validated identity + policy.
+    return Result.ok({
+      operatorId: operatorId,
+      authorityType: AttendanceService.OPERATOR_AUTHORITY
+    });
   },
 
   /**
