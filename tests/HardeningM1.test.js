@@ -27,6 +27,15 @@
  *       boundary, append-only writer untouched, B6 repository API
  *       surface, clasp evaluation-order independence)
  *
+ * P1 REMEDIATION (review of PR #12):
+ *   — ATTENDANCE_ACTIVATION_AT is the timestamp of the FIRST APPLIED
+ *     row in append order. If that row's timestamp is unparseable the
+ *     attendance metrics FAIL (METRIC_EVIDENCE_INVALID); the boundary
+ *     is NEVER redefined to the next parsable row. (test M1-E8)
+ *   — Terminal lifecycle rows without a valid non-empty operation_id
+ *     and APPLIED attendance rows without a valid non-empty slot_id
+ *     are unattributable and never counted. (tests M1-C6, M1-E9)
+ *
  * Regression (M0 + B1–B6 = 149/149) is executed from the existing
  * Hardening*.test.js files against the same tree.
  */
@@ -114,7 +123,14 @@ function createMetricsSandbox() {
       const sheet = state.sheets[name];
       if (!sheet) throw new Error('SHEET_NOT_FOUND: ' + name);
       if (state.failRead[name]) throw new Error('INJECTED_READ_FAILURE: ' + name);
-      return sheet.rows.filter(predicateFn).map(function(r) { return Object.assign({}, r); });
+      // Faithful to production GoogleSheets.queryRows: every row becomes
+      // an object carrying _rowNumber (sheet row, 1-based, header = 1)
+      // BEFORE the predicate runs, and sheet order is preserved.
+      return sheet.rows.map(function(r, idx) {
+          return Object.assign({ _rowNumber: idx + 2 }, r);
+        })
+        .filter(predicateFn)
+        .map(function(r) { return Object.assign({}, r); });
     },
     getOrCreateSheet: function(name) {
       state.sheetCreates += 1;
@@ -486,6 +502,28 @@ test('M1-C5 — Cancellations empty journal (headers only) is a VALID ZERO', fun
   assert.strictEqual(result.data.value, 0);
 });
 
+test('M1-C6 — P1: terminal rows without a valid operation_id are unattributable, never counted as operations', function() {
+  reset();
+  seedLifecycle([
+    mkLifecycle('OP1', 'RESOLVED_CANCEL', 'TERMINAL_CANCEL_PROVEN', H(10)),
+    mkLifecycle('', 'RESOLVED_CANCEL', 'TERMINAL_CANCEL_PROVEN', H(11)),     // no identity
+    mkLifecycle('   ', 'RESOLVED_CANCEL', 'TERMINAL_CANCEL_PROVEN', H(12)),  // whitespace identity
+    mkLifecycle(undefined, 'RESOLVED_CANCEL', 'TERMINAL_CANCEL_PROVEN', H(13)) // undefined identity
+  ]);
+  const result = sandbox.MetricsService.calculate('OFFICIAL_CANCELLATIONS', P);
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.data.status, 'AVAILABLE');
+  assert.strictEqual(result.data.value, 1); // OP1 only — 1 operation = 1 VALID identity
+  assert.strictEqual(result.data.provenance.unattributableRows, 3);
+  assert.ok(result.data.provenance.identityPolicy.indexOf('operation_id') !== -1);
+
+  // the blank-identity terminal pair must not poison the change metric either
+  const changes = sandbox.MetricsService.calculate('OFFICIAL_CHANGES', P);
+  assert.strictEqual(changes.ok, true);
+  assert.strictEqual(changes.data.value, 0);
+  assert.strictEqual(changes.data.provenance.unattributableRows, 0);
+});
+
 // ── D — Official Changes ────────────────────────────────────────
 
 test('M1-D1 — Changes: only RESOLVED_CHANGE + TERMINAL_CHANGE_PROVEN count, distinct operations', function() {
@@ -619,6 +657,91 @@ test('M1-E7 — Attendance boundaries: start inclusive / end exclusive on decisi
   ]);
   const result = sandbox.MetricsService.calculate('COMPLETED_APPOINTMENTS', P);
   assert.strictEqual(result.data.value, 1);
+});
+
+test('M1-E8 — P1: first APPLIED row with unparseable timestamp → METRIC_EVIDENCE_INVALID (boundary never redefined to the next parsable row)', function() {
+  reset();
+  const corruptFirstApplied = {
+    operator_id: 'doctor.test@hamzawe.clinic',
+    calendar_event_id: 'EV_S0',
+    calendar_id: 'CAL_DEFAULT',
+    slot_id: 'S0',
+    decision: 'MARK_COMPLETED',
+    from_status: 'CONFIRMED',
+    to_status: 'COMPLETED',
+    outcome: 'APPLIED',
+    error_code: '',
+    timestamp: 'GARBAGE'
+  };
+  seedAttendance([
+    corruptFirstApplied, // THE first APPLIED row (append order) — corrupt timestamp
+    mkAudit('S1', 'MARK_COMPLETED', 'COMPLETED', 'APPLIED', H(11)),
+    mkAudit('S2', 'MARK_NO_SHOW', 'NO_SHOW', 'APPLIED', H(12))
+  ]);
+
+  // both attendance metrics are withheld — never recomputed against H(11)
+  const completed = sandbox.MetricsService.calculate('COMPLETED_APPOINTMENTS', P);
+  assert.strictEqual(completed.ok, false);
+  assert.strictEqual(completed.data, null);
+  assert.strictEqual(completed.error.code, 'METRIC_EVIDENCE_INVALID');
+  assert.ok(completed.error.message.indexOf('ATTENDANCE_ACTIVATION_AT') !== -1);
+  assert.strictEqual(completed.error.details.rowNumber, 2); // first data row of the sheet
+
+  const noShow = sandbox.MetricsService.calculate('NO_SHOW_APPOINTMENTS', P);
+  assert.strictEqual(noShow.ok, false);
+  assert.strictEqual(noShow.error.code, 'METRIC_EVIDENCE_INVALID');
+
+  // all-or-nothing batch: healthy metrics in the same batch are withheld too
+  seedAvailability([mkSlot('S9', { status: 'CONFIRMED', sortKey: '202608241600', phone: PHONE })]);
+  const batch = sandbox.MetricsService.calculateMany(
+    ['CONFIRMED_APPOINTMENTS', 'COMPLETED_APPOINTMENTS'], P
+  );
+  assert.strictEqual(batch.ok, false);
+  assert.strictEqual(batch.error.code, 'METRIC_EVIDENCE_INVALID');
+
+  // the ratio combinator propagates the failure instead of dividing an unproven input
+  const ratio = sandbox.MetricsService.calculateRatio(
+    'COMPLETED_APPOINTMENTS', 'CONFIRMED_APPOINTMENTS', P
+  );
+  assert.strictEqual(ratio.ok, false);
+  assert.strictEqual(ratio.error.code, 'METRIC_EVIDENCE_INVALID');
+
+  // contrast: the SAME corrupt row AFTER a parseable first APPLIED row does
+  // not invalidate the boundary — the boundary is the FIRST row, which is
+  // intact; the later corrupt row stays unattributable.
+  reset();
+  seedAttendance([
+    mkAudit('S1', 'MARK_COMPLETED', 'COMPLETED', 'APPLIED', H(11)),
+    Object.assign({}, corruptFirstApplied, { slot_id: 'S0B' })
+  ]);
+  const salvageable = sandbox.MetricsService.calculate('COMPLETED_APPOINTMENTS', P);
+  assert.strictEqual(salvageable.ok, true);
+  assert.strictEqual(salvageable.data.value, 1);
+  assert.strictEqual(salvageable.data.provenance.attendanceActivationAtMs, H(11));
+  assert.strictEqual(salvageable.data.provenance.unattributableRows, 1);
+});
+
+test('M1-E9 — P1: APPLIED rows without a valid slot_id are unattributable, never counted as appointments', function() {
+  reset();
+  seedAttendance([
+    mkAudit('S1', 'MARK_COMPLETED', 'COMPLETED', 'APPLIED', H(11)),
+    mkAudit('', 'MARK_COMPLETED', 'COMPLETED', 'APPLIED', H(12)),      // no identity
+    mkAudit('   ', 'MARK_NO_SHOW', 'NO_SHOW', 'APPLIED', H(13))        // whitespace identity
+  ]);
+  const completed = sandbox.MetricsService.calculate('COMPLETED_APPOINTMENTS', P);
+  assert.strictEqual(completed.ok, true);
+  assert.strictEqual(completed.data.status, 'AVAILABLE');
+  assert.strictEqual(completed.data.value, 1); // S1 only — 1 outcome = 1 VALID identity
+  assert.strictEqual(completed.data.provenance.unattributableRows, 1);
+  assert.ok(completed.data.provenance.identityPolicy.indexOf('slot_id') !== -1);
+
+  const noShow = sandbox.MetricsService.calculate('NO_SHOW_APPOINTMENTS', P);
+  assert.strictEqual(noShow.ok, true);
+  assert.strictEqual(noShow.data.value, 0);
+  assert.strictEqual(noShow.data.provenance.unattributableRows, 1);
+  // the activation boundary is the FIRST APPLIED row (S1 at 11:00) — a later
+  // identity-invalid row never moves it
+  assert.strictEqual(noShow.data.provenance.attendanceActivationAtMs, H(11));
 });
 
 // ── F — Failure semantics ───────────────────────────────────────
@@ -987,6 +1110,11 @@ test('M1-S1 — Structural: MetricsService stays in the Application layer with C
   assert.ok(src.indexOf("'APPLIED'") !== -1);
   assert.ok(src.indexOf('HISTORICAL_NOT_PROVABLE') !== -1);
   assert.ok(src.indexOf('ZERO_DENOMINATOR') !== -1);
+  // P1 remediation anchors: activation = FIRST APPLIED row (never "first
+  // parsable"); identity validation before DISTINCT counting
+  assert.ok(src.indexOf('METRIC_EVIDENCE_INVALID') !== -1);
+  assert.ok(src.indexOf('_rowOrder') !== -1);
+  assert.ok(src.indexOf('_hasIdentity') !== -1);
 });
 
 test('M1-S2 — Structural: attendance read boundary is read-only; the append-only writer is untouched', function() {

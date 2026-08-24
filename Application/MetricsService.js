@@ -68,10 +68,19 @@
  *
  * ─── ATTENDANCE_ACTIVATION_AT ───
  *  Derived boundary consumed from M0, not redesigned: the timestamp of
- *  the first APPLIED attendance audit row. No new sheet column, no
- *  permanent Script Property. A readable audit store with zero APPLIED
- *  rows provably contains no attendance decisions, so attendance counts
- *  are a VALID ZERO with attendanceActivationAtMs = null.
+ *  the FIRST APPLIED attendance audit row (first in append order). No
+ *  new sheet column, no permanent Script Property. If that first row's
+ *  timestamp cannot be established as an instant, the boundary cannot
+ *  be proven and attendance metrics FAIL (METRIC_EVIDENCE_INVALID) —
+ *  they are never recomputed against a later "first parsable" row. A
+ *  readable audit store with zero APPLIED rows provably contains no
+ *  attendance decisions, so attendance counts are a VALID ZERO with
+ *  attendanceActivationAtMs = null.
+ *
+ *  Identity rule (1 outcome = 1 valid identity): APPLIED rows without
+ *  a valid non-empty slot_id, and terminal lifecycle rows without a
+ *  valid non-empty operation_id, are UNATTRIBUTABLE — surfaced in
+ *  provenance, never counted as appointments/operations.
  *
  * ─── RESULT CONTRACT (project Result — no parallel success system) ───
  *  Result.fail codes (operational failures):
@@ -80,6 +89,15 @@
  *    METRIC_SOURCE_UNAVAILABLE — source could not be read/proven
  *                                (details.error carries the boundary's
  *                                underlying failure). NEVER a zero.
+ *    METRIC_EVIDENCE_INVALID   — the source was read, but an evidence
+ *                                row violates its data contract in a
+ *                                way that a trusted metric cannot be
+ *                                derived (currently: the FIRST APPLIED
+ *                                attendance row has an unparseable
+ *                                timestamp, so ATTENDANCE_ACTIVATION_AT
+ *                                cannot be established). The boundary
+ *                                is NEVER redefined to "first parsable
+ *                                APPLIED row" — the metric is withheld.
  *  Result.ok envelope:
  *    {
  *      metric, status, value, reason,
@@ -205,7 +223,10 @@ const MetricsService = {
       );
     }
 
-    return Result.ok(def.compute(read.data, per, nowMs, now));
+    // Computations return Result so a data-contract violation (e.g. an
+    // unprovable activation boundary) can withhold the metric instead
+    // of silently producing a number.
+    return def.compute(read.data, per, nowMs, now);
   },
 
   /**
@@ -269,7 +290,12 @@ const MetricsService = {
         rowsBySource[def.source] = read.data;
       }
 
-      results[name] = def.compute(rowsBySource[def.source], per, nowMs, now);
+      // All-or-nothing: a computation failure (data-contract violation)
+      // fails the whole batch — a partial batch could be mistaken for a
+      // complete one.
+      var computed = def.compute(rowsBySource[def.source], per, nowMs, now);
+      if (!computed.ok) return computed;
+      results[name] = computed.data;
     }
 
     return Result.ok({
@@ -486,7 +512,7 @@ const MetricsService = {
       if (slotStartMs >= per.startMs && slotStartMs < per.endMs) count += 1;
     }
 
-    return this._availableEnvelope(
+    return Result.ok(this._availableEnvelope(
       MetricsService.METRICS.CONFIRMED_APPOINTMENTS,
       count,
       per,
@@ -503,7 +529,7 @@ const MetricsService = {
         snapshotMeaning: 'slots currently CONFIRMED (as of asOfMs) whose start time falls inside the period',
         unattributableRows: unattributable
       }
-    );
+    ));
   },
 
   /**
@@ -536,7 +562,7 @@ const MetricsService = {
       }
     }
 
-    return this._availableEnvelope(
+    return Result.ok(this._availableEnvelope(
       MetricsService.METRICS.BOOKABLE_SLOTS,
       count,
       per,
@@ -555,7 +581,7 @@ const MetricsService = {
         eligibilityReference: 'SlotSelection.findEarliestBookable',
         unattributableRows: unattributable
       }
-    );
+    ));
   },
 
   /**
@@ -563,6 +589,11 @@ const MetricsService = {
    * over the append-only B6 lifecycle journal. One terminal operation =
    * one Change / one Cancellation, regardless of checkpoint, retry,
    * recovery, or release rows.
+   *
+   * Identity rule: a terminal row without a valid non-empty
+   * operation_id has no business-operation identity (1 operation = 1
+   * valid identity) and is UNATTRIBUTABLE — surfaced in provenance,
+   * never counted.
    */
   _computeLifecycleTerminal: function(rows, per, now, metricName, resolvedState, terminalCheckpoint) {
     var count = 0;
@@ -573,6 +604,11 @@ const MetricsService = {
       var row = rows[i];
       if (row.lifecycle_state !== resolvedState) continue;
       if (row.checkpoint !== terminalCheckpoint) continue;
+
+      if (!this._hasIdentity(row.operation_id)) {
+        unattributable += 1; // no valid operation identity; never a counted operation
+        continue;
+      }
 
       var terminalMs = this._rowMs(row.timestamp);
       if (terminalMs === null) {
@@ -588,7 +624,7 @@ const MetricsService = {
       }
     }
 
-    return this._availableEnvelope(
+    return Result.ok(this._availableEnvelope(
       metricName,
       count,
       per,
@@ -602,28 +638,62 @@ const MetricsService = {
         aggregation: 'COUNT DISTINCT operation_id',
         semantics: MetricsService.SEMANTICS.HISTORICAL_EVIDENCE,
         journalDiscipline: 'checkpoint / retry / recovery / release rows never multiply one business operation',
+        identityPolicy: 'terminal rows without a valid non-empty operation_id are unattributable and never counted as operations',
         unattributableRows: unattributable
       }
-    );
+    ));
   },
 
   /**
    * COMPLETED_APPOINTMENTS / NO_SHOW_APPOINTMENTS — official attendance
    * over the append-only ATTENDANCE_AUDIT evidence store, bounded by the
-   * derived ATTENDANCE_ACTIVATION_AT (timestamp of the first APPLIED
-   * row). ALREADY_APPLIED is not new attendance and never counts.
+   * derived ATTENDANCE_ACTIVATION_AT. ALREADY_APPLIED is not new
+   * attendance and never counts.
+   *
+   * Activation boundary (frozen M0/M1 contract, NOT redefinable):
+   * ATTENDANCE_ACTIVATION_AT = the timestamp of the FIRST APPLIED
+   * attendance audit row — first in append order (row order), never
+   * "first parsable". If that first row's timestamp cannot be
+   * established as an instant, the boundary is unprovable and this
+   * computation FAILS (METRIC_EVIDENCE_INVALID): the metric is
+   * withheld rather than recomputed against a later row.
+   *
+   * Identity rule: an APPLIED row without a valid non-empty slot_id has
+   * no appointment identity (1 attendance outcome = 1 valid identity)
+   * and is UNATTRIBUTABLE — surfaced in provenance, never counted.
    */
   _computeAttendance: function(rows, per, now, metricName, targetStatus) {
     var applied = MetricsService.AUDIT_OUTCOMES.APPLIED;
 
-    // ATTENDANCE_ACTIVATION_AT = min timestamp across ALL APPLIED rows
-    // (first applied attendance decision, any decision type).
-    var activationMs = null;
+    // The FIRST APPLIED row in append order. queryRows preserves sheet
+    // order; _rowNumber (attached by the storage boundary) is preferred
+    // when present so the selection cannot depend on caller ordering.
+    var firstApplied = null;
+    var firstAppliedOrder = null;
     for (var a = 0; a < rows.length; a++) {
       if (rows[a].outcome !== applied) continue;
-      var candidateMs = this._rowMs(rows[a].timestamp);
-      if (candidateMs === null) continue;
-      if (activationMs === null || candidateMs < activationMs) activationMs = candidateMs;
+      var order = this._rowOrder(rows[a], a);
+      if (firstApplied === null || order < firstAppliedOrder) {
+        firstApplied = rows[a];
+        firstAppliedOrder = order;
+      }
+    }
+
+    var activationMs = null;
+    if (firstApplied !== null) {
+      activationMs = this._rowMs(firstApplied.timestamp);
+      if (activationMs === null) {
+        return Result.fail(
+          'METRIC_EVIDENCE_INVALID',
+          'ATTENDANCE_ACTIVATION_AT cannot be established: the first APPLIED attendance audit row has an unparseable timestamp — attendance metrics are withheld instead of redefining the boundary to a later row',
+          {
+            metric: metricName,
+            source: MetricsService.SOURCES.ATTENDANCE_AUDIT,
+            rowNumber: typeof firstApplied._rowNumber === 'number' ? firstApplied._rowNumber : null,
+            timestampValue: String(firstApplied.timestamp)
+          }
+        );
+      }
     }
 
     var count = 0;
@@ -634,6 +704,11 @@ const MetricsService = {
       var row = rows[i];
       if (row.outcome !== applied) continue;
       if (row.to_status !== targetStatus) continue;
+
+      if (!this._hasIdentity(row.slot_id)) {
+        unattributable += 1; // no valid appointment identity; never a counted appointment
+        continue;
+      }
 
       var decisionMs = this._rowMs(row.timestamp);
       if (decisionMs === null) {
@@ -654,7 +729,7 @@ const MetricsService = {
       }
     }
 
-    return this._availableEnvelope(
+    return Result.ok(this._availableEnvelope(
       metricName,
       count,
       per,
@@ -668,12 +743,13 @@ const MetricsService = {
         aggregation: 'COUNT DISTINCT slot_id',
         semantics: MetricsService.SEMANTICS.HISTORICAL_EVIDENCE,
         attendanceActivationAtMs: activationMs,
-        activationDerivation: 'ATTENDANCE_ACTIVATION_AT = timestamp of the first APPLIED attendance audit row (M0 derived boundary; no sheet column, no Script Property). null = no attendance decision has ever been applied, in which case a readable store provably yields a valid zero.',
+        activationDerivation: "ATTENDANCE_ACTIVATION_AT = timestamp of the FIRST APPLIED attendance audit row in append order (M0 derived boundary; no sheet column, no Script Property). If that row's timestamp is unparseable the metric FAILS (METRIC_EVIDENCE_INVALID) — the boundary is never redefined to the next parsable row. null = no attendance decision has ever been applied, in which case a readable store provably yields a valid zero.",
         decisionTimestampBasis: 'attendance is counted by DECISION timestamp, not by appointment start time',
         alreadyAppliedPolicy: 'ALREADY_APPLIED is not new attendance and is never counted',
+        identityPolicy: 'APPLIED rows without a valid non-empty slot_id are unattributable and never counted as appointments',
         unattributableRows: unattributable
       }
-    );
+    ));
   },
 
   // ═══════════════════════════════════════════════════════════
@@ -770,6 +846,28 @@ const MetricsService = {
    */
   _rowMs: function(value) {
     return this._toEpochMs(value);
+  },
+
+  /**
+   * Append-order key for evidence rows. The storage boundary attaches
+   * _rowNumber (sheet row, 1-based, header = 1); when it is present it
+   * is authoritative. The array position is used only as a deterministic
+   * fallback for readers that do not attach it.
+   */
+  _rowOrder: function(row, arrayIndex) {
+    var n = Number(row && row._rowNumber);
+    if (typeof n === 'number' && isFinite(n) && n > 0) return n;
+    return arrayIndex;
+  },
+
+  /**
+   * A valid business identity key for DISTINCT counting: a non-empty
+   * string after trim. Anything else (blank, whitespace, non-string)
+   * has no identity and can never be counted as an operation or an
+   * appointment (1 outcome = 1 valid identity).
+   */
+  _hasIdentity: function(value) {
+    return typeof value === 'string' && value.trim() !== '';
   },
 
   /**
