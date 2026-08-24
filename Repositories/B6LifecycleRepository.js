@@ -128,6 +128,37 @@ const B6LifecycleRepository = {
     return Result.ok(this._latest(result.data));
   },
 
+  /**
+   * M1-A reporting read boundary (read-only, Result-based).
+   *
+   * Unlike the legacy find* reads above, this function deliberately does
+   * NOT ensureStore(): a reporting read must never create or mutate the
+   * journal (M1 no-side-effects rule). The header contract is validated
+   * on every call so a schema-drifted store can never silently produce a
+   * false zero (M1 failure semantics: source failure ≠ zero).
+   *
+   * @param {function(Object): boolean} predicateFn
+   * @returns {Result} ok(rows[]) | fail(B6_LIFECYCLE_READ_FAILED | B6_LIFECYCLE_SCHEMA_INVALID)
+   */
+  queryResult: function(predicateFn) {
+    try {
+      var headers = GoogleSheets.getHeaders(this.SHEET_NAME);
+      for (var i = 0; i < this.HEADERS.length; i++) {
+        if (headers.indexOf(this.HEADERS[i]) === -1) {
+          return Result.fail(
+            'B6_LIFECYCLE_SCHEMA_INVALID',
+            'B6 lifecycle store is missing required header: ' + this.HEADERS[i],
+            { sheetName: this.SHEET_NAME, expected: this.HEADERS, found: headers }
+          );
+        }
+      }
+      var rows = GoogleSheets.queryRows(this.SHEET_NAME, predicateFn);
+      return Result.ok(rows);
+    } catch (e) {
+      return Result.fail('B6_LIFECYCLE_READ_FAILED', e.message, e.stack);
+    }
+  },
+
   _find: function(predicateFn) {
     var storeResult = this.ensureStore();
     if (!storeResult.ok) return storeResult;
