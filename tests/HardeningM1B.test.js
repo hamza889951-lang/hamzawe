@@ -4,6 +4,13 @@
  * HardeningM1B.test.js — M1-B (PHASE 1.3 — REPORT CONSUMERS)
  *
  * Proves the M1-B contract on top of the frozen M1-A foundation:
+ *   A — Reporting calendar vs clinic working schedule (M1-B
+ *       correction): REPORT_WEEK_START = Saturday is ONLY how a
+ *       Weekly report splits the calendar — never a working-day or
+ *       capacity statement. The clinic schedule/capacity reality is
+ *       produced by Settings → Slot Generation → Availability and is
+ *       read, never invented; historical schedule must be provable
+ *       or DEFERRED.
  *   D — Daily periods (clinic-local day; start inclusive / end
  *       exclusive; month-crossing day boundaries)
  *   W — Weekly periods (explicit frozen Saturday start; week grid;
@@ -402,7 +409,7 @@ test('M1B-D3 — Daily across month boundary: 2026-09-01 clinic day spans the Au
 
 // ── W — Weekly periods ──────────────────────────────────────────
 
-test('M1B-W1 — Weekly: explicit frozen Saturday start (Mon 2026-08-24 → week Sat 08-22 .. Sat 08-29)', function() {
+test('M1B-W1 — Weekly: explicit frozen REPORT_WEEK_START = Saturday (reporting calendar; Mon 2026-08-24 → week Sat 08-22 .. Sat 08-29)', function() {
   reset();
   seedAllEmpty();
   const result = sandbox.ReportService.generateWeekly(CL(2026, 8, 24, 12, 0));
@@ -411,7 +418,7 @@ test('M1B-W1 — Weekly: explicit frozen Saturday start (Mon 2026-08-24 → week
   assert.strictEqual(period.startMs, Date.UTC(2026, 7, 21, 21, 0)); // Sat 2026-08-22 00:00 clinic
   assert.strictEqual(period.endMs, Date.UTC(2026, 7, 21, 21, 0) + 7 * DAY_MS); // Sat 2026-08-29
   assert.strictEqual(period.endMs - period.startMs, 7 * DAY_MS);
-  assert.strictEqual(period.weekStartsOn, 6); // explicit, deterministic
+  assert.strictEqual(period.reportWeekStart, 6); // reporting calendar convention — NOT a working week
   assert.strictEqual(period.startWallClock, '2026-08-22T00:00:00+03:00');
   assert.strictEqual(period.endWallClock, '2026-08-29T00:00:00+03:00');
 });
@@ -551,6 +558,150 @@ test('M1B-T3 — ReportService validation: unknown type and invalid reference fa
   assert.strictEqual(viaDispatch.data.reportType, 'MONTHLY');
   assert.strictEqual(viaMethod.data.reportType, 'MONTHLY');
   assert.strictEqual(viaDispatch.data.period.startMs, viaMethod.data.period.startMs);
+});
+
+// ── A — Reporting calendar vs clinic working schedule (M1-B correction) ──
+// Availability rows below stand in for the OUTPUT of the frozen
+// pipeline Settings → Slot Generation → Availability: varying them
+// simulates different real clinic schedules (open/closed days,
+// slots/day). M1-B itself never reads Settings and never invents a
+// schedule — it only reads the produced reality through MetricsService.
+
+test('M1B-A1 — REPORT_WEEK_START = Saturday does NOT mean Saturday is a working day', function() {
+  reset();
+  // Clinic reality for the current week: Saturday CLOSED (zero slots
+  // on Saturday); slots exist only on some other days.
+  const rows = [
+    mkSlot('SUN', { status: 'FREE', sortKey: CL(2026, 8, 23, 14, 0) }),
+    mkSlot('MON', { status: 'FREE', sortKey: CL(2026, 8, 24, 14, 0) }),
+    mkSlot('TUE', { status: 'FREE', sortKey: CL(2026, 8, 25, 14, 0) }),
+    mkSlot('THU', { status: 'FREE', sortKey: CL(2026, 8, 27, 14, 0) })
+  ];
+  seedAvailability(rows);
+  seedLifecycle([]);
+  seedAttendance([]);
+
+  const result = sandbox.ReportService.generateWeekly(CL(2026, 8, 24, 12, 0));
+  assert.strictEqual(result.ok, true);
+  const report = result.data;
+  // The reporting calendar is independent of the working schedule:
+  // the week still starts Saturday even though Saturday provably has
+  // zero slots in the produced Availability.
+  assert.strictEqual(report.period.reportWeekStart, 6);
+  assert.strictEqual(report.period.startWallClock, '2026-08-22T00:00:00+03:00');
+  assert.strictEqual(report.period.endWallClock, '2026-08-29T00:00:00+03:00');
+  // Metric VALUES come from the actual data (Sun 14:00 is before the
+  // bookable cutoff; Mon/Tue/Thu pass it) — data decides values,
+  // never the calendar boundary.
+  assert.strictEqual(report.metrics.BOOKABLE_SLOTS.status, 'AVAILABLE');
+  assert.strictEqual(report.metrics.BOOKABLE_SLOTS.value, 3);
+  assert.strictEqual(report.status, 'COMPLETE'); // open week: snapshots provable
+});
+
+test('M1B-A2 — Clinic schedule change (Monday CLOSED, other days OPEN) does not move the Weekly report period', function() {
+  reset();
+  // Scenario 1: every day of the reporting week produced slots.
+  const weekDays = [22, 23, 24, 25, 26, 27, 28];
+  seedAvailability(weekDays.map(function(day) {
+    return mkSlot('OPEN' + day, { status: 'FREE', sortKey: CL(2026, 8, day, 15, 0) });
+  }));
+  seedLifecycle([]);
+  seedAttendance([]);
+  const withMonday = sandbox.ReportService.generateWeekly(CL(2026, 8, 26, 10, 0));
+  assert.strictEqual(withMonday.ok, true);
+
+  // Scenario 2: the SAME week, but the produced Availability shows
+  // Monday CLOSED (no Monday slots at all).
+  seedAvailability(weekDays.filter(function(day) {
+    return day !== 24; // drop Monday 2026-08-24
+  }).map(function(day) {
+    return mkSlot('NOMON' + day, { status: 'FREE', sortKey: CL(2026, 8, day, 15, 0) });
+  }));
+  const withoutMonday = sandbox.ReportService.generateWeekly(CL(2026, 8, 26, 10, 0));
+  assert.strictEqual(withoutMonday.ok, true);
+
+  // IDENTICAL reporting period: period ≠ schedule (now = Mon 12:00,
+  // cutoff 13:00 → Mon..Fri 15:00 slots pass; Sat/Sun are past).
+  assert.strictEqual(withoutMonday.data.period.startMs, withMonday.data.period.startMs);
+  assert.strictEqual(withoutMonday.data.period.endMs, withMonday.data.period.endMs);
+  assert.strictEqual(withoutMonday.data.period.startWallClock, '2026-08-22T00:00:00+03:00');
+  assert.strictEqual(withoutMonday.data.period.endWallClock, '2026-08-29T00:00:00+03:00');
+  // Metric VALUES differ — they measure the produced reality:
+  assert.strictEqual(withMonday.data.metrics.BOOKABLE_SLOTS.value, 5);
+  assert.strictEqual(withoutMonday.data.metrics.BOOKABLE_SLOTS.value, 4);
+});
+
+test('M1B-A3 — Capacity is read from produced Availability (50 slots/day) — no fixed 24, no failure', function() {
+  reset();
+  // A real clinic configuration yielding 50 slots on Thursday
+  // 2026-08-27 (09:00 + 10-minute steps).
+  const rows = [];
+  for (var i = 0; i < 50; i++) {
+    rows.push(mkSlot('CAP' + i, { status: 'FREE', sortKey: CL(2026, 8, 27, 9, 0) + i * 10 * 60000 }));
+  }
+  seedAvailability(rows);
+  seedLifecycle([]);
+  seedAttendance([]);
+
+  const weekly = sandbox.ReportService.generateWeekly(CL(2026, 8, 24, 12, 0));
+  assert.strictEqual(weekly.ok, true); // different capacity → no failure, no assumption
+  assert.strictEqual(weekly.data.metrics.BOOKABLE_SLOTS.status, 'AVAILABLE');
+  assert.strictEqual(weekly.data.metrics.BOOKABLE_SLOTS.value, 50); // exactly the produced count
+  assert.notStrictEqual(weekly.data.metrics.BOOKABLE_SLOTS.value, 24); // never a hardcoded capacity
+  assert.strictEqual(weekly.data.status, 'COMPLETE');
+
+  // The Daily report of that Thursday sees the same produced reality:
+  const daily = sandbox.ReportService.generateDaily(CL(2026, 8, 27, 12, 0));
+  assert.strictEqual(daily.ok, true);
+  assert.strictEqual(daily.data.metrics.BOOKABLE_SLOTS.value, 50);
+  assert.strictEqual(daily.data.period.startWallClock, '2026-08-27T00:00:00+03:00');
+});
+
+test('M1B-A4 — Structural: ReportPeriod (and the reporting layer) is schedule-agnostic — no Settings/SlotGenerator/Availability references, no fixed capacity', function() {
+  const rp = stripComments(fs.readFileSync(path.join(ROOT, 'Utils/ReportPeriod.js'), 'utf8'));
+  ['Settings', 'SettingsRepository', 'SlotGenerator', 'SlotSelection', 'Availability'].forEach(function(token) {
+    assert.strictEqual(rp.indexOf(token), -1, 'ReportPeriod must not reference ' + token);
+  });
+  // no working-schedule / capacity vocabulary in ReportPeriod code
+  assert.strictEqual(/\bwork(ing)?[-_ ]?day/i.test(rp), false);
+  assert.strictEqual(/\bwork(ing)?[-_ ]?hours/i.test(rp), false);
+  assert.strictEqual(/\bcapacity\b/i.test(rp), false);
+  assert.strictEqual(/\bslots?[-_ ]?per[-_ ]?day/i.test(rp), false);
+
+  // the rest of the reporting layer is equally schedule-agnostic
+  const rs = stripComments(fs.readFileSync(path.join(ROOT, 'Application/ReportService.js'), 'utf8'));
+  const rr = stripComments(fs.readFileSync(path.join(ROOT, 'Application/ReportRenderer.js'), 'utf8'));
+  [rs, rr].forEach(function(src, index) {
+    ['Settings', 'SettingsRepository', 'SlotGenerator', 'SlotSelection', 'Availability'].forEach(function(token) {
+      assert.strictEqual(src.indexOf(token), -1,
+        (index === 0 ? 'ReportService' : 'ReportRenderer') + ' must not reference ' + token);
+    });
+    assert.strictEqual(/\bcapacity\b/i.test(src), false);
+  });
+
+  // no fixed daily-capacity constant (e.g. 24 slots/day) anywhere in
+  // the three production files of M1-B
+  [rp, rs, rr].forEach(function(src) {
+    assert.strictEqual(/\b24\b/.test(src), false, 'no fixed 24-per-day capacity assumption in M1-B code');
+  });
+});
+
+test('M1B-A5 — Structural: the separation + historical-schedule rules are documented contract (anchors)', function() {
+  // Anchors are checked on the FULL sources (documentation included):
+  // the correction order makes the separation an explicit contract.
+  const rpFull = fs.readFileSync(path.join(ROOT, 'Utils/ReportPeriod.js'), 'utf8');
+  assert.ok(rpFull.indexOf('REPORTING CALENDAR ≠ CLINIC WORKING SCHEDULE') !== -1);
+  assert.ok(rpFull.indexOf('REPORT_WEEK_START = 6') !== -1);
+  assert.ok(rpFull.indexOf('NOT a clinic working week') !== -1);
+  assert.ok(rpFull.indexOf('NOT a statement that Saturday') !== -1);
+  assert.ok(rpFull.indexOf('Settings → Slot Generation → Availability') !== -1);
+  assert.ok(rpFull.indexOf('HISTORICAL SCHEDULE') !== -1);
+  assert.ok(rpFull.indexOf('DEFERRED') !== -1);
+  assert.ok(rpFull.indexOf('Average Patients Per Working Day') !== -1); // documented as NOT implemented here
+
+  const rsFull = fs.readFileSync(path.join(ROOT, 'Application/ReportService.js'), 'utf8');
+  assert.ok(rsFull.indexOf('REPORTING CALENDAR ≠ CLINIC WORKING SCHEDULE') !== -1);
+  assert.ok(rsFull.indexOf('never guessed from current settings') !== -1 || rsFull.indexOf('NEVER assumed or hardcoded') !== -1);
 });
 
 // ── C — Consumption (the ONE metrics path) ──────────────────────
@@ -1217,7 +1368,7 @@ test('M1B-X2 — Structural: report files have no source/storage/scheduler/whats
   });
   const rp = sources['Utils/ReportPeriod.js'];
   assert.ok(rp.indexOf("'Asia/Baghdad'") !== -1);
-  assert.ok(rp.indexOf('WEEK_STARTS_ON: 6') !== -1);
+  assert.ok(rp.indexOf('REPORT_WEEK_START: 6') !== -1);
 });
 
 test('M1B-X3 — clasp alphabetical evaluation-order independence (call-time bindings), full stack', function() {

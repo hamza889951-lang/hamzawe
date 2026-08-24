@@ -21,6 +21,19 @@
  *   no insights, no attendance-rate/cancellation-rate/utilization
  *   formulas (those need their own approved Metric Contract).
  *
+ *   REPORTING CALENDAR ≠ CLINIC WORKING SCHEDULE: periods are pure
+ *   calendar boundaries (REPORT_WEEK_START = Saturday is only how a
+ *   Weekly report splits time — not a claim that any day is a
+ *   working day). The clinic's actual schedule and capacity are
+ *   produced by the existing pipeline
+ *   Settings → Slot Generation → Availability, flow into metrics
+ *   through their real sources, and are NEVER assumed or hardcoded
+ *   here. Future capacity/working-day metrics must consume Settings
+ *   or the actually generated Availability under their own approved
+ *   Metric Contract; if a historical metric needs schedule
+ *   provenance that cannot be proven for that past period, it is
+ *   DEFERRED — never guessed from current settings.
+ *
  * ─── STATUS SEMANTICS (honest, never cosmetic) ───
  *   COMPLETE — every requested metric envelope is AVAILABLE.
  *   PARTIAL  — one or more envelopes are not AVAILABLE (DEFERRED,
@@ -102,8 +115,12 @@ const ReportService = {
   },
 
   /**
-   * Weekly report: the clinic-local calendar week (Saturday → Friday,
-   * frozen M1-B contract) containing the reference instant.
+   * Weekly report: the REPORTING CALENDAR week containing the
+   * reference instant — Saturday 00:00 → following Friday 24:00
+   * clinic-local (REPORT_WEEK_START, frozen M1-B reporting
+   * convention). A pure calendar boundary: it says nothing about
+   * which days the clinic works; the working schedule lives in
+   * Settings → Slot Generation → Availability.
    * @param {Date|number} [reference]
    * @returns {Result}
    */

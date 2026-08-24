@@ -22,15 +22,50 @@
  *   defaults. The offset is fixed, so a clinic-local calendar day is
  *   exactly 24h in canonical epoch ms.
  *
- * ─── FROZEN M1-B WEEK CONTRACT ───
- *   WEEK_STARTS_ON = 6 (Saturday; 0 = Sunday … 6 = Saturday)
+ * ─── FROZEN M1-B REPORTING CALENDAR CONTRACT ───
+ *   REPORT_WEEK_START = 6 (Saturday; 0 = Sunday … 6 = Saturday)
  *
- *   The clinic week runs Saturday → Friday (Iraq / Asia-Baghdad
- *   calendar, consistent with the Settings working-day grid
- *   sunday…saturday consumed by SlotGenerator). The week start is an
+ *   This is a pure REPORTING CALENDAR convention: it defines ONLY how
+ *   a Weekly report splits time — Saturday 00:00 → the following
+ *   Friday 24:00 (clinic-local wall clock).
+ *   It is NOT a clinic working week, and it is
+ *   NOT a statement that Saturday — or any other day — is a working
+ *   day for the clinic. It carries no meaning about working days,
+ *   work hours, or appointments per day.
+ *
+ *   REPORTING CALENDAR ≠ CLINIC WORKING SCHEDULE. The clinic's
+ *   actual schedule (open/closed days, work hours, resulting slots)
+ *   is produced by the existing pipeline:
+ *
+ *     Settings → Slot Generation → Availability
+ *
+ *   and Management Intelligence READS that produced reality — it
+ *   never invents, rebuilds, or hardcodes it. The week start is an
  *   explicit frozen constant — NEVER derived from locale, culture
  *   defaults, or the executing environment — and is proven by tests
- *   (week grid, week transitions, contiguity).
+ *   (week grid, week transitions, contiguity, and the explicit
+ *   reporting-calendar/working-schedule separation tests).
+ *
+ * ─── SCHEDULE / CAPACITY PROVENANCE (documented; NOT part of M1-B) ───
+ *   This module is deliberately schedule-agnostic: it never reads
+ *   Settings / SettingsRepository / SlotGenerator / Availability and
+ *   knows nothing about the clinic's working days, work hours, or
+ *   number of slots per day. Periods are calendar boundaries only.
+ *
+ *   Future schedule/capacity metrics
+ *   (Average Patients Per Working Day, Expected Capacity, Capacity
+ *   Utilization, Busiest Working Day, Busiest Time Period, …) are
+ *   NOT implemented in M1-B. When they get their own approved Metric
+ *   Contract, their source of truth must be the Clinic Settings or
+ *   the Availability actually generated from them — never fixed
+ *   assumptions such as workingDays = 7, capacity = 24 * workingDays,
+ *   or "Monday is a working day".
+ *
+ *   HISTORICAL SCHEDULE rule: if a historical metric needs schedule
+ *   provenance and no provable historical version of the settings
+ *   exists, the metric is DEFERRED — current settings are NEVER
+ *   retroactively assumed to describe a past period. No guessing, no
+ *   reconstruction, no invention.
  *
  * ─── LAYERING ───
  *   Pure utility: operates ONLY on values passed to it. No Clock (the
@@ -48,7 +83,12 @@ const ReportPeriod = {
   // ─── Frozen M1-B constants ─────────────────────────────────────
   CLINIC_TIME_ZONE: 'Asia/Baghdad',
   CLINIC_UTC_OFFSET_MINUTES: 180, // UTC+3, no DST since 2008
-  WEEK_STARTS_ON: 6,              // Saturday (0 = Sunday … 6 = Saturday)
+  // Pure REPORTING CALENDAR convention (Saturday; 0 = Sunday … 6 =
+  // Saturday): how a Weekly report splits time. NOT a clinic working
+  // week and NOT a claim that Saturday (or any day) is a working day
+  // — the clinic schedule comes solely from
+  // Settings → Slot Generation → Availability.
+  REPORT_WEEK_START: 6,
 
   REPORT_TYPES: {
     DAILY: 'DAILY',
@@ -191,9 +231,13 @@ const ReportPeriod = {
   },
 
   /**
-   * The clinic-local calendar week (Saturday → Friday, frozen M1-B
-   * contract) containing the reference instant. 7 × 24h exactly; the
-   * week start is always a day start on the same clinic-local grid.
+   * The REPORTING CALENDAR week containing the reference instant:
+   * Saturday 00:00 → following Friday 24:00 clinic-local
+   * (REPORT_WEEK_START = Saturday, frozen M1-B reporting convention).
+   * A pure calendar boundary — it says NOTHING about which days the
+   * clinic works (that is Settings → Slot Generation → Availability).
+   * 7 × 24h exactly; the week start is always a day start on the same
+   * clinic-local grid.
    * @param {Date|number} reference
    * @returns {Result} ok({startMs, endMs}) | fail(REPORT_PERIOD_INVALID)
    */
@@ -211,7 +255,7 @@ const ReportPeriod = {
       wall.getUTCFullYear(), wall.getUTCMonth(), wall.getUTCDate(), 0, 0, 0, 0
     );
     var weekday = new Date(dayStartWall).getUTCDay(); // 0=Sunday … 6=Saturday
-    var daysSinceWeekStart = (weekday - this.WEEK_STARTS_ON + 7) % 7;
+    var daysSinceWeekStart = (weekday - this.REPORT_WEEK_START + 7) % 7;
     var weekStartWall = dayStartWall - daysSinceWeekStart * this.DAY_MS;
     var startMs = this.fromWallMs(weekStartWall);
     return Result.ok({ startMs: startMs, endMs: startMs + 7 * this.DAY_MS });
@@ -266,7 +310,7 @@ const ReportPeriod = {
    * wall clock. Pure; recomputable from startMs/endMs alone.
    * @param {string} reportType
    * @param {{startMs:number, endMs:number}} period
-   * @returns {{timeZone, utcOffsetMinutes, periodSemantics, startWallClock, endWallClock, wallClock:{start,end}, weekStartsOn?}}
+   * @returns {{timeZone, utcOffsetMinutes, periodSemantics, startWallClock, endWallClock, wallClock:{start,end}, reportWeekStart?}}
    */
   describe: function(reportType, period) {
     var meta = {
@@ -281,8 +325,10 @@ const ReportPeriod = {
       }
     };
     if (reportType === this.REPORT_TYPES.WEEKLY) {
-      // Explicit frozen week-start provenance on weekly reports.
-      meta.weekStartsOn = this.WEEK_STARTS_ON;
+      // Explicit reporting-calendar provenance on weekly reports: how
+      // the REPORT splits the calendar — never a clinic working-week
+      // statement.
+      meta.reportWeekStart = this.REPORT_WEEK_START;
     }
     return meta;
   }
