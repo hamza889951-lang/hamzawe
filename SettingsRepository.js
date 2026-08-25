@@ -49,6 +49,23 @@ const SettingsRepository = {
   },
 
   /**
+   * Result-based read of the settings row (first row in v1 single-clinic).
+   * Distinguishes sheet/storage failure from unconfigured state.
+   * @returns {Result} ok(row) | fail(SETTINGS_NOT_CONFIGURED | SETTINGS_READ_FAILED)
+   */
+  getSettingsResult() {
+    try {
+      const rows = GoogleSheets.getAllRows(Config.VOCABULARY.SHEETS.SETTINGS);
+      if (!rows || !rows.length) {
+        return Result.fail('SETTINGS_NOT_CONFIGURED', 'Settings sheet is empty or not configured');
+      }
+      return Result.ok(rows[0]);
+    } catch (e) {
+      return Result.fail('SETTINGS_READ_FAILED', e.message, e.stack);
+    }
+  },
+
+  /**
    * مصدر الحقيقة الوحيد لمدة الفتحة الزمنية بالدقائق.
    * يُستخدم من BookingService وChangeService دون أي نسخ محلي.
    * @returns {number}
@@ -62,5 +79,38 @@ const SettingsRepository = {
       // الإعدادات غير متاحة — استخدام القيمة الافتراضية
     }
     return this.DEFAULT_SLOT_DURATION_MINUTES;
+  },
+
+  /**
+   * Returns duration with provenance (CONFIGURED vs DEFAULT_FALLBACK).
+   * M1-C: 30 configured ≠ 30 fallback.
+   * If settings row is provided, evaluates directly; otherwise reads via getSettingsResult().
+   * @param {Object} [settings]
+   * @returns {{minutes: number, source: string}}
+   */
+  getSlotDurationInfo(settings) {
+    try {
+      let row = settings;
+      if (!row) {
+        const res = this.getSettingsResult();
+        row = res.ok ? res.data : null;
+      }
+      if (row && Object.prototype.hasOwnProperty.call(row, this.SLOT_DURATION_SETTINGS_KEY)) {
+        const configured = row[this.SLOT_DURATION_SETTINGS_KEY];
+        const parsed = Number(configured);
+        if (!isNaN(parsed) && parsed > 0) {
+          return {
+            minutes: parsed,
+            source: 'CONFIGURED'
+          };
+        }
+      }
+    } catch (e) {
+      // settings unavailable
+    }
+    return {
+      minutes: this.DEFAULT_SLOT_DURATION_MINUTES,
+      source: 'DEFAULT_FALLBACK'
+    };
   }
 };

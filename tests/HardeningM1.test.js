@@ -827,7 +827,7 @@ test('M1-F4 — Attendance audit absent / unreadable / schema-drifted → METRIC
 
 test('M1-F5 — Unknown metric rejected with the registry in details', function() {
   reset();
-  const result = sandbox.MetricsService.calculate('BOOKING_UTILIZATION', P);
+  const result = sandbox.MetricsService.calculate('UNKNOWN_METRIC_NAME', P);
   assert.strictEqual(result.ok, false);
   assert.strictEqual(result.error.code, 'METRIC_UNKNOWN');
   assert.ok(result.error.details.available.indexOf('CONFIRMED_APPOINTMENTS') !== -1);
