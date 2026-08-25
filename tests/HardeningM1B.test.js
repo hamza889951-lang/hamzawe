@@ -566,6 +566,9 @@ test('M1B-T3 — ReportService validation: unknown type and invalid reference fa
 // simulates different real clinic schedules (open/closed days,
 // slots/day). M1-B itself never reads Settings and never invents a
 // schedule — it only reads the produced reality through MetricsService.
+// NOTE: BOOKABLE_SLOTS is NOT raw capacity and NOT the generated-slot
+// count — it counts the M1-A eligibility (FREE + is_available +
+// slotStart >= now + 60 minutes) exactly as defined by M1-A.
 
 test('M1B-A1 — REPORT_WEEK_START = Saturday does NOT mean Saturday is a working day', function() {
   reset();
@@ -631,30 +634,51 @@ test('M1B-A2 — Clinic schedule change (Monday CLOSED, other days OPEN) does no
   assert.strictEqual(withoutMonday.data.metrics.BOOKABLE_SLOTS.value, 4);
 });
 
-test('M1B-A3 — Capacity is read from produced Availability (50 slots/day) — no fixed 24, no failure', function() {
+test('M1B-A3 — BOOKABLE_SLOTS follows its ACTUAL M1-A eligibility (FREE + is_available + start ≥ now+60m) — not raw capacity / generated-slot count', function() {
   reset();
-  // A real clinic configuration yielding 50 slots on Thursday
-  // 2026-08-27 (09:00 + 10-minute steps).
+  // 50 generated FREE slots on Thursday 2026-08-27, 09:00 + 10-minute
+  // steps (09:00 … 17:10). 50 is the RAW GENERATED count only — it is
+  // NOT the bookable count and NOT "capacity": BOOKABLE_SLOTS applies
+  // the frozen M1-A eligibility filter (SlotSelection.findEarliestBookable
+  // semantics: FREE + is_available + slotStart >= now + 60 minutes).
   const rows = [];
   for (var i = 0; i < 50; i++) {
-    rows.push(mkSlot('CAP' + i, { status: 'FREE', sortKey: CL(2026, 8, 27, 9, 0) + i * 10 * 60000 }));
+    rows.push(mkSlot('GEN' + i, { status: 'FREE', sortKey: CL(2026, 8, 27, 9, 0) + i * 10 * 60000 }));
   }
   seedAvailability(rows);
   seedLifecycle([]);
   seedAttendance([]);
+  assert.strictEqual(rows.length, 50); // raw generated slots on that day
 
-  const weekly = sandbox.ReportService.generateWeekly(CL(2026, 8, 24, 12, 0));
-  assert.strictEqual(weekly.ok, true); // different capacity → no failure, no assumption
+  // "now" = Thursday 12:00 (same day) → booking lead cutoff 13:00.
+  // Every slot starting BEFORE 13:00 fails the lead-time eligibility;
+  // the slots 13:00 … 17:10 pass it. The slot at exactly 13:00 IS
+  // eligible (cutoff is inclusive: >= now + 60m).
+  state.nowMs = CL(2026, 8, 27, 12, 0);
+
+  const weekly = sandbox.ReportService.generateWeekly(CL(2026, 8, 27, 12, 0));
+  assert.strictEqual(weekly.ok, true);
   assert.strictEqual(weekly.data.metrics.BOOKABLE_SLOTS.status, 'AVAILABLE');
-  assert.strictEqual(weekly.data.metrics.BOOKABLE_SLOTS.value, 50); // exactly the produced count
-  assert.notStrictEqual(weekly.data.metrics.BOOKABLE_SLOTS.value, 24); // never a hardcoded capacity
-  assert.strictEqual(weekly.data.status, 'COMPLETE');
+  // exactly the eligible subset (13:00…17:10) — neither the raw
+  // generated count (50) nor any fixed constant:
+  assert.strictEqual(weekly.data.metrics.BOOKABLE_SLOTS.value, 26);
+  assert.notStrictEqual(weekly.data.metrics.BOOKABLE_SLOTS.value, rows.length); // ≠ generated count
+  assert.strictEqual(weekly.data.status, 'COMPLETE'); // open week (ends Saturday)
 
-  // The Daily report of that Thursday sees the same produced reality:
   const daily = sandbox.ReportService.generateDaily(CL(2026, 8, 27, 12, 0));
   assert.strictEqual(daily.ok, true);
-  assert.strictEqual(daily.data.metrics.BOOKABLE_SLOTS.value, 50);
+  assert.strictEqual(daily.data.metrics.BOOKABLE_SLOTS.value, 26);
   assert.strictEqual(daily.data.period.startWallClock, '2026-08-27T00:00:00+03:00');
+
+  // Explicit eligibility proof on the same seed: a slot ONE minute
+  // before the cutoff is NOT bookable; a slot AT the cutoff IS.
+  seedAvailability(rows.concat([
+    mkSlot('EDGE_BEFORE', { status: 'FREE', sortKey: CL(2026, 8, 27, 12, 59) }),
+    mkSlot('EDGE_AT', { status: 'FREE', sortKey: CL(2026, 8, 27, 13, 0) })
+  ]));
+  const withEdges = sandbox.ReportService.generateDaily(CL(2026, 8, 27, 12, 0));
+  assert.strictEqual(withEdges.ok, true);
+  assert.strictEqual(withEdges.data.metrics.BOOKABLE_SLOTS.value, 27); // 26 + EDGE_AT only
 });
 
 test('M1B-A4 — Structural: ReportPeriod (and the reporting layer) is schedule-agnostic — no Settings/SlotGenerator/Availability references, no fixed capacity', function() {
