@@ -84,13 +84,19 @@ const SettingsRepository = {
   /**
    * Returns duration with provenance (CONFIGURED vs DEFAULT_FALLBACK).
    * M1-C: 30 configured ≠ 30 fallback.
+   * If settings row is provided, evaluates directly; otherwise reads via getSettingsResult().
+   * @param {Object} [settings]
    * @returns {{minutes: number, source: string}}
    */
-  getSlotDurationInfo() {
+  getSlotDurationInfo(settings) {
     try {
-      const settingsResult = this.getSettingsResult();
-      if (settingsResult.ok) {
-        const configured = settingsResult.data[this.SLOT_DURATION_SETTINGS_KEY];
+      let row = settings;
+      if (!row) {
+        const res = this.getSettingsResult();
+        row = res.ok ? res.data : null;
+      }
+      if (row && Object.prototype.hasOwnProperty.call(row, this.SLOT_DURATION_SETTINGS_KEY)) {
+        const configured = row[this.SLOT_DURATION_SETTINGS_KEY];
         const parsed = Number(configured);
         if (!isNaN(parsed) && parsed > 0) {
           return {

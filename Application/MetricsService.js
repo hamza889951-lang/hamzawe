@@ -36,9 +36,7 @@
  *    semantics:     HISTORICAL_EVIDENCE — same as cancellations.
  *
  *  COMPLETED_APPOINTMENTS
- *    source:        ATTENDANCE_AUDIT (attendance evidence, read through
- *                   AttendanceAuditReadRepository — the append-only
- *                   write contract is untouched)
+ *    source:        ATTENDANCE_AUDIT (read through AttendanceAuditReadRepository)
  *    condition:     outcome === APPLIED AND to_status === COMPLETED AND
  *                   timestamp >= ATTENDANCE_ACTIVATION_AT
  *    aggregation:   COUNT DISTINCT slot_id (ALREADY_APPLIED is not new
@@ -71,8 +69,10 @@
  *                   (sunday..saturday flags)
  *    aggregation:   COUNT working days in period
  *    semantics:     SNAPSHOT_CURRENT_STATE — Historical schedule is not
- *                   provable without version history; closed periods
- *                   (period.endMs <= asOfMs) return DEFERRED.
+ *                   provable without version history. Closed periods
+ *                   (period.endMs <= asOfMs) and mixed periods containing
+ *                   historical days (period.startMs < todayStartMs) return
+ *                   DEFERRED (never retroactively applying current settings).
  *
  *  CONFIGURED_CAPACITY
  *    source:        Settings (SettingsRepository)
@@ -80,9 +80,10 @@
  *                   floor((work_end - work_start) / slotDurationMinutes)
  *                   Closed days yield 0 (VALID ZERO).
  *    aggregation:   SUM daily configured capacity across period
- *    semantics:     SNAPSHOT_CURRENT_STATE — Closed periods return DEFERRED.
+ *    semantics:     SNAPSHOT_CURRENT_STATE — Closed and mixed historical
+ *                   periods return DEFERRED.
  *    provenance:    Carries slotDurationSource ('CONFIGURED' vs
- *                   'DEFAULT_FALLBACK') and slotDurationMinutes.
+ *                   'DEFAULT_FALLBACK') directly from SettingsRepository.
  *                   30 configured ≠ 30 fallback.
  *
  *  OBSERVED_WORKING_DAYS
@@ -105,7 +106,8 @@
  *    formula:       (Observed Generated Capacity / Configured Capacity) * 100
  *    purpose:       INTERNAL / DIAGNOSTIC
  *    zero denom:    Configured Capacity 0 → UNAVAILABLE (ZERO_DENOMINATOR)
- *    semantics:     SNAPSHOT_CURRENT_STATE — Closed periods return DEFERRED.
+ *    semantics:     SNAPSHOT_CURRENT_STATE — Closed and mixed historical
+ *                   periods return DEFERRED.
  *
  *  BOOKING_UTILIZATION
  *    sources:       Availability + Settings
@@ -113,7 +115,8 @@
  *    purpose:       DOCTOR-FACING KPI
  *    denominator:   Configured Capacity (planned capacity, not generated)
  *    zero denom:    Configured Capacity 0 → UNAVAILABLE (ZERO_DENOMINATOR)
- *    semantics:     SNAPSHOT_CURRENT_STATE — Closed periods return DEFERRED.
+ *    semantics:     SNAPSHOT_CURRENT_STATE — Closed and mixed historical
+ *                   periods return DEFERRED.
  *
  * ─── THREE-WAY DISTINCTION (GOVERNING INVARIANT) ───
  *    Configured Capacity ≠ Observed Generated Capacity ≠ Bookable Eligibility
@@ -134,7 +137,7 @@
  *  status:
  *    AVAILABLE   — proven number (0 is a VALID ZERO)
  *    UNAVAILABLE — value null (e.g. ZERO_DENOMINATOR)
- *    DEFERRED    — value null (HISTORICAL_NOT_PROVABLE for closed periods)
+ *    DEFERRED    — value null (HISTORICAL_NOT_PROVABLE for closed/mixed periods)
  *
  * Evaluation-order note: clasp evaluates project files alphabetically,
  * so this file loads BEFORE Config.js, Repositories, and SettingsRepository.
@@ -241,11 +244,12 @@ const MetricsService = {
 
     var now = Clock.now();
     var nowMs = now.getTime();
+    var todayStartMs = this._todayStartMs(nowMs);
 
-    // Snapshot metrics over closed periods are not provable from current
-    // state. Defer BEFORE reading any source: an unprovable metric must
-    // not even imply the source was consulted.
-    if (def.deferPast && per.endMs <= nowMs) {
+    // Snapshot metrics over closed periods, and configured metrics over
+    // mixed periods containing historical days (startMs < todayStartMs),
+    // are not provable. Defer BEFORE reading any source.
+    if ((def.deferPast && per.endMs <= nowMs) || (def.deferMixed && per.startMs < todayStartMs)) {
       return Result.ok(this._deferredEnvelope(metricName, def, per, now, nowMs));
     }
 
@@ -313,6 +317,7 @@ const MetricsService = {
 
     var now = Clock.now();
     var nowMs = now.getTime();
+    var todayStartMs = this._todayStartMs(nowMs);
 
     // Collect all distinct sources required by active (non-deferred) metrics
     // and map each source to the first metric requiring it (for precise error reporting)
@@ -322,7 +327,7 @@ const MetricsService = {
     for (var k = 0; k < names.length; k++) {
       var mName = names[k];
       var mDef = defs[mName];
-      if (mDef.deferPast && per.endMs <= nowMs) {
+      if ((mDef.deferPast && per.endMs <= nowMs) || (mDef.deferMixed && per.startMs < todayStartMs)) {
         continue;
       }
       if (mDef.isComposite) {
@@ -359,7 +364,7 @@ const MetricsService = {
       var name = names[j];
       var def = defs[name];
 
-      if (def.deferPast && per.endMs <= nowMs) {
+      if ((def.deferPast && per.endMs <= nowMs) || (def.deferMixed && per.startMs < todayStartMs)) {
         results[name] = this._deferredEnvelope(name, def, per, now, nowMs);
         continue;
       }
@@ -528,7 +533,7 @@ const MetricsService = {
 
   /**
    * @param {string} metricName
-   * @returns {Result} ok({metric, source, semantics, deferPast, read, compute})
+   * @returns {Result} ok({metric, source, semantics, deferPast, deferMixed, read, compute})
    */
   _definition: function(metricName) {
     var self = this;
@@ -542,6 +547,7 @@ const MetricsService = {
         source: MetricsService.SOURCES.AVAILABILITY,
         semantics: MetricsService.SEMANTICS.SNAPSHOT_CURRENT_STATE,
         deferPast: true,
+        deferMixed: false,
         read: function() {
           return SlotRepository.queryResult(function() { return true; });
         },
@@ -557,6 +563,7 @@ const MetricsService = {
         source: MetricsService.SOURCES.AVAILABILITY,
         semantics: MetricsService.SEMANTICS.SNAPSHOT_CURRENT_STATE,
         deferPast: true,
+        deferMixed: false,
         read: function() {
           return SlotRepository.queryResult(function() { return true; });
         },
@@ -572,6 +579,7 @@ const MetricsService = {
         source: MetricsService.SOURCES.B6_LIFECYCLE,
         semantics: MetricsService.SEMANTICS.HISTORICAL_EVIDENCE,
         deferPast: false,
+        deferMixed: false,
         read: function() {
           return B6LifecycleRepository.queryResult(function() { return true; });
         },
@@ -592,6 +600,7 @@ const MetricsService = {
         source: MetricsService.SOURCES.B6_LIFECYCLE,
         semantics: MetricsService.SEMANTICS.HISTORICAL_EVIDENCE,
         deferPast: false,
+        deferMixed: false,
         read: function() {
           return B6LifecycleRepository.queryResult(function() { return true; });
         },
@@ -612,6 +621,7 @@ const MetricsService = {
         source: MetricsService.SOURCES.ATTENDANCE_AUDIT,
         semantics: MetricsService.SEMANTICS.HISTORICAL_EVIDENCE,
         deferPast: false,
+        deferMixed: false,
         read: function() {
           return AttendanceAuditReadRepository.readAll();
         },
@@ -632,6 +642,7 @@ const MetricsService = {
         source: MetricsService.SOURCES.SETTINGS,
         semantics: MetricsService.SEMANTICS.SNAPSHOT_CURRENT_STATE,
         deferPast: true,
+        deferMixed: true,
         read: function() {
           return SettingsRepository.getSettingsResult();
         },
@@ -647,6 +658,7 @@ const MetricsService = {
         source: MetricsService.SOURCES.SETTINGS,
         semantics: MetricsService.SEMANTICS.SNAPSHOT_CURRENT_STATE,
         deferPast: true,
+        deferMixed: true,
         read: function() {
           return SettingsRepository.getSettingsResult();
         },
@@ -662,6 +674,7 @@ const MetricsService = {
         source: MetricsService.SOURCES.AVAILABILITY,
         semantics: MetricsService.SEMANTICS.SNAPSHOT_CURRENT_STATE,
         deferPast: true,
+        deferMixed: false,
         read: function() {
           return SlotRepository.queryResult(function() { return true; });
         },
@@ -677,6 +690,7 @@ const MetricsService = {
         source: MetricsService.SOURCES.AVAILABILITY,
         semantics: MetricsService.SEMANTICS.SNAPSHOT_CURRENT_STATE,
         deferPast: true,
+        deferMixed: false,
         read: function() {
           return SlotRepository.queryResult(function() { return true; });
         },
@@ -693,6 +707,7 @@ const MetricsService = {
         requiredSources: [MetricsService.SOURCES.AVAILABILITY, MetricsService.SOURCES.SETTINGS],
         semantics: MetricsService.SEMANTICS.SNAPSHOT_CURRENT_STATE,
         deferPast: true,
+        deferMixed: true,
         compute: function(sourcesData, per, nowMs, now) {
           return self._computeGenerationCompleteness(
             sourcesData[MetricsService.SOURCES.AVAILABILITY],
@@ -710,6 +725,7 @@ const MetricsService = {
         requiredSources: [MetricsService.SOURCES.AVAILABILITY, MetricsService.SOURCES.SETTINGS],
         semantics: MetricsService.SEMANTICS.SNAPSHOT_CURRENT_STATE,
         deferPast: true,
+        deferMixed: true,
         compute: function(sourcesData, per, nowMs, now) {
           return self._computeBookingUtilization(
             sourcesData[MetricsService.SOURCES.AVAILABILITY],
@@ -781,6 +797,7 @@ const MetricsService = {
         periodFilter: 'slotStartMs >= period.startMs AND slotStartMs < period.endMs (slotStartMs = LegacySlotTimeParser.toComparableTime(sort_key))',
         aggregation: 'COUNT',
         semantics: MetricsService.SEMANTICS.SNAPSHOT_CURRENT_STATE,
+        audience: MetricsService.AUDIENCE.DOCTOR_FACING,
         asOfMs: nowMs,
         snapshotMeaning: 'slots currently CONFIRMED (as of asOfMs) whose start time falls inside the period',
         unattributableRows: unattributable
@@ -1017,7 +1034,7 @@ const MetricsService = {
         workingDaysCount: count,
         totalCalendarDaysInPeriod: days.length,
         days: dayBreakdown,
-        historicalPolicy: 'Historical configured working schedule is not provable without settings version history; closed periods are DEFERRED.'
+        historicalPolicy: 'Historical configured working schedule is not provable without settings version history; closed and mixed past periods are DEFERRED.'
       }
     ));
   },
@@ -1026,10 +1043,14 @@ const MetricsService = {
    * CONFIGURED_CAPACITY (M1-C)
    * Sums floor((work_end - work_start) / slotDuration) for each working day in the period.
    * Closed days yield 0 (a VALID ZERO).
+   *
+   * Single Source of Truth: Slot duration and its provenance are consumed
+   * directly from SettingsRepository.getSlotDurationInfo(settings) without duplication.
    */
   _computeConfiguredCapacity: function(settings, per, nowMs, now) {
-    var durationInfo = this._extractSlotDuration(settings);
+    var durationInfo = SettingsRepository.getSlotDurationInfo(settings);
     var slotDur = durationInfo.minutes;
+    var slotDurSource = durationInfo.source;
 
     if (!settings || typeof settings.work_start !== 'string' || typeof settings.work_end !== 'string' ||
         !settings.work_start.trim() || !settings.work_end.trim()) {
@@ -1103,14 +1124,14 @@ const MetricsService = {
         workingMinutesPerDay: workingMinutesPerDay,
         dailyConfiguredCapacity: dailySlotCount,
         slotDurationMinutes: slotDur,
-        slotDurationSource: durationInfo.source,
-        fallbackPolicy: durationInfo.source === MetricsService.SLOT_DURATION_SOURCES.DEFAULT_FALLBACK
+        slotDurationSource: slotDurSource,
+        fallbackPolicy: slotDurSource === MetricsService.SLOT_DURATION_SOURCES.DEFAULT_FALLBACK
           ? 'DEFAULT_FALLBACK = 30 is an operational fallback, not configured clinical truth'
           : 'CONFIGURED slot duration from Settings',
         workingDaysInPeriod: workingDays,
         totalCalendarDaysInPeriod: days.length,
         days: dayBreakdown,
-        historicalPolicy: 'Historical configured capacity is not provable without settings version history; closed periods are DEFERRED.'
+        historicalPolicy: 'Historical configured capacity is not provable without settings version history; closed and mixed past periods are DEFERRED.'
       }
     ));
   },
@@ -1315,6 +1336,13 @@ const MetricsService = {
   },
 
   _deferredEnvelope: function(metricName, def, per, now, nowMs) {
+    var todayStartMs = this._todayStartMs(nowMs);
+    var isMixed = per.startMs < todayStartMs && per.endMs > nowMs;
+
+    var policy = isMixed
+      ? 'Mixed periods containing historical days (period.startMs < todayStartMs) cannot be proven for configured schedule metrics because SettingsRepository has no version history. Current settings cannot be retroactively applied to past days; mixed periods are DEFERRED.'
+      : 'SNAPSHOT_CURRENT_STATE metrics are provable only while the period is not fully closed (period.endMs > asOfMs). Availability status is mutable, so a closed period cannot be reconstructed from current state; an event history would be required. No approximation, no inference, no invention.';
+
     return {
       metric: metricName,
       status: MetricsService.STATUS.DEFERRED,
@@ -1327,9 +1355,23 @@ const MetricsService = {
         semantics: def.semantics,
         periodSemantics: MetricsService.PERIOD_SEMANTICS,
         asOfMs: nowMs,
-        historicalPolicy: 'SNAPSHOT_CURRENT_STATE metrics are provable only while the period is not fully closed (period.endMs > asOfMs). Availability status is mutable, so a closed period cannot be reconstructed from current state; an event history would be required. No approximation, no inference, no invention.'
+        todayStartMs: todayStartMs,
+        isMixedPeriod: isMixed,
+        historicalPolicy: policy
       }
     };
+  },
+
+  /**
+   * Instant of 00:00:00 clinic local on the day containing nowMs.
+   * Pure arithmetic with fixed Asia/Baghdad (+03:00 / 180 min) offset.
+   */
+  _todayStartMs: function(nowMs) {
+    var offsetMs = 180 * 60000;
+    var dayMs = 86400000;
+    var nowWallMs = nowMs + offsetMs;
+    var todayIndex = Math.floor(nowWallMs / dayMs);
+    return todayIndex * dayMs - offsetMs;
   },
 
   /**
@@ -1402,25 +1444,6 @@ const MetricsService = {
     if (value === true) return true;
     if (typeof value === 'string' && value.trim().toUpperCase() === 'TRUE') return true;
     return false;
-  },
-
-  /** Slot duration parser with provenance (CONFIGURED vs DEFAULT_FALLBACK). */
-  _extractSlotDuration: function(settings) {
-    var key = SettingsRepository.SLOT_DURATION_SETTINGS_KEY;
-    var defaultMin = SettingsRepository.DEFAULT_SLOT_DURATION_MINUTES || 30;
-    if (settings && settings.hasOwnProperty(key)) {
-      var parsed = Number(settings[key]);
-      if (!isNaN(parsed) && parsed > 0) {
-        return {
-          minutes: parsed,
-          source: MetricsService.SLOT_DURATION_SOURCES.CONFIGURED
-        };
-      }
-    }
-    return {
-      minutes: defaultMin,
-      source: MetricsService.SLOT_DURATION_SOURCES.DEFAULT_FALLBACK
-    };
   },
 
   /** Working day predicate matching SlotGenerator.isWorkingDay. */

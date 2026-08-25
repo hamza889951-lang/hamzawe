@@ -4,26 +4,28 @@
  * HardeningM1C.test.js — M1-C (PHASE 1.4 — CAPACITY & WORKING-SCHEDULE INTELLIGENCE)
  *
  * Proves the M1-C contract:
- *   CWD — Configured Working Days (source: Settings, daily/weekly/monthly,
- *         closed day zero, historical DEFERRED, source failure)
+ *   CWD — Configured Working Days (source: SettingsRepository, daily/future-week/monthly,
+ *         closed day zero, historical DEFERRED, mixed period DEFERRED, source failure)
  *   CC  — Configured Capacity (work_start/work_end/duration, closed day zero,
- *         no fixed 24, duration provenance CONFIGURED vs DEFAULT_FALLBACK,
- *         30 configured ≠ 30 fallback, historical DEFERRED, evidence validation)
+ *         no fixed 24, duration provenance CONFIGURED vs DEFAULT_FALLBACK directly
+ *         from SettingsRepository.getSlotDurationInfo, 30 configured ≠ 30 fallback,
+ *         historical DEFERRED, mixed period DEFERRED, evidence validation)
  *   OGC — Observed Generated Capacity (all Availability rows counted regardless
  *         of status, valid zero, boundaries, historical DEFERRED, absence ≠ closed)
  *   OWD — Observed Working Days (distinct generated dates, valid zero,
  *         historical DEFERRED, source failure)
  *   GC  — Generation Completeness ((Observed / Configured) * 100, diagnostic,
- *         zero denominator N/A, valid zero numerator, historical DEFERRED)
+ *         zero denominator N/A, valid zero numerator, historical/mixed DEFERRED)
  *   BU  — Booking Utilization ((Confirmed / Configured) * 100, doctor-facing KPI,
  *         denominator = Configured Capacity, zero denominator N/A,
- *         diagnostic mismatch case, historical DEFERRED)
+ *         diagnostic mismatch case, historical/mixed DEFERRED)
  *   COB — Three-Way Governing Distinction (Configured ≠ Observed ≠ Bookable)
  *   PBP — Performance, Batching & Purity (calculateMany reads each source ONCE,
  *         fail fast, pure read-only with zero writes/locks/sheet creates)
  *   DVI — Doctor-Facing vs Internal Separation (getDoctorSummary vs getDiagnosticSummary)
  *   SCI — Structural & Constitutional Integrity (no fixed 24/7, no new Date( in Application,
- *         single-clinic, no settings history fabricated, clasp evaluation-order independence)
+ *         SettingsRepository single source of truth for duration, single-clinic,
+ *         no settings history fabricated, clasp evaluation-order independence)
  */
 
 const assert = require('assert');
@@ -44,14 +46,14 @@ const DAY_MS = 86400000;
 // Frozen Clock: Monday 2026-08-24 12:00 clinic-local (Baghdad UTC+3)
 const NOW_MS = CL(2026, 8, 24, 12, 0);
 
-// Current day: Monday 2026-08-24 00:00 -> 2026-08-25 00:00 clinic-local
+// Current day (Today): Monday 2026-08-24 00:00 -> 2026-08-25 00:00 clinic-local
 const CURRENT_DAY_P = {
   start: CL(2026, 8, 24, 0, 0),
   end: CL(2026, 8, 25, 0, 0)
 };
 
-// Current week: Sat 2026-08-22 00:00 -> Sat 2026-08-29 00:00 clinic-local
-const CURRENT_WEEK_P = {
+// Current week (Mixed period: Sat 08-22, Sun 08-23 past + Mon 08-24 today + Tue..Fri future)
+const CURRENT_WEEK_MIXED_P = {
   start: CL(2026, 8, 22, 0, 0),
   end: CL(2026, 8, 29, 0, 0)
 };
@@ -62,7 +64,7 @@ const PAST_P = {
   end: CL(2026, 8, 11, 0, 0)
 };
 
-// Future period: 2026-09-01 00:00 -> 2026-09-08 00:00 clinic-local
+// Future week (all days >= today): 2026-09-01 00:00 -> 2026-09-08 00:00 clinic-local
 const FUTURE_WEEK_P = {
   start: CL(2026, 9, 1, 0, 0),
   end: CL(2026, 9, 8, 0, 0)
@@ -279,14 +281,14 @@ function test(name, fn) { tests.push({ name: name, fn: fn }); }
 
 test('CWD-1 — Daily period: open working day = 1, closed day = 0 (VALID ZERO)', function() {
   reset();
-  // Monday 2026-08-24 is open
+  // Monday 2026-08-24 is open (Today)
   const mon = sandbox.MetricsService.calculate('CONFIGURED_WORKING_DAYS', CURRENT_DAY_P);
   assert.strictEqual(mon.ok, true);
   assert.strictEqual(mon.data.status, 'AVAILABLE');
   assert.strictEqual(mon.data.value, 1);
   assert.strictEqual(mon.data.reason, null);
 
-  // Friday 2026-08-28 (closed day)
+  // Friday 2026-08-28 (future closed day)
   const friPeriod = {
     start: CL(2026, 8, 28, 0, 0),
     end: CL(2026, 8, 29, 0, 0)
@@ -298,9 +300,9 @@ test('CWD-1 — Daily period: open working day = 1, closed day = 0 (VALID ZERO)'
   assert.strictEqual(fri.data.reason, null);
 });
 
-test('CWD-2 — Weekly period: counts configured working days in the week (5 open, 2 closed = 5)', function() {
+test('CWD-2 — Future weekly period: counts configured working days in the week (5 open, 2 closed = 5)', function() {
   reset();
-  const week = sandbox.MetricsService.calculate('CONFIGURED_WORKING_DAYS', CURRENT_WEEK_P);
+  const week = sandbox.MetricsService.calculate('CONFIGURED_WORKING_DAYS', FUTURE_WEEK_P);
   assert.strictEqual(week.ok, true);
   assert.strictEqual(week.data.status, 'AVAILABLE');
   assert.strictEqual(week.data.value, 5);
@@ -323,7 +325,7 @@ test('CWD-3 — Dynamic schedule: 6-day work week is reflected without fixed 5 o
     saturday: true // Saturday also open
   });
 
-  const week = sandbox.MetricsService.calculate('CONFIGURED_WORKING_DAYS', CURRENT_WEEK_P);
+  const week = sandbox.MetricsService.calculate('CONFIGURED_WORKING_DAYS', FUTURE_WEEK_P);
   assert.strictEqual(week.data.value, 6);
 });
 
@@ -342,7 +344,7 @@ test('CWD-4 — All-closed week yields VALID ZERO (status AVAILABLE, value 0)', 
     saturday: false
   });
 
-  const week = sandbox.MetricsService.calculate('CONFIGURED_WORKING_DAYS', CURRENT_WEEK_P);
+  const week = sandbox.MetricsService.calculate('CONFIGURED_WORKING_DAYS', FUTURE_WEEK_P);
   assert.strictEqual(week.data.status, 'AVAILABLE');
   assert.strictEqual(week.data.value, 0);
   assert.strictEqual(week.data.reason, null);
@@ -358,7 +360,19 @@ test('CWD-5 — Closed past period returns DEFERRED (HISTORICAL_NOT_PROVABLE, ze
   assert.strictEqual(state.queryCalls['Settings'] || 0, 0);
 });
 
-test('CWD-6 — Settings read failure propagates METRIC_SOURCE_UNAVAILABLE (never 0)', function() {
+test('CWD-6 — Mixed week containing historical past days returns DEFERRED (no retroactive settings application)', function() {
+  reset();
+  // CURRENT_WEEK_MIXED_P starts Sat 08-22, while today is Mon 08-24 -> contains past days
+  const mixed = sandbox.MetricsService.calculate('CONFIGURED_WORKING_DAYS', CURRENT_WEEK_MIXED_P);
+  assert.strictEqual(mixed.ok, true);
+  assert.strictEqual(mixed.data.status, 'DEFERRED');
+  assert.strictEqual(mixed.data.value, null);
+  assert.strictEqual(mixed.data.reason, 'HISTORICAL_NOT_PROVABLE');
+  assert.strictEqual(mixed.data.provenance.isMixedPeriod, true);
+  assert.ok(mixed.data.provenance.historicalPolicy.indexOf('Mixed periods') !== -1);
+});
+
+test('CWD-7 — Settings read failure propagates METRIC_SOURCE_UNAVAILABLE (never 0)', function() {
   reset();
   state.failRead['Settings'] = true;
   const result = sandbox.MetricsService.calculate('CONFIGURED_WORKING_DAYS', CURRENT_DAY_P);
@@ -394,9 +408,9 @@ test('CC-2 — Daily configured capacity for closed day = 0 (VALID ZERO)', funct
   assert.strictEqual(fri.data.reason, null);
 });
 
-test('CC-3 — Weekly configured capacity = sum of daily capacities (5 open days * 24 = 120)', function() {
+test('CC-3 — Future weekly configured capacity = sum of daily capacities (5 open days * 24 = 120)', function() {
   reset();
-  const week = sandbox.MetricsService.calculate('CONFIGURED_CAPACITY', CURRENT_WEEK_P);
+  const week = sandbox.MetricsService.calculate('CONFIGURED_CAPACITY', FUTURE_WEEK_P);
   assert.strictEqual(week.ok, true);
   assert.strictEqual(week.data.status, 'AVAILABLE');
   assert.strictEqual(week.data.value, 120);
@@ -421,12 +435,12 @@ test('CC-4 — Non-standard hours/duration proves NO fixed 24 slots assumption',
   const daily = sandbox.MetricsService.calculate('CONFIGURED_CAPACITY', CURRENT_DAY_P);
   assert.strictEqual(daily.data.value, 13);
 
-  const weekly = sandbox.MetricsService.calculate('CONFIGURED_CAPACITY', CURRENT_WEEK_P);
+  const weekly = sandbox.MetricsService.calculate('CONFIGURED_CAPACITY', FUTURE_WEEK_P);
   // 4 open days * 13 slots = 52 slots
   assert.strictEqual(weekly.data.value, 52);
 });
 
-test('CC-5 — Duration provenance = CONFIGURED when Slot Duration (min) is present and valid', function() {
+test('CC-5 — Duration provenance = CONFIGURED directly from SettingsRepository.getSlotDurationInfo()', function() {
   reset();
   const result = sandbox.MetricsService.calculate('CONFIGURED_CAPACITY', CURRENT_DAY_P);
   assert.strictEqual(result.data.provenance.slotDurationSource, 'CONFIGURED');
@@ -480,7 +494,7 @@ test('CC-7 — 30 configured ≠ 30 fallback: provenance explicitly distinguishe
   seedSettings({
     work_start: '09:00',
     work_end: '17:00',
-    'Slot Duration (min)': '', // empty -> triggers fallback
+    'Slot Duration (min)': '', // empty -> triggers fallback in SettingsRepository
     sunday: true,
     monday: true,
     tuesday: true,
@@ -504,7 +518,17 @@ test('CC-8 — Closed past period returns DEFERRED (HISTORICAL_NOT_PROVABLE)', f
   assert.strictEqual(past.data.reason, 'HISTORICAL_NOT_PROVABLE');
 });
 
-test('CC-9 — Settings read failure / missing sheet propagates METRIC_SOURCE_UNAVAILABLE', function() {
+test('CC-9 — Mixed week containing past days returns DEFERRED for configured capacity', function() {
+  reset();
+  const mixed = sandbox.MetricsService.calculate('CONFIGURED_CAPACITY', CURRENT_WEEK_MIXED_P);
+  assert.strictEqual(mixed.ok, true);
+  assert.strictEqual(mixed.data.status, 'DEFERRED');
+  assert.strictEqual(mixed.data.value, null);
+  assert.strictEqual(mixed.data.reason, 'HISTORICAL_NOT_PROVABLE');
+  assert.strictEqual(mixed.data.provenance.isMixedPeriod, true);
+});
+
+test('CC-10 — Settings read failure / missing sheet propagates METRIC_SOURCE_UNAVAILABLE', function() {
   reset();
   state.failRead['Settings'] = true;
   const result = sandbox.MetricsService.calculate('CONFIGURED_CAPACITY', CURRENT_DAY_P);
@@ -512,7 +536,7 @@ test('CC-9 — Settings read failure / missing sheet propagates METRIC_SOURCE_UN
   assert.strictEqual(result.error.code, 'METRIC_SOURCE_UNAVAILABLE');
 });
 
-test('CC-10 — Malformed work_start or work_end returns METRIC_EVIDENCE_INVALID', function() {
+test('CC-11 — Malformed work_start or work_end returns METRIC_EVIDENCE_INVALID', function() {
   reset();
   seedSettings({
     work_start: 'invalid_time',
@@ -619,7 +643,7 @@ test('OWD-1 — Counts distinct clinic-local calendar dates with >= 1 observed g
     mkSlot('S6', { sortKey: CL(2026, 8, 26, 10, 0) })
   ]);
 
-  const result = sandbox.MetricsService.calculate('OBSERVED_WORKING_DAYS', CURRENT_WEEK_P);
+  const result = sandbox.MetricsService.calculate('OBSERVED_WORKING_DAYS', CURRENT_WEEK_MIXED_P);
   assert.strictEqual(result.ok, true);
   assert.strictEqual(result.data.status, 'AVAILABLE');
   assert.strictEqual(result.data.value, 3);
@@ -629,7 +653,7 @@ test('OWD-1 — Counts distinct clinic-local calendar dates with >= 1 observed g
 test('OWD-2 — Empty Availability yields VALID ZERO (AVAILABLE 0)', function() {
   reset();
   seedAvailability([]);
-  const result = sandbox.MetricsService.calculate('OBSERVED_WORKING_DAYS', CURRENT_WEEK_P);
+  const result = sandbox.MetricsService.calculate('OBSERVED_WORKING_DAYS', CURRENT_WEEK_MIXED_P);
   assert.strictEqual(result.ok, true);
   assert.strictEqual(result.data.status, 'AVAILABLE');
   assert.strictEqual(result.data.value, 0);
@@ -648,7 +672,7 @@ test('OWD-3 — Closed past period returns DEFERRED (HISTORICAL_NOT_PROVABLE)', 
 // 5. GENERATION_COMPLETENESS
 // ─────────────────────────────────────────────────────────────
 
-test('GC-1 — 100% completeness when Observed Generated Capacity equals Configured Capacity', function() {
+test('GC-1 — 100% completeness when Observed Generated Capacity equals Configured Capacity (Today)', function() {
   reset();
   // Configured = 24 slots for Monday 2026-08-24
   const slots = [];
@@ -669,7 +693,7 @@ test('GC-1 — 100% completeness when Observed Generated Capacity equals Configu
   assert.strictEqual(result.data.provenance.audience, 'INTERNAL_DIAGNOSTIC');
 });
 
-test('GC-2 — Partial completeness: 80% when Observed = 40 and Configured = 50', function() {
+test('GC-2 — Partial completeness: 80% when Observed = 40 and Configured = 50 (Future Week)', function() {
   reset();
   // Set up 50 configured capacity: 09:00 -> 14:00 (10 slots/day * 5 days = 50)
   seedSettings({
@@ -685,23 +709,23 @@ test('GC-2 — Partial completeness: 80% when Observed = 40 and Configured = 50'
     saturday: false
   });
 
-  // Seed 40 slots in Availability
+  // Seed 40 slots in Availability in future week (2026-09-01..2026-09-08)
   const slots = [];
   for (let i = 0; i < 40; i++) {
-    slots.push(mkSlot('S' + i, { sortKey: CL(2026, 8, 24, 9, i) }));
+    slots.push(mkSlot('S' + i, { sortKey: CL(2026, 9, 1, 9, i) }));
   }
   seedAvailability(slots);
 
-  const result = sandbox.MetricsService.calculate('GENERATION_COMPLETENESS', CURRENT_WEEK_P);
+  const result = sandbox.MetricsService.calculate('GENERATION_COMPLETENESS', FUTURE_WEEK_P);
   assert.strictEqual(result.ok, true);
   assert.strictEqual(result.data.status, 'AVAILABLE');
   assert.strictEqual(result.data.value, 80);
 });
 
-test('GC-3 — Valid zero numerator: Observed 0 / Configured 50 → AVAILABLE 0 (0%)', function() {
+test('GC-3 — Valid zero numerator: Observed 0 / Configured 24 → AVAILABLE 0 (0%)', function() {
   reset();
   seedAvailability([]);
-  const result = sandbox.MetricsService.calculate('GENERATION_COMPLETENESS', CURRENT_WEEK_P);
+  const result = sandbox.MetricsService.calculate('GENERATION_COMPLETENESS', CURRENT_DAY_P);
   assert.strictEqual(result.ok, true);
   assert.strictEqual(result.data.status, 'AVAILABLE');
   assert.strictEqual(result.data.value, 0);
@@ -725,6 +749,14 @@ test('GC-4 — Zero denominator: Configured 0 → UNAVAILABLE (ZERO_DENOMINATOR,
 test('GC-5 — Closed past period returns DEFERRED (HISTORICAL_NOT_PROVABLE)', function() {
   reset();
   const result = sandbox.MetricsService.calculate('GENERATION_COMPLETENESS', PAST_P);
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.data.status, 'DEFERRED');
+  assert.strictEqual(result.data.value, null);
+});
+
+test('GC-6 — Mixed week returns DEFERRED for generation completeness', function() {
+  reset();
+  const result = sandbox.MetricsService.calculate('GENERATION_COMPLETENESS', CURRENT_WEEK_MIXED_P);
   assert.strictEqual(result.ok, true);
   assert.strictEqual(result.data.status, 'DEFERRED');
   assert.strictEqual(result.data.value, null);
@@ -781,7 +813,7 @@ test('BU-3 — Zero denominator: Configured 0 → UNAVAILABLE (ZERO_DENOMINATOR,
   assert.strictEqual(result.data.reason, 'ZERO_DENOMINATOR');
 });
 
-test('BU-4 — Diagnostic mismatch case: Configured 50, Generated 40, Confirmed 40 → BU = 80%, GC = 80%', function() {
+test('BU-4 — Diagnostic mismatch case: Configured 50, Generated 40, Confirmed 40 → BU = 80%, GC = 80% (Future Week)', function() {
   reset();
   // Set up 50 configured capacity (10/day * 5 days)
   seedSettings({
@@ -797,17 +829,17 @@ test('BU-4 — Diagnostic mismatch case: Configured 50, Generated 40, Confirmed 
     saturday: false
   });
 
-  // System generated 40 slots, all 40 are confirmed
+  // System generated 40 slots in future week, all 40 are confirmed
   const slots = [];
   for (let i = 0; i < 40; i++) {
-    slots.push(mkSlot('C' + i, { status: 'CONFIRMED', sortKey: CL(2026, 8, 24, 9, i), phone: PHONE }));
+    slots.push(mkSlot('C' + i, { status: 'CONFIRMED', sortKey: CL(2026, 9, 1, 9, i), phone: PHONE }));
   }
   seedAvailability(slots);
 
-  const bu = sandbox.MetricsService.calculate('BOOKING_UTILIZATION', CURRENT_WEEK_P);
+  const bu = sandbox.MetricsService.calculate('BOOKING_UTILIZATION', FUTURE_WEEK_P);
   assert.strictEqual(bu.data.value, 80); // 40 / 50 * 100 = 80% (NOT 40/40 = 100%)
 
-  const gc = sandbox.MetricsService.calculate('GENERATION_COMPLETENESS', CURRENT_WEEK_P);
+  const gc = sandbox.MetricsService.calculate('GENERATION_COMPLETENESS', FUTURE_WEEK_P);
   assert.strictEqual(gc.data.value, 80); // 40 / 50 * 100 = 80%
 
   assert.ok(bu.data.provenance.denominatorRationale.indexOf('Configured Capacity') !== -1);
@@ -816,6 +848,14 @@ test('BU-4 — Diagnostic mismatch case: Configured 50, Generated 40, Confirmed 
 test('BU-5 — Closed past period returns DEFERRED (HISTORICAL_NOT_PROVABLE)', function() {
   reset();
   const result = sandbox.MetricsService.calculate('BOOKING_UTILIZATION', PAST_P);
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.data.status, 'DEFERRED');
+  assert.strictEqual(result.data.value, null);
+});
+
+test('BU-6 — Mixed week returns DEFERRED for booking utilization', function() {
+  reset();
+  const result = sandbox.MetricsService.calculate('BOOKING_UTILIZATION', CURRENT_WEEK_MIXED_P);
   assert.strictEqual(result.ok, true);
   assert.strictEqual(result.data.status, 'DEFERRED');
   assert.strictEqual(result.data.value, null);
@@ -870,7 +910,7 @@ test('COB-1 — Three-way distinction: Configured 24 ≠ Generated 20 ≠ Bookab
 // 8. PERFORMANCE, BATCHING & PURITY (calculateMany)
 // ─────────────────────────────────────────────────────────────
 
-test('PBP-1 — calculateMany with all 6 M1-C metrics reads Settings ONCE and Availability ONCE', function() {
+test('PBP-1 — calculateMany with all 6 M1-C metrics reads Settings ONCE and Availability ONCE (Today)', function() {
   reset();
   const m1cMetrics = [
     'CONFIGURED_WORKING_DAYS',
@@ -989,10 +1029,18 @@ test('SCI-1 — Structural: MetricsService does not reference forbidden globals 
 
   assert.ok(src.indexOf('Clock.now()') !== -1);
   assert.ok(src.indexOf('SettingsRepository.getSettingsResult') !== -1);
+  assert.ok(src.indexOf('SettingsRepository.getSlotDurationInfo') !== -1);
   assert.ok(src.indexOf('SlotRepository.queryResult') !== -1);
 });
 
-test('SCI-2 — Structural: No fixed 24 slots/day or 7 working days constants in MetricsService', function() {
+test('SCI-2 — Structural: No duplicate slot duration extraction logic in MetricsService', function() {
+  const src = stripComments(fs.readFileSync(path.join(ROOT, 'Application/MetricsService.js'), 'utf8'));
+
+  assert.strictEqual(src.indexOf('_extractSlotDuration'), -1, 'MetricsService must NOT duplicate slot duration extraction logic');
+  assert.ok(src.indexOf('SettingsRepository.getSlotDurationInfo') !== -1, 'MetricsService must use SettingsRepository directly');
+});
+
+test('SCI-3 — Structural: No fixed 24 slots/day or 7 working days constants in MetricsService', function() {
   const src = stripComments(fs.readFileSync(path.join(ROOT, 'Application/MetricsService.js'), 'utf8'));
 
   assert.strictEqual(src.indexOf('24 *'), -1, 'no fixed 24 slots/day formula');
@@ -1000,7 +1048,7 @@ test('SCI-2 — Structural: No fixed 24 slots/day or 7 working days constants in
   assert.strictEqual(src.indexOf('WORKING_DAYS = 7'), -1, 'no fixed 7 working days');
 });
 
-test('SCI-3 — SettingsRepository provides getSettingsResult and getSlotDurationInfo without breaking legacy', function() {
+test('SCI-4 — SettingsRepository provides getSettingsResult and getSlotDurationInfo as Single Source of Truth', function() {
   reset();
   const res = sandbox.SettingsRepository.getSettingsResult();
   assert.strictEqual(res.ok, true);
@@ -1015,7 +1063,7 @@ test('SCI-3 — SettingsRepository provides getSettingsResult and getSlotDuratio
   assert.strictEqual(sandbox.SettingsRepository.get('work_start'), '09:00');
 });
 
-test('SCI-4 — Evaluation-order independence: MetricsService resolves dependencies at call time', function() {
+test('SCI-5 — Evaluation-order independence: MetricsService resolves dependencies at call time', function() {
   const isoSandbox = vm.createContext({ console: console });
   isoSandbox.Result = sandbox.Result;
   isoSandbox.Clock = sandbox.Clock;
