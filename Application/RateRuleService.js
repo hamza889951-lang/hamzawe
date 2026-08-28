@@ -21,14 +21,26 @@
  *   2 foundation validity         (UNAVAILABLE → NOT_EVALUABLE, foundation
  *                                  reason preserved VERBATIM:
  *                                  ZERO_DENOMINATOR / RATE_EVIDENCE_INVALID)
- *   3 sample sufficiency          (denominator < MINIMUM_COHORT →
+   * 3 sample sufficiency          (denominator < MINIMUM_COHORT →
  *                                  INSUFFICIENT_SAMPLE — the value stays
- *                                  reported; NO severity, NO zeroing)
+ *                                  reported; NO severity, NO zeroing.
+ *                                  MINIMUM_COHORT = 10 is a FROZEN
+ *                                  business decision (contract §56): the
+ *                                  sample gate ALWAYS uses the constant
+ *                                  and is evaluated BEFORE any threshold
+ *                                  policy is consulted — a policy can
+ *                                  never raise or lower the floor.)
  *   4 threshold evaluation        (approved policy → band severity
  *                                  NORMAL/WATCH/HIGH/CRITICAL;
  *                                  no approved policy → NOT_EVALUABLE /
  *                                  RULE_NOT_CONFIGURED — never a default,
- *                                  never a magic number, contract §10/§12)
+ *                                  never a magic number, contract §10/§12;
+ *                                  a policy that contradicts the frozen
+ *                                  sample floor → NOT_EVALUABLE /
+ *                                  RULE_POLICY_INVALID, contract §46:
+ *                                  a conflicting governance input is
+ *                                  neither silently applied nor silently
+ *                                  ignored)
  *   5 severity + confidence       (deterministic, contract §23)
  *
  * ─── THRESHOLD GOVERNANCE (v2 contract §10–§12) ───
@@ -181,7 +193,8 @@ const RateRuleService = {
     ZERO_DENOMINATOR: 'ZERO_DENOMINATOR',
     INSUFFICIENT_SAMPLE: 'INSUFFICIENT_SAMPLE',
     RULE_NOT_CONFIGURED: 'RULE_NOT_CONFIGURED',
-    RULE_INPUT_INVALID: 'RULE_INPUT_INVALID'
+    RULE_INPUT_INVALID: 'RULE_INPUT_INVALID',
+    RULE_POLICY_INVALID: 'RULE_POLICY_INVALID'
   },
 
   /**
@@ -194,7 +207,14 @@ const RateRuleService = {
    *     thresholdId: string,          stable id
    *     metric: 'CANCELLATION_RATE' | 'CHANGE_RATE' | 'COMPLETION_RATE' | 'NO_SHOW_RATE',
    *     direction: 'ABOVE' | 'BELOW',
-   *     minimumSample: number,        (defaults to MINIMUM_COHORT)
+   *     minimumSample: number,        OPTIONAL — must equal the frozen
+   *                                    MINIMUM_COHORT when present; a
+   *                                    conflicting value invalidates the
+   *                                    policy (RULE_POLICY_INVALID).
+   *                                    Re-deciding the sample floor is a
+   *                                    contract-level change (updating
+   *                                    the frozen constant), never a
+   *                                    policy-level one (contract §56).
    *     thresholds: [ { threshold: number, severity: 'WATCH'|'HIGH'|'CRITICAL' }, ... ]
    *   }
    * Band semantics: ABOVE → most severe band with threshold ≤ value;
@@ -431,24 +451,36 @@ const RateRuleService = {
       return this._sealRule(base, this.RULE_STATES.NOT_EVALUABLE, null, this.REASONS.RULE_INPUT_INVALID, null);
     }
 
-    // 3 — sample sufficiency (contract §7): the rate stays reported
-    // (value + numerator + denominator), but NO severity is assigned.
-    var minimumSample = this.MINIMUM_COHORT;
-    var policy = this._policyFor(meta.metric);
-    if (policy && this._isNonNegativeInt(policy.minimumSample)) {
-      minimumSample = policy.minimumSample;
-    }
-    base.minimumSample = minimumSample;
-    if (den < minimumSample) {
+    // 3 — sample sufficiency (contract §7, §56): the rate stays
+    // reported (value + numerator + denominator), but NO severity is
+    // assigned. The floor is the FROZEN MINIMUM_COHORT constant — a
+    // threshold policy can never override it, and this gate runs BEFORE
+    // any policy is consulted (contract §8 pipeline order).
+    base.minimumSample = this.MINIMUM_COHORT;
+    if (den < this.MINIMUM_COHORT) {
       return this._sealRule(base, this.RULE_STATES.INSUFFICIENT_SAMPLE, null, this.REASONS.INSUFFICIENT_SAMPLE, this.CONFIDENCE.LOW);
     }
 
-    // 4 — threshold policy (contract §10–§12): no approved policy for
-    // this metric → NOT_EVALUABLE / RULE_NOT_CONFIGURED. The value is
-    // known and reported; only the classification is withheld.
+    // 4 — threshold policy (contract §10–§12, §46): no approved policy
+    // for this metric → NOT_EVALUABLE / RULE_NOT_CONFIGURED. The value
+    // is known and reported; only the classification is withheld.
+    var policy = this._policyFor(meta.metric);
     if (!policy) {
       return this._sealRule(base, this.RULE_STATES.NOT_EVALUABLE, null, this.REASONS.RULE_NOT_CONFIGURED,
-        this._confidenceFor(env, ctx, meta.metric));
+        this._confidenceFor(env, ctx, meta));
+    }
+
+    // A policy must agree with the frozen sample floor. A declared
+    // minimumSample that differs from MINIMUM_COHORT (or is malformed)
+    // conflicts with an approved business decision: the policy is
+    // rejected for this metric — not silently applied, not silently
+    // ignored (contract §46). Re-deciding the floor is a contract-level
+    // change (updating the frozen constant), never a policy-level one.
+    var policyConflict = this._policySampleConflict(policy);
+    if (policyConflict) {
+      base.provenance.policyConflict = policyConflict;
+      return this._sealRule(base, this.RULE_STATES.NOT_EVALUABLE, null, this.REASONS.RULE_POLICY_INVALID,
+        this._confidenceFor(env, ctx, meta));
     }
 
     var band = this._applyPolicy(policy, meta, base.value);
@@ -456,7 +488,26 @@ const RateRuleService = {
     base.threshold = band.threshold;
     base.thresholdId = policy.thresholdId;
     return this._sealRule(base, this.RULE_STATES.EVALUATED, band.severity, null,
-      this._confidenceFor(env, ctx, meta.metric));
+      this._confidenceFor(env, ctx, meta));
+  },
+
+  /**
+   * Frozen-floor governance check (contract §56). Returns a conflict
+   * description, or null when the policy is consistent with the frozen
+   * MINIMUM_COHORT (absent field = consistent).
+   */
+  _policySampleConflict: function(policy) {
+    if (policy.minimumSample === undefined) return null;
+    if (!this._isNonNegativeInt(policy.minimumSample)) {
+      return 'policy minimumSample ' + String(policy.minimumSample) +
+        ' is malformed (must be a non-negative integer)';
+    }
+    if (policy.minimumSample !== this.MINIMUM_COHORT) {
+      return 'policy minimumSample ' + policy.minimumSample +
+        ' conflicts with the frozen MINIMUM_COHORT = ' + this.MINIMUM_COHORT +
+        ' (approved business decision — a threshold policy cannot raise or lower the sample floor)';
+    }
+    return null;
   },
 
   /** Fills the terminal fields of a rule result (single exit discipline). */
@@ -519,28 +570,76 @@ const RateRuleService = {
    * upstream: insufficient → LOW), provenance completeness, comparison
    * availability.
    */
-  _confidenceFor: function(env, ctx, metric) {
-    if (!this._provenanceComplete(env)) return this.CONFIDENCE.LOW;
+  _confidenceFor: function(env, ctx, meta) {
+    if (!this._provenanceComplete(env, meta)) return this.CONFIDENCE.LOW;
     if (ctx.includeTrend) {
-      var t = this._trendFor(metric, ctx);
+      var t = this._trendFor(meta.metric, ctx);
       if (!t || t.available !== true) return this.CONFIDENCE.MEDIUM;
     }
     return this.CONFIDENCE.HIGH;
   },
 
   /**
-   * Provenance completeness of a foundation envelope: the minimum
-   * walkable chain fields must all be present (contract §27, §28).
+   * Provenance completeness of a foundation envelope (contract §27,
+   * §28): the WHOLE minimum walkable chain must be present and
+   * well-typed before the "provenance completeness" confidence factor
+   * can hold — a partial check could overstate confidence when
+   * important provenance parts are lost. Every field of the foundation
+   * envelope's provenance minimum is enforced:
+   *
+   *   envelope level : metric (matches the rule's metric), status,
+   *                    value/status consistency, period, asOfMs,
+   *                    evaluatedAt
+   *   provenance level: numerator, denominator, formula,
+   *                    appointmentDayBasis, periodSemantics,
+   *                    cohortDefinition, cohortByPath, reusedSlots,
+   *                    reusedSlotEpisodes, unattributableRows,
+   *                    outOfPeriodConflicts, changeRowsMissingNewSlotId,
+   *                    sourceFailure (present, null on a healthy batch),
+   *                    conflicts (array), evidence block (source,
+   *                    non-empty fields, aggregation, periodFilter)
    */
-  _provenanceComplete: function(env) {
-    return !!env &&
-      !!env.provenance &&
-      typeof env.provenance.numerator === 'number' && isFinite(env.provenance.numerator) &&
-      typeof env.provenance.denominator === 'number' && isFinite(env.provenance.denominator) &&
-      !!env.period && typeof env.period.startMs === 'number' && isFinite(env.period.startMs) &&
-      typeof env.period.endMs === 'number' && isFinite(env.period.endMs) &&
-      typeof env.asOfMs === 'number' && isFinite(env.asOfMs) &&
-      !!env.evaluatedAt;
+  _provenanceComplete: function(env, meta) {
+    if (!env || typeof env !== 'object') return false;
+    if (env.metric !== meta.metric) return false;
+    if (env.status !== 'AVAILABLE' && env.status !== 'UNAVAILABLE') return false;
+    if (env.status === 'AVAILABLE') {
+      if (typeof env.value !== 'number' || !isFinite(env.value) || env.value < 0) return false;
+    } else if (env.value !== null) {
+      return false;
+    }
+    if (typeof env.asOfMs !== 'number' || !isFinite(env.asOfMs)) return false;
+    if (!env.evaluatedAt) return false;
+    if (!env.period || typeof env.period.startMs !== 'number' || !isFinite(env.period.startMs) ||
+        typeof env.period.endMs !== 'number' || !isFinite(env.period.endMs) ||
+        !(env.period.startMs < env.period.endMs)) return false;
+
+    var prov = env.provenance;
+    if (!prov || typeof prov !== 'object') return false;
+    if (!this._isNonNegativeInt(prov.numerator)) return false;
+    if (!this._isNonNegativeInt(prov.denominator)) return false;
+    if (typeof prov.formula !== 'string' || prov.formula.trim() === '') return false;
+    if (typeof prov.appointmentDayBasis !== 'string' || prov.appointmentDayBasis.trim() === '') return false;
+    if (typeof prov.periodSemantics !== 'string' || prov.periodSemantics.trim() === '') return false;
+    if (typeof prov.cohortDefinition !== 'string' || prov.cohortDefinition.trim() === '') return false;
+    if (!prov.cohortByPath || typeof prov.cohortByPath !== 'object') return false;
+    if (!this._isNonNegativeInt(prov.reusedSlots)) return false;
+    if (!this._isNonNegativeInt(prov.reusedSlotEpisodes)) return false;
+    if (!this._isNonNegativeInt(prov.unattributableRows)) return false;
+    if (!this._isNonNegativeInt(prov.outOfPeriodConflicts)) return false;
+    if (!this._isNonNegativeInt(prov.changeRowsMissingNewSlotId)) return false;
+    // sourceFailure must be PRESENT and null on a healthy batch envelope
+    if (!Object.prototype.hasOwnProperty.call(prov, 'sourceFailure')) return false;
+    if (prov.sourceFailure !== null) return false;
+    if (!Array.isArray(prov.conflicts)) return false;
+
+    var ev = prov.evidence;
+    if (!ev || typeof ev !== 'object') return false;
+    if (typeof ev.source !== 'string' || ev.source.trim() === '') return false;
+    if (!Array.isArray(ev.fields) || ev.fields.length === 0) return false;
+    if (typeof ev.aggregation !== 'string' || ev.aggregation.trim() === '') return false;
+    if (typeof ev.periodFilter !== 'string' || ev.periodFilter.trim() === '') return false;
+    return true;
   },
 
   _trendFor: function(metric, ctx) {
@@ -828,6 +927,8 @@ const RateRuleService = {
           text = 'أدلة الفترة المتوفرة متضاربة أو تالفة — لا يمكن تقييم المعدل (RATE_EVIDENCE_INVALID).';
         } else if (rule.reason === this.REASONS.RULE_NOT_CONFIGURED) {
           text = 'المعدل متاح والعينة كافية (' + rule.denominator + ')، لكن لا يوجد threshold policy معتمد لهذا المقياس — لا يُصنَّف (RULE_NOT_CONFIGURED).';
+        } else if (rule.reason === this.REASONS.RULE_POLICY_INVALID) {
+          text = 'سياسة الـ threshold المتاحة لهذا المقياس تتعارض مع قرار إداري مجمد (حد العينة الأدنى المعتمد) — لا يُصنَّف (RULE_POLICY_INVALID).';
         } else if (rule.reason === this.REASONS.RATE_SOURCE_UNAVAILABLE) {
           text = 'المصدر الأساسي للمعدل غير قابل للقراءة — لا يمكن تقييم القاعدة (RATE_SOURCE_UNAVAILABLE).';
         } else {

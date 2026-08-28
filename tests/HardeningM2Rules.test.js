@@ -78,6 +78,8 @@
  *   insight completeness .......................... M2R-50
  *   ForReport period delegation ................... M2R-46
  *   period validation ............................. M2R-47
+ *   policy cannot override frozen MINIMUM_COHORT .. M2R-51 (supervisor P1)
+ *   provenance completeness full-surface gate ..... M2R-52 (supervisor P2)
  *
  * THRESHOLD FIXTURE NOTICE (contract §10, §50):
  *   No approved threshold values exist in Config or Contract. The
@@ -1314,6 +1316,183 @@ test('M2R-50 — Insight completeness: one insight per metric ALWAYS (including 
   const ids = {};
   data.insights.forEach(function(i) { ids[i.insightId] = true; });
   assert.strictEqual(Object.keys(ids).length, 4, 'insightIds are deterministic and unique');
+});
+
+// ── 11 — Supervisor review fixes (CHANGES REQUIRED) ──────────────
+
+function setPolicyWithMinSample(minSample) {
+  const p = JSON.parse(JSON.stringify(TEST_POLICIES.CANCEL));
+  p.minimumSample = minSample;
+  sandbox.RateRuleService.THRESHOLD_POLICY.policies = [p];
+}
+
+test('M2R-51 — P1: a threshold policy can NEVER override the frozen MINIMUM_COHORT = 10', function() {
+  // (a) policy claiming a LOWER floor (5): rejected for that metric —
+  //     NOT_EVALUABLE / RULE_POLICY_INVALID, no severity, the frozen
+  //     floor is what gets reported
+  reset();
+  setPolicyWithMinSample(5);
+  seedDay(7, 10, { cancelled: 2, live: 10 }); // cohort 12 (>= 10)
+  const ra = rulesOf(RRS.evaluateRules(dayPeriod(7, 10))).CANCELLATION_RATE;
+  assert.strictEqual(ra.status, 'NOT_EVALUABLE');
+  assert.strictEqual(ra.reason, 'RULE_POLICY_INVALID');
+  assert.strictEqual(ra.severity, null, 'no severity from a policy that conflicts with the frozen decision');
+  assert.strictEqual(ra.minimumSample, 10, 'the frozen floor is always reported');
+  assert.ok(typeof ra.provenance.policyConflict === 'string' &&
+    ra.provenance.policyConflict.indexOf('frozen MINIMUM_COHORT = 10') !== -1,
+    'the conflict is surfaced in provenance, not hidden');
+
+  // (b) policy claiming a HIGHER floor (25): rejected likewise
+  reset();
+  setPolicyWithMinSample(25);
+  seedDay(7, 10, { cancelled: 2, live: 10 });
+  const rb = rulesOf(RRS.evaluateRules(dayPeriod(7, 10))).CANCELLATION_RATE;
+  assert.strictEqual(rb.status, 'NOT_EVALUABLE');
+  assert.strictEqual(rb.reason, 'RULE_POLICY_INVALID');
+
+  // (c) the frozen floor applies BEFORE any policy is consulted:
+  //     cohort 5 with a minSample:1 policy → INSUFFICIENT_SAMPLE (10 wins)
+  reset();
+  setPolicyWithMinSample(1);
+  seedDay(7, 10, { cancelled: 1, live: 4 }); // cohort 5
+  const rc = rulesOf(RRS.evaluateRules(dayPeriod(7, 10))).CANCELLATION_RATE;
+  assert.strictEqual(rc.status, 'INSUFFICIENT_SAMPLE', 'a policy cannot lower the frozen floor');
+  assert.strictEqual(rc.minimumSample, 10);
+
+  // (d) a CONSISTENT policy (minSample === 10) is accepted — evaluation proceeds
+  reset();
+  setPolicies('CANCEL'); // TEST_POLICIES.CANCEL.minimumSample = 10
+  seedDay(7, 10, { cancelled: 1, live: 19 });
+  const rd = rulesOf(RRS.evaluateRules(dayPeriod(7, 10))).CANCELLATION_RATE;
+  assert.strictEqual(rd.status, 'EVALUATED', 'a consistent policy is valid');
+
+  // (e) a malformed minSample (10.5): rejected likewise
+  reset();
+  setPolicyWithMinSample(10.5);
+  seedDay(7, 10, { cancelled: 2, live: 10 });
+  const re = rulesOf(RRS.evaluateRules(dayPeriod(7, 10))).CANCELLATION_RATE;
+  assert.strictEqual(re.status, 'NOT_EVALUABLE');
+  assert.strictEqual(re.reason, 'RULE_POLICY_INVALID');
+
+  // (f) batch independence: the conflict invalidates ONLY that metric's
+  //     policy — the other rules proceed exactly as before
+  reset();
+  setPolicyWithMinSample(5);
+  seedDay(7, 10, { cancelled: 2, live: 10 });
+  const data = dataOf(RRS.evaluateRules(dayPeriod(7, 10)));
+  assert.strictEqual(data.rules.CANCELLATION_RATE.reason, 'RULE_POLICY_INVALID');
+  assert.strictEqual(data.rules.CHANGE_RATE.status, 'NOT_EVALUABLE');
+  assert.strictEqual(data.rules.CHANGE_RATE.reason, 'RULE_NOT_CONFIGURED', 'change is unaffected (no policy for it)');
+  assert.strictEqual(data.rules.COMPLETION_RATE.reason, 'RULE_NOT_CONFIGURED');
+  assert.strictEqual(data.rules.NO_SHOW_RATE.reason, 'RULE_NOT_CONFIGURED');
+});
+
+test('M2R-52 — P2: provenance completeness is enforced over the WHOLE minimum surface', function() {
+  const svc = sandbox.RateRuleService;
+  const meta = svc.METRIC_RULES[0]; // CANCELLATION_RATE rule metadata
+
+  function mkEnv() {
+    return {
+      metric: 'CANCELLATION_RATE',
+      status: 'AVAILABLE',
+      value: 5,
+      reason: null,
+      period: { startMs: D(7, 10, 0), endMs: D(7, 11, 0) },
+      evaluatedAt: sandbox.mkVmDate(NOW_MS),
+      asOfMs: NOW_MS,
+      provenance: {
+        numerator: 1,
+        denominator: 20,
+        formula: 'numerator / denominator * 100',
+        appointmentDayBasis: 'APPOINTMENT_START',
+        periodSemantics: 'start inclusive, end exclusive (canonical epoch ms)',
+        cohortDefinition: 'distinct provable confirmed appointment episodes',
+        cohortByPath: {
+          pathA_stillConfirmed: 19, pathB_completed: 0, pathC_noShow: 0,
+          pathD_cancelled: 1, pathE_changed: 0
+        },
+        reusedSlots: 0,
+        reusedSlotEpisodes: 0,
+        unattributableRows: 0,
+        outOfPeriodConflicts: 0,
+        changeRowsMissingNewSlotId: 0,
+        sourceFailure: null,
+        conflicts: [],
+        evidence: {
+          source: 'B6_LIFECYCLE',
+          fields: ['lifecycle_state', 'checkpoint', 'operation_id', 'old_slot_id', 'Availability.sort_key'],
+          condition: 'terminal cancel proven',
+          aggregation: 'COUNT DISTINCT operation_id',
+          periodFilter: 'old-slot appointmentStartMs in period'
+        }
+      }
+    };
+  }
+
+  // The complete minimum surface passes the gate
+  assert.strictEqual(svc._provenanceComplete(mkEnv(), meta), true, 'complete envelope → complete');
+
+  // Every single field of the minimum surface is enforced
+  const cases = [
+    ['wrong metric', function(e) { e.metric = 'CHANGE_RATE'; }],
+    ['invalid status', function(e) { e.status = 'WEIRD'; }],
+    ['AVAILABLE without a numeric value', function(e) { e.value = null; }],
+    ['negative value', function(e) { e.value = -1; }],
+    ['UNAVAILABLE with non-null value', function(e) { e.status = 'UNAVAILABLE'; }],
+    ['missing asOfMs', function(e) { delete e.asOfMs; }],
+    ['missing evaluatedAt', function(e) { delete e.evaluatedAt; }],
+    ['inverted period', function(e) { e.period = { startMs: 2, endMs: 1 }; }],
+    ['missing provenance block', function(e) { delete e.provenance; }],
+    ['missing numerator', function(e) { delete e.provenance.numerator; }],
+    ['missing denominator', function(e) { delete e.provenance.denominator; }],
+    ['missing formula', function(e) { delete e.provenance.formula; }],
+    ['blank appointmentDayBasis', function(e) { e.provenance.appointmentDayBasis = '  '; }],
+    ['missing periodSemantics', function(e) { delete e.provenance.periodSemantics; }],
+    ['missing cohortDefinition', function(e) { delete e.provenance.cohortDefinition; }],
+    ['missing cohortByPath', function(e) { delete e.provenance.cohortByPath; }],
+    ['missing reusedSlots', function(e) { delete e.provenance.reusedSlots; }],
+    ['missing reusedSlotEpisodes', function(e) { delete e.provenance.reusedSlotEpisodes; }],
+    ['missing unattributableRows', function(e) { delete e.provenance.unattributableRows; }],
+    ['missing outOfPeriodConflicts', function(e) { delete e.provenance.outOfPeriodConflicts; }],
+    ['missing changeRowsMissingNewSlotId', function(e) { delete e.provenance.changeRowsMissingNewSlotId; }],
+    ['sourceFailure field ABSENT', function(e) { delete e.provenance.sourceFailure; }],
+    ['sourceFailure non-null on a success envelope', function(e) { e.provenance.sourceFailure = 'boom'; }],
+    ['conflicts not an array', function(e) { e.provenance.conflicts = 'none'; }],
+    ['missing evidence block', function(e) { delete e.provenance.evidence; }],
+    ['evidence without source', function(e) { delete e.provenance.evidence.source; }],
+    ['evidence with empty fields', function(e) { e.provenance.evidence.fields = []; }],
+    ['evidence without aggregation', function(e) { delete e.provenance.evidence.aggregation; }],
+    ['evidence without periodFilter', function(e) { delete e.provenance.evidence.periodFilter; }]
+  ];
+  cases.forEach(function(c) {
+    const e = mkEnv();
+    c[1](e);
+    assert.strictEqual(svc._provenanceComplete(e, meta), false, 'must be incomplete: ' + c[0]);
+  });
+
+  // Wiring: incomplete provenance deterministically downgrades to LOW
+  // (defensive path — the real foundation always produces the full surface)
+  reset();
+  setPolicies('CANCEL');
+  seedDay(7, 10, { cancelled: 1, live: 19 });
+  const origComplete = svc._provenanceComplete;
+  svc._provenanceComplete = function() { return false; };
+  let r;
+  try {
+    r = rulesOf(RRS.evaluateRules(dayPeriod(7, 10))).CANCELLATION_RATE;
+  } finally {
+    svc._provenanceComplete = origComplete; // restore even on assertion failure
+  }
+  assert.strictEqual(r.status, 'EVALUATED');
+  assert.strictEqual(r.confidence, 'LOW', 'incomplete provenance → LOW, never HIGH');
+
+  // Integration: a REAL foundation envelope passes the full gate
+  reset();
+  setPolicies('CANCEL');
+  seedDay(7, 10, { cancelled: 1, live: 19 });
+  const real = rulesOf(RRS.evaluateRules(dayPeriod(7, 10))).CANCELLATION_RATE;
+  assert.strictEqual(real.status, 'EVALUATED');
+  assert.strictEqual(real.confidence, 'HIGH', 'the real foundation surface is complete → HIGH');
 });
 
 // ── Runner ────────────────────────────────────────────────────────
