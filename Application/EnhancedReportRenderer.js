@@ -52,20 +52,48 @@ const EnhancedReportRenderer = {
    */
   render: function(model) {
     if (!this._isValidModel(model)) {
-      return Result.fail(
-        'ENHANCED_REPORT_INVALID',
-        'Renderer input is not a valid EnhancedReportModel',
-        { model: model }
-      );
+      return this._invalid(model);
     }
-    return model.representation === 'SUMMARY'
-      ? this._renderSummary(model)
-      : this._renderFull(model);
+    // Defensive boundary (contract §18, §19): the renderer NEVER throws.
+    // Even a model that passes the structural gate but carries an
+    // unexpected shape must degrade to a clean Result.fail — never an
+    // uncaught TypeError. Presentation failure is observable, never fatal.
+    try {
+      return model.representation === 'SUMMARY'
+        ? this._renderSummary(model)
+        : this._renderFull(model);
+    } catch (e) {
+      return this._invalid(model, e && e.message ? e.message : String(e));
+    }
+  },
+
+  /** Uniform invalid-input failure (never an exception). */
+  _invalid: function(model, detail) {
+    return Result.fail(
+      'ENHANCED_REPORT_INVALID',
+      'Renderer input is not a valid EnhancedReportModel',
+      detail ? { model: model, detail: detail } : { model: model }
+    );
   },
 
   // ─── Validation ────────────────────────────────────────────────
 
+  /**
+   * Structural gate. Validates the COMMON envelope AND every collection
+   * the chosen representation's render path dereferences, so a malformed
+   * model fails cleanly (Result.fail) instead of throwing a TypeError:
+   *   FULL    → model.m1.metrics (object) + model.m2.rates (object)
+   *   SUMMARY → model.metrics (array) + model.rates (array)
+   * The optional collections (rules / insights / managementNotes /
+   * dataQualityWarnings) are already null-guarded at their use sites.
+   */
   _isValidModel: function(model) {
+    if (!this._isCommonEnvelopeValid(model)) return false;
+    if (model.representation === 'FULL') return this._isFullShapeValid(model);
+    return this._isSummaryShapeValid(model);
+  },
+
+  _isCommonEnvelopeValid: function(model) {
     return !!model && typeof model === 'object' &&
       (model.representation === 'FULL' || model.representation === 'SUMMARY') &&
       typeof model.reportType === 'string' &&
@@ -74,6 +102,22 @@ const EnhancedReportRenderer = {
       typeof model.period.endWallClock === 'string' &&
       !!model.availability && typeof model.availability === 'object' &&
       typeof model.availability.status === 'string';
+  },
+
+  _isFullShapeValid: function(model) {
+    return this._isPlainObject(model.m1) &&
+      this._isPlainObject(model.m1.metrics) &&
+      this._isPlainObject(model.m2) &&
+      this._isPlainObject(model.m2.rates);
+  },
+
+  _isSummaryShapeValid: function(model) {
+    return Array.isArray(model.metrics) && Array.isArray(model.rates);
+  },
+
+  /** A non-null, non-array object (rejects arrays and null). */
+  _isPlainObject: function(value) {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
   },
 
   // ─── FULL rendering ────────────────────────────────────────────

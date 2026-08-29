@@ -818,6 +818,61 @@ test('M3-RND4 — renderer rejects a non-model input cleanly', function() {
   assert.strictEqual(r.error.code, 'ENHANCED_REPORT_INVALID');
 });
 
+test('M3-RND6 — renderer NEVER throws on a malformed model: Result.fail, not a TypeError', function() {
+  reset();
+  // A structurally plausible envelope but missing the collections each
+  // render path dereferences. Before hardening, FULL would throw on
+  // model.m1.requestedMetrics / SUMMARY on model.metrics.length.
+  const baseEnvelope = function(rep) {
+    return {
+      representation: rep,
+      reportType: 'DAILY',
+      period: { startWallClock: 'a', endWallClock: 'b', timeZone: 'Asia/Baghdad' },
+      availability: { status: 'COMPLETE' }
+    };
+  };
+
+  const cases = [
+    ['FULL missing m1 entirely', baseEnvelope('FULL')],
+    ['FULL m1 without metrics', Object.assign(baseEnvelope('FULL'), { m1: {} })],
+    ['FULL missing m2', Object.assign(baseEnvelope('FULL'), { m1: { metrics: {} } })],
+    ['FULL m2 without rates', Object.assign(baseEnvelope('FULL'), { m1: { metrics: {} }, m2: {} })],
+    ['FULL metrics is an array not object', Object.assign(baseEnvelope('FULL'), { m1: { metrics: [] }, m2: { rates: {} } })],
+    ['SUMMARY missing metrics/rates', baseEnvelope('SUMMARY')],
+    ['SUMMARY metrics not an array', Object.assign(baseEnvelope('SUMMARY'), { metrics: {}, rates: [] })],
+    ['SUMMARY rates not an array', Object.assign(baseEnvelope('SUMMARY'), { metrics: [], rates: {} })],
+    ['unknown representation', Object.assign(baseEnvelope('FULL'), { representation: 'WEIRD' })],
+    ['null model', null],
+    ['non-object model', 42],
+    ['array model', []]
+  ];
+
+  cases.forEach(function(c) {
+    var r;
+    assert.doesNotThrow(function() { r = ERR.render(c[1]); }, 'renderer must not throw: ' + c[0]);
+    assert.strictEqual(r.ok, false, 'must fail: ' + c[0]);
+    assert.strictEqual(r.error.code, 'ENHANCED_REPORT_INVALID', 'must be ENHANCED_REPORT_INVALID: ' + c[0]);
+  });
+});
+
+test('M3-RND7 — defensive: a model that passes the gate but corrupts mid-render still fails cleanly', function() {
+  reset();
+  seedDay(7, 24, { live: 3, cancelled: 2, completed: 5 });
+  const full = fullOf('DAILY', dayPeriodRef(7, 24));
+  // Poison a collection AFTER the structural gate would see valid shapes:
+  // m1.metrics is a valid object, but one entry throws on property access.
+  const poisoned = jsonClone(full);
+  poisoned.m1.requestedMetrics = ['CONFIRMED_APPOINTMENTS'];
+  Object.defineProperty(poisoned.m1.metrics, 'CONFIRMED_APPOINTMENTS', {
+    enumerable: true,
+    get: function() { throw new Error('boom'); }
+  });
+  var r;
+  assert.doesNotThrow(function() { r = ERR.render(poisoned); }, 'renderer must not throw on mid-render corruption');
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.error.code, 'ENHANCED_REPORT_INVALID');
+});
+
 test('M3-RND5 — trend renders as a compact marker only (no causal sentence)', function() {
   reset();
   seedDays(buildDay(7, 23, { live: 15, cancelled: 5 }), buildDay(7, 24, { live: 5, cancelled: 15 }));
