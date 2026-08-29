@@ -51,14 +51,16 @@ const EnhancedReportRenderer = {
    * @returns {Result} ok(string) | fail(ENHANCED_REPORT_INVALID)
    */
   render: function(model) {
-    if (!this._isValidModel(model)) {
-      return this._invalid(model);
-    }
     // Defensive boundary (contract §18, §19): the renderer NEVER throws.
-    // Even a model that passes the structural gate but carries an
-    // unexpected shape must degrade to a clean Result.fail — never an
-    // uncaught TypeError. Presentation failure is observable, never fatal.
+    // The try spans BOTH validation AND rendering, so even a hostile
+    // model whose own property getters throw (e.g. a throwing getter on
+    // representation / period / availability / m1 / m2) degrades to a
+    // clean Result.fail — never an uncaught exception. Presentation
+    // failure is observable, never fatal.
     try {
+      if (!this._isValidModel(model)) {
+        return this._invalid(model);
+      }
       return model.representation === 'SUMMARY'
         ? this._renderSummary(model)
         : this._renderFull(model);
@@ -67,12 +69,23 @@ const EnhancedReportRenderer = {
     }
   },
 
-  /** Uniform invalid-input failure (never an exception). */
+  /**
+   * Uniform invalid-input failure (never an exception). The details are
+   * built defensively: attaching a hostile model to the failure payload
+   * must not itself re-throw, so the model reference is only included
+   * when it can be safely referenced.
+   */
   _invalid: function(model, detail) {
+    var details = detail ? { detail: detail } : {};
+    try {
+      details.model = model;
+    } catch (e) {
+      details.model = null;
+    }
     return Result.fail(
       'ENHANCED_REPORT_INVALID',
       'Renderer input is not a valid EnhancedReportModel',
-      detail ? { model: model, detail: detail } : { model: model }
+      details
     );
   },
 

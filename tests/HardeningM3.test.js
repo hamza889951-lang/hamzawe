@@ -873,6 +873,49 @@ test('M3-RND7 — defensive: a model that passes the gate but corrupts mid-rende
   assert.strictEqual(r.error.code, 'ENHANCED_REPORT_INVALID');
 });
 
+test('M3-RND8 — validation itself is exception-safe: a throwing getter → ENHANCED_REPORT_INVALID', function() {
+  reset();
+  // A hostile model whose OWN property getters throw during validation
+  // (before any render path runs). Each of the common-envelope fields is
+  // read inside _isValidModel(); a throw there must NOT escape render().
+  const poisonedField = function(field) {
+    const m = {
+      representation: 'FULL',
+      reportType: 'DAILY',
+      period: { startWallClock: 'a', endWallClock: 'b', timeZone: 'Asia/Baghdad' },
+      availability: { status: 'COMPLETE' },
+      m1: { metrics: {} },
+      m2: { rates: {} }
+    };
+    Object.defineProperty(m, field, { enumerable: true, get: function() { throw new Error('boom:' + field); } });
+    return m;
+  };
+
+  ['representation', 'reportType', 'period', 'availability', 'm1', 'm2'].forEach(function(field) {
+    var r;
+    assert.doesNotThrow(function() { r = ERR.render(poisonedField(field)); },
+      'render() must not throw when validation reads a poisoned ' + field);
+    assert.strictEqual(r.ok, false, 'must fail on poisoned ' + field);
+    assert.strictEqual(r.error.code, 'ENHANCED_REPORT_INVALID', 'poisoned ' + field);
+  });
+
+  // Also a nested throwing getter (period.startWallClock) read during the
+  // common-envelope check.
+  const nested = {
+    representation: 'FULL',
+    reportType: 'DAILY',
+    period: {},
+    availability: { status: 'COMPLETE' },
+    m1: { metrics: {} },
+    m2: { rates: {} }
+  };
+  Object.defineProperty(nested.period, 'startWallClock', { enumerable: true, get: function() { throw new Error('boom:nested'); } });
+  var rn;
+  assert.doesNotThrow(function() { rn = ERR.render(nested); }, 'render() must not throw on a nested poisoned getter');
+  assert.strictEqual(rn.ok, false);
+  assert.strictEqual(rn.error.code, 'ENHANCED_REPORT_INVALID');
+});
+
 test('M3-RND5 — trend renders as a compact marker only (no causal sentence)', function() {
   reset();
   seedDays(buildDay(7, 23, { live: 15, cancelled: 5 }), buildDay(7, 24, { live: 5, cancelled: 15 }));
