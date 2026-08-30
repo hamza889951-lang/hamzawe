@@ -13,12 +13,17 @@
  *   PhoneUtils.normalize() داخليًا قبل ConversationRepository.findByPhone().
  *   هذا ضروري لأن Router يعتمد على حالة Conversation لتوجيه الطلب —
  *   فأي اختلاف في صيغة الرقم سيؤدي إلى توجيه خاطئ.
- * - إرجاع Result يحمل { reply, conversationState } من الخدمة
- *   المستهدفة — دون أي تعديل أو إثراء من Router.
+ * - M4-A Doctor Identity gate عبر DoctorAuthorizationService:
+ *   Actor مصرح له فقط يدخل DoctorControlEntry؛ أي أخرى (unknown /
+ *   unauthorized / identity failure) تنساب إلى patient routing الحالي.
+ *   لا يتعامل Router مع أي Sheets أو Calendar أو Settings أو WhatsApp.
+ * - إرجاع Result من الخدمة المستهدفة — دون أي تعديل أو إثراء من Router.
  *
  * لا يضمن:
- * - أي منطق عمل — مجرد توجيه بناءً على جدول الحالات المعتمد.
+ * - أي منطق عمل — مجرد توجيه بناءً على جدول الحالات المعتمد وحد الـ
+ *   authorization المحدد هويته خارجياً.
  * - أي معرفة بـ Sheets أو Calendar أو UltraMsg.
+ * - تحديد من هو الطبيب business-wise — هذا من DoctorAuthorizationService.
  * - أي نصوص ردود — كل النصوص داخل الخدمات.
  *
  * ═══════════════════════════════════════
@@ -27,6 +32,7 @@
  *
  * | الحالة               | الإدخال      | الإجراء                              |
  * |----------------------|-------------|--------------------------------------|
+ * | Authorized Doctor    | أي رسالة    | DoctorControlEntry.enter              |
  * | NO_CONVERSATION      | أي رسالة    | BookingService.handleIncomingMessage |
  * | MENU_MAIN            | أي رسالة    | BookingService.handleIncomingMessage |
  * | WAITING_NAME         | أي رسالة    | BookingService.handleIncomingMessage |
@@ -57,15 +63,27 @@ const Router = {
    *
    * @param {Object} context - { phone: string, message: string }
    *        (قابل للتوسع مستقبلًا: messageId, timestamp, senderName...)
-   * @returns {Result} data: { reply: string, conversationState: string }
+   * @returns {Result} data: من الخدمة الفرعية المستهدفة —patient paths
+   *   تعيد { reply, conversationState }، وDoctorControlEntry يعيد
+   *   { entryStatus, controlContext }.
    */
   dispatch(context) {
 
+    // ─────────────────────────────
+    // 0. Robustness — ممنوع الـRouter أن يرمي على Context فاسد.
+    // ─────────────────────────────
+    if (!context || typeof context !== 'object') {
+      return Result.fail('INVALID_CONTEXT', 'Router context is required');
+    }
+
     var rawPhone = context.phone;
     var message = context.message;
+    if (typeof rawPhone !== 'string' || !rawPhone) {
+      return Result.fail('INVALID_CONTEXT', 'Router context requires a phone');
+    }
 
     // ─────────────────────────────
-    // 0. تطبيع رقم الهاتف (قرار مشرف)
+    // 1. تطبيع رقم الهاتف (قرار مشرف)
     //    WhatsAppAdapter لا يطبّع الرقم حسب عقده، وRouter يعتمد على
     //    ConversationRepository.findByPhone() لتحديد حالة المحادثة.
     //    أي اختلاف في صيغة الرقم = توجيه خاطئ.
@@ -73,7 +91,24 @@ const Router = {
     var phone = PhoneUtils.normalize(rawPhone);
 
     // ─────────────────────────────
-    // 1. تحديد حالة المحادثة الحالية
+    // 2. M4-A Doctor Identity & Authorization gate
+    //    Fail-closed: authorized doctor فقط يصل إلى DoctorControlEntry.
+    //    أي fail/unavailable/unauthorized ينساب إلى patient routing
+    //    الحالي — لا يوجد أي fallback إلى DOCTOR.
+    //    ملاحظة: typeof guard تعني أن عدم وجود الـM4-A boundary (أثناء
+    //    تشغيل bundles قديمة / جزئية) لا يرمي ReferenceError، وإنما
+    //    fail-closed إلى patient flow.
+    // ─────────────────────────────
+    if (typeof DoctorAuthorizationService !== 'undefined' &&
+        typeof DoctorControlEntry !== 'undefined') {
+      var doctorAuth = DoctorAuthorizationService.authorizeDoctor(phone);
+      if (doctorAuth.ok && doctorAuth.data && doctorAuth.data.authorized === true) {
+        return DoctorControlEntry.enter(doctorAuth.data);
+      }
+    }
+
+    // ─────────────────────────────
+    // 3. تحديد حالة المحادثة الحالية
     // ─────────────────────────────
     var conversation = ConversationRepository.findByPhone(phone);
     var currentState = conversation ? conversation.state : null;
@@ -81,7 +116,7 @@ const Router = {
     var normalizedMessage = (message || '').trim();
 
     // ─────────────────────────────
-    // 2. التوجيه حسب جدول الحالات
+    // 4. التوجيه حسب جدول الحالات
     // ─────────────────────────────
 
     // --- WAITING_CONFIRMATION + "2" → تغيير قبل التأكيد ---
