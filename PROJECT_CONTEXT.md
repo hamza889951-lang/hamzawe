@@ -62,13 +62,16 @@ Changeservice.js                  Two paths: changeReservation (pre-confirm), ch
 BusNumberCalculator.js            Bus number = display-only derivation from time (ADR-021)
 AvailabilityHorizonMaintainer.js  ensureHorizon() — keeps 30-day availability horizon (ADR-022)
 Slotselection.js                  findEarliestBookable() — single slot-choice policy (ADR-019)
-Core/Router.js                    Dispatch table by conversation state
+Core/Router.js                    Dispatch table by conversation state + M4-A fail-closed doctor gate
 Application/BookingService.js     Full booking journey + ReserveSlot/ConfirmReservation logic (ADR-014)
 Application/CancelService.js      Cancel confirmed appointment
 Application/CommandExecutor.js    Wraps commands: logs START/END, converts exceptions to Result.fail
+Application/DoctorAuthorizationService.js M4-A identity/authorization boundary (doctor only; fail-closed; no RBAC matrix)
+Application/DoctorControlEntry.js M4-A provider-neutral Doctor Control Entry (read-only; no schedule command)
 Application/MaintenanceService.js runCleanup (expired RESERVED→FREE) + runExpiration (FREE past→EXPIRED)
 Application/AttendanceService.js  M0 attendance boundary: markCompleted/markNoShow (MARK_COMPLETED / MARK_NO_SHOW) — trusted operator context + event→slot correlation (calendar_event_id, exactly-one) → StateMachine transition inside SlotRepository.atomicUpdate
 Repositories/SlotRepository.js    Slot CRUD; atomicUpdate (ScriptLock + fresh re-read + decisionFn)
+Repositories/DoctorIdentityRepository.js M4-A identity source read (DOCTOR_PHONE deployment property; ADMIN_PHONE remains ops-only; no Doctors table)
 Repositories/CalendarRepository.js Wraps GoogleCalendar → Result
 Repositories/AttendanceAuditRepository.js M0 append-only attendance decision evidence (ATTENDANCE_AUDIT sheet) — NOT the Availability source of truth; no read/delete functions; first APPLIED row timestamp = ATTENDANCE_ACTIVATION_AT
 Infrastructure/GoogleSheets.js    ONLY SpreadsheetApp access (getAllRows, updateBatch, appendRow, ...)
@@ -131,7 +134,7 @@ COMPLETED / NO_SHOW / EXPIRED / CANCELLED = terminal (no transitions)
 | WhatsApp (UltraMsg) | `Infrastructure/WhatsAppAdapter.js` | POST `https://api.ultramsg.com/{instance}/messages/chat` (form-encoded: token, to, body). Incoming webhook payload: `{ data: { from, body, id } }`. |
 | Google Calendar | `Infrastructure/GoogleCalendar.js` | `CalendarApp.getDefaultCalendar()` (no calendarId set in app code). `createEvent`, `getEventById/deleteEvent`. |
 | Google Sheets | `Infrastructure/GoogleSheets.js` | `SpreadsheetApp.openById(SPREADSHEET_ID)` or `getActiveSpreadsheet()` (both routed through `_openSpreadsheet()`; `SPREADSHEET_ID` wins when set). Generics: `getAllRows`, `getHeaders`, `appendRows`, `updateBatch`, `appendRow`, `getOrCreateSheet`, `deleteRowsByNumbers`. |
-| Script Properties | many | `SPREADSHEET_ID`, `ULTRAMSG_INSTANCE_ID`, `ULTRAMSG_TOKEN`, `ADMIN_PHONE`; runtime: `LAST_SCHEDULER_SUCCESS_MS`, `LAST_LIVENESS_ALERT_MS`. |
+| Script Properties | many | `SPREADSHEET_ID`, `ULTRAMSG_INSTANCE_ID`, `ULTRAMSG_TOKEN`, `ADMIN_PHONE` (owner/ops notification), `DOCTOR_PHONE` (M4-A doctor identity); runtime: `LAST_SCHEDULER_SUCCESS_MS`, `LAST_LIVENESS_ALERT_MS`. |
 
 **Auth flow:** Web app deployment `executeAs: USER_DEPLOYING`, `access: ANYONE_ANONYMOUS` (ultramsg POSTs to the webapp URL with no auth). WhatsApp replies use the ultramsg token. No OAuth is handled in code (Google services run as the deploying user).
 
@@ -141,9 +144,11 @@ doPost(e)
   → WhatsAppAdapter.parseIncomingPayload(e) → {phone, message, messageId} | null
   → ProcessedMessagesService.isDuplicate()? → OK (skip)
   → markProcessed()
-  → Router.dispatch({phone, message}) → Result {reply, conversationState}
+  → Router.dispatch({phone, message}) → Result (patient services reply /
+    DoctorControlEntry control context)
   → WhatsAppAdapter.sendMessage(phone, reply) (failure logged only)
 ```
+M4-A: inside `Router.dispatch`, after `PhoneUtils.normalize`, the actor is checked via `DoctorAuthorizationService.authorizeDoctor`; only an authorized doctor reaches `DoctorControlEntry`. Every other actor continues through the existing patient routing.
 Idempotency window: 5 min (`DUPLICATE_WINDOW_MS`); key = `msg_<messageId>` if present, else hash of `phone|message|minute`.
 
 ## 6. Main Workflows
@@ -282,7 +287,7 @@ Ranked by severity (P0=worst). All confirmed by code inspection.
 
 ## 13. Dependencies & Configuration Requirements
 
-- **Script Properties (required):** `SPREADSHEET_ID`, `ULTRAMSG_INSTANCE_ID`, `ULTRAMSG_TOKEN`, `ADMIN_PHONE`.
+- **Script Properties (required):** `SPREADSHEET_ID`, `ULTRAMSG_INSTANCE_ID`, `ULTRAMSG_TOKEN`, `ADMIN_PHONE` (owner/ops notification). M4-A additionally requires `DOCTOR_PHONE` for the doctor identity/authorization boundary; `ADMIN_PHONE` never grants doctor access.
 - **Sheets required:** `Availability`, `Conversations`, `Settings`, `SYSTEM_LOG` (archive sheet auto-created).
 - **Google services enabled:** Spreadsheet, Calendar, UrlFetch, Properties. Web app deployed as USER_DEPLOYING/ANYONE_ANONYMOUS.
 - **External:** ultramsg WhatsApp instance + webhook pointing at the deployed webapp URL.
@@ -315,6 +320,10 @@ Ranked by severity (P0=worst). All confirmed by code inspection.
 - **Tested (local, test-only):** `ArchiveTestHarness.js` (deletable) — in-memory GoogleSheets mock + real production code loaded read-only; 8/8 PASS covering successful archive, no-old-records, copy failure (no delete), identity-not-found (no delete), identity-ambiguous (no delete), crash-after-copy-before-delete + retry, partial-delete + retry, date normalization.
 - **Pending (owner):** git commit/push of Phase A + PROJECT_CONTEXT update; Apps Script deploy; **live test of archive on real SYSTEM_LOG** (mock is faithful but not a substitute for real Sheets API behavior/quota); ArchiveTestHarness is temporary and may be deleted.
 - **Planned separately:** Scheduler archive ordering (archive last); Application-layer leakage hardening (Maintenance/HealthCheck/Scheduler/ProcessedMessages → repositories); booking-path concurrency review (SlotSelection retry) — next stated goal.
+- **M4-A (Doctor Identity & Authorization Boundary) — implemented on working branch, pending supervisor review.** Scope: `Application/DoctorAuthorizationService.js` (authorizeDoctor, canonical phone via `PhoneUtils.normalize`, fail-closed), `Application/DoctorControlEntry.js` (provider-neutral read-only control entry, no channel reply/UX text), `Repositories/DoctorIdentityRepository.js` (reads `DOCTOR_PHONE` Script Property; no Doctors table), `Core/Router.js` minimal routing-only gate, `tests/HardeningM4A.test.js` (29 tests).
+  - Identity correction (2026-08-31): `ADMIN_PHONE` is **Owner / Operations notification destination only** and must NOT authorize or identify the doctor. Doctor identity source is the independent `DOCTOR_PHONE` Script Property, read only through `DoctorIdentityRepository`.
+  - Decisions recorded: scope representation uses `{ clinicId: null }` for v1 implicit single-clinic while keeping future `Doctor → Clinic(s)` extensibility; no new conversation state (M4-B will define it when schedule interaction begins); no schedule/availability/appointment/calendar mutation in M4-A; no channel wording is introduced (final UX deferred to Supervisor).
+  - Fail-closed: missing/unreadable/invalid `DOCTOR_PHONE` or unmatched phone → `DOCTOR_IDENTITY_SOURCE_UNAVAILABLE` / `DOCTOR_UNAUTHORIZED` → Router continues the existing patient flow; unknown actor can never reach Doctor Control. `ADMIN_PHONE` alone never grants Doctor authorization.
 - **Always manual (owner):** git commit/push, Apps Script deploy, trigger setup, live testing. The agent only produces code.
 
 ## 16. How to Work on This Project Safely
