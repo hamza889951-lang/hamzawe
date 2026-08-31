@@ -16,7 +16,8 @@ const Config = {
       AVAILABILITY: 'Availability',
       CONVERSATIONS: 'Conversations',
       SETTINGS: 'Settings',
-      SYSTEM_LOG: 'SYSTEM_LOG'
+      SYSTEM_LOG: 'SYSTEM_LOG',
+      SCHEDULE_CHANGES: 'ScheduleChanges'
     },
     STATUS: {
       FREE: 'FREE',
@@ -36,7 +37,11 @@ const Config = {
       COMPLETE_APPOINTMENT: 'CompleteAppointment',
       MARK_NO_SHOW: 'MarkNoShow',
       EXPIRE_SLOT: 'ExpireSlot',
-      GENERATE_AVAILABILITY: 'GenerateAvailability'
+      GENERATE_AVAILABILITY: 'GenerateAvailability',
+      COMMIT_RECURRING_SCHEDULE_CHANGE: 'CommitRecurringScheduleChange',
+      COMMIT_TEMPORARY_CLOSE_OVERRIDE: 'CommitTemporaryCloseOverride',
+      COMMIT_EXCEPTIONAL_OPEN_OVERRIDE: 'CommitExceptionalOpenOverride',
+      CANCEL_SCHEDULE_CHANGE: 'CancelScheduleChange'
     },
     CONVERSATION_STATE: {
       MENU_MAIN: 'MENU_MAIN',
