@@ -12,5 +12,8 @@ const IdGenerator = {
   },
   generateAppointmentId() {
     return 'APT_' + ULID.generate();
+  },
+  generateScheduleChangeId() {
+    return 'SCH_' + ULID.generate();
   }
 };
