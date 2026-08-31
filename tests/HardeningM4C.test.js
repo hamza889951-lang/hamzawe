@@ -361,7 +361,7 @@ test('M4C-T1 — valid temporary close does not mutate recurring baseline', func
   assert.strictEqual(settings.data.workWindow.start, '09:00');
 });
 
-test('M4C-T2 — temporary close covers only its bounded interval', function() {
+test('M4C-T2 — temporary close covers only its bounded half-open interval', function() {
   reset();
   CMD.commitTemporaryClose(controlContext(), {
     commandId: 'cmd-close-2',
@@ -371,6 +371,8 @@ test('M4C-T2 — temporary close covers only its bounded interval', function() {
   });
   const inside = EFF.projectAt(controlContext(), '2026-09-20T11:00');
   assert.strictEqual(inside.data.interval.intent, 'CLOSED');
+  const atEnd = EFF.projectAt(controlContext(), '2026-09-20T12:00');
+  assert.strictEqual(atEnd.data.interval.intent, 'WORKING');
   const after = EFF.projectAt(controlContext(), '2026-09-20T12:30');
   assert.strictEqual(after.data.interval.intent, 'WORKING');
 });
@@ -431,6 +433,41 @@ test('M4C-T5 — overlapping same-kind closes also conflict (no silent merge)', 
   });
   assert.strictEqual(b.ok, false);
   assert.strictEqual(b.error.code, 'SCHEDULE_INTENT_CONFLICT');
+});
+
+test('M4C-T6 — abutting half-open intervals [10,12) and [12,13) do not conflict', function() {
+  reset();
+  const a = CMD.commitTemporaryClose(controlContext(), {
+    commandId: 'cmd-abut-a',
+    asOf: '2026-09-01T08:00',
+    effectiveFrom: '2026-09-20T10:00',
+    effectiveTo: '2026-09-20T12:00'
+  });
+  assert.strictEqual(a.ok, true, JSON.stringify(a.error));
+  const b = CMD.commitTemporaryClose(controlContext(), {
+    commandId: 'cmd-abut-b',
+    asOf: '2026-09-01T08:00',
+    effectiveFrom: '2026-09-20T12:00',
+    effectiveTo: '2026-09-20T13:00'
+  });
+  assert.strictEqual(b.ok, true, JSON.stringify(b.error));
+  assert.strictEqual(EFF.projectAt(controlContext(), '2026-09-20T11:59').data.interval.intent, 'CLOSED');
+  assert.strictEqual(
+    EFF.projectAt(controlContext(), '2026-09-20T12:00').data.interval.appliedOverrideChangeId,
+    b.data.record.changeId
+  );
+});
+
+test('M4C-T7 — zero-length interval effectiveFrom == effectiveTo is rejected', function() {
+  reset();
+  const r = CMD.commitTemporaryClose(controlContext(), {
+    commandId: 'cmd-zero',
+    asOf: '2026-09-01T08:00',
+    effectiveFrom: '2026-09-20T10:00',
+    effectiveTo: '2026-09-20T10:00'
+  });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.error.code, 'INVALID_EFFECTIVE_INTERVAL');
 });
 
 // ── EffectiveSchedule mix ────────────────────────────────────
@@ -559,7 +596,7 @@ test('M4C-C3 — wrong scope fails', function() {
   assert.strictEqual(r.error.code, 'CHANGE_TARGET_NOT_FOUND');
 });
 
-test('M4C-C4 — already-effective target is not cancellable', function() {
+test('M4C-C4 — CANCEL is temporal: past instants keep the target, later instants exclude it', function() {
   reset();
   const committed = CMD.commitRecurringChange(controlContext(), {
     commandId: 'cmd-can-started',
@@ -568,16 +605,30 @@ test('M4C-C4 — already-effective target is not cancellable', function() {
     schedule: {
       days: scheduleDays({ monday: true }),
       workWindow: { start: '10:00', end: '14:00' },
-      slotDurationMinutes: 30
+      slotDurationMinutes: 20
     }
   });
   const r = CMD.cancelChange(controlContext(), {
     commandId: 'cmd-can-late',
-    asOf: '2026-09-15T00:00',
+    asOf: '2026-09-18T08:00',
     targetChangeId: committed.data.record.changeId
   });
-  assert.strictEqual(r.ok, false);
-  assert.strictEqual(r.error.code, 'CHANGE_NOT_CANCELLABLE');
+  assert.strictEqual(r.ok, true, JSON.stringify(r.error));
+  assert.strictEqual(r.data.record.effectiveFrom, '2026-09-18T08:00');
+
+  const beforeEffective = EFF.projectAt(controlContext(), '2026-09-14T10:00');
+  assert.strictEqual(beforeEffective.ok, true);
+  assert.strictEqual(beforeEffective.data.source, 'SETTINGS');
+
+  const afterEffectiveBeforeCancel = EFF.projectAt(controlContext(), '2026-09-16T10:00');
+  assert.strictEqual(afterEffectiveBeforeCancel.ok, true);
+  assert.strictEqual(afterEffectiveBeforeCancel.data.source, 'RECURRING_CHANGE');
+  assert.strictEqual(afterEffectiveBeforeCancel.data.slotDurationMinutes, 20);
+
+  const atCancel = EFF.projectAt(controlContext(), '2026-09-18T08:00');
+  assert.strictEqual(atCancel.ok, true);
+  assert.strictEqual(atCancel.data.source, 'SETTINGS');
+  assert.strictEqual(atCancel.data.slotDurationMinutes, 30);
 });
 
 test('M4C-C5 — double cancel fails CHANGE_ALREADY_CANCELLED', function() {
@@ -746,6 +797,28 @@ test('M4C-H4 — missing control context fails', function() {
   const r = EFF.projectAt(null, '2026-09-16T10:00');
   assert.strictEqual(r.ok, false);
   assert.strictEqual(r.error.code, 'INVALID_CONTROL_CONTEXT');
+});
+
+test('M4C-H6 — non-boolean recurring day flags are rejected, not coerced', function() {
+  reset();
+  const cases = ['FALSE', 'false', 'garbage', 0, null];
+  cases.forEach(function(value, idx) {
+    const days = scheduleDays({ monday: true });
+    days.tuesday = value;
+    const r = CMD.commitRecurringChange(controlContext(), {
+      commandId: 'cmd-day-bad-' + idx,
+      asOf: '2026-09-01T08:00',
+      effectiveFrom: '2026-09-15T00:00',
+      schedule: {
+        days: days,
+        workWindow: { start: '10:00', end: '14:00' },
+        slotDurationMinutes: 30
+      }
+    });
+    assert.strictEqual(r.ok, false, 'expected fail for ' + JSON.stringify(value));
+    assert.strictEqual(r.error.code, 'INVALID_SCHEDULE_COMMAND');
+  });
+  assert.strictEqual(state.sheets['ScheduleChanges'].rows.length, 0);
 });
 
 test('M4C-H5 — missing commandId fails', function() {

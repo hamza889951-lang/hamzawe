@@ -124,7 +124,7 @@ const DoctorScheduleCommandService = {
     var payloadResult = this._validateRecurringPayload(command.schedule);
     if (!payloadResult.ok) return payloadResult;
 
-    var conflict = this._recurringEffectiveFromConflict(records, from.data.stamp);
+    var conflict = this._recurringEffectiveFromConflict(records, asOf.data.stamp, from.data.stamp);
     if (!conflict.ok) return conflict;
 
     var before = this._snapshot(baseline, records);
@@ -191,11 +191,19 @@ const DoctorScheduleCommandService = {
         'Temporary override must not rewrite past operational time'
       );
     }
-    if (EffectiveScheduleService.compareStamps(to.data.stamp, from.data.stamp) < 0) {
-      return Result.fail('INVALID_EFFECTIVE_INTERVAL', 'effectiveTo must be >= effectiveFrom');
+    if (EffectiveScheduleService.compareStamps(to.data.stamp, from.data.stamp) <= 0) {
+      return Result.fail(
+        'INVALID_EFFECTIVE_INTERVAL',
+        'effectiveTo must be strictly after effectiveFrom ([start, end))'
+      );
     }
 
-    var overlap = this._temporaryOverlapConflict(records, from.data.stamp, to.data.stamp);
+    var overlap = this._temporaryOverlapConflict(
+      records,
+      asOf.data.stamp,
+      from.data.stamp,
+      to.data.stamp
+    );
     if (!overlap.ok) return overlap;
 
     var before = this._snapshot(baseline, records);
@@ -252,13 +260,6 @@ const DoctorScheduleCommandService = {
       }
     }
 
-    if (EffectiveScheduleService.compareStamps(target.effectiveFrom, asOf.data.stamp) <= 0) {
-      return Result.fail(
-        'CHANGE_NOT_CANCELLABLE',
-        'A change that has already become effective cannot be cancelled'
-      );
-    }
-
     var before = this._snapshot(baseline, records);
     var record = {
       scope: scope,
@@ -291,7 +292,13 @@ const DoctorScheduleCommandService = {
         return Result.fail('INVALID_SCHEDULE_COMMAND', 'Recurring schedule is missing day ' + key);
       }
       var raw = schedule.days ? schedule.days[key] : schedule[key];
-      days[key] = raw === true;
+      if (raw !== true && raw !== false) {
+        return Result.fail(
+          'INVALID_SCHEDULE_COMMAND',
+          'Recurring day ' + key + ' must be boolean true or false'
+        );
+      }
+      days[key] = raw;
     }
     var windowSource = schedule.workWindow || {
       start: schedule.workStart || schedule.work_start,
@@ -327,8 +334,8 @@ const DoctorScheduleCommandService = {
     return Result.ok({ start: start.data, end: end.data });
   },
 
-  _recurringEffectiveFromConflict: function(records, stamp) {
-    var active = EffectiveScheduleService._activeRecords(records);
+  _recurringEffectiveFromConflict: function(records, asOfStamp, stamp) {
+    var active = EffectiveScheduleService._activeRecords(records, asOfStamp);
     if (!active.ok) return active;
     for (var i = 0; i < active.data.length; i++) {
       var rec = active.data[i];
@@ -344,8 +351,8 @@ const DoctorScheduleCommandService = {
     return Result.ok(true);
   },
 
-  _temporaryOverlapConflict: function(records, fromStamp, toStamp) {
-    var active = EffectiveScheduleService._activeRecords(records);
+  _temporaryOverlapConflict: function(records, asOfStamp, fromStamp, toStamp) {
+    var active = EffectiveScheduleService._activeRecords(records, asOfStamp);
     if (!active.ok) return active;
     for (var i = 0; i < active.data.length; i++) {
       var rec = active.data[i];
@@ -354,8 +361,8 @@ const DoctorScheduleCommandService = {
         continue;
       }
       if (!rec.effectiveFrom || !rec.effectiveTo) continue;
-      var overlaps = EffectiveScheduleService.compareStamps(fromStamp, rec.effectiveTo) <= 0 &&
-        EffectiveScheduleService.compareStamps(rec.effectiveFrom, toStamp) <= 0;
+      var overlaps = EffectiveScheduleService.compareStamps(fromStamp, rec.effectiveTo) < 0 &&
+        EffectiveScheduleService.compareStamps(rec.effectiveFrom, toStamp) < 0;
       if (overlaps) {
         return Result.fail(
           'SCHEDULE_INTENT_CONFLICT',

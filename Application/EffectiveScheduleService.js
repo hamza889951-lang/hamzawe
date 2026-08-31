@@ -63,7 +63,7 @@ const EffectiveScheduleService = {
    * Reusable by M4-D once it supplies the same sources.
    */
   projectFromSources: function(scope, at, baseline, records) {
-    var activeResult = this._activeRecords(records);
+    var activeResult = this._activeRecords(records, at.stamp);
     if (!activeResult.ok) return activeResult;
     var active = activeResult.data;
 
@@ -182,8 +182,19 @@ const EffectiveScheduleService = {
     });
   },
 
-  _activeRecords: function(records) {
+  /**
+   * Records that still apply at `atStamp`.
+   * A CANCEL excludes its target only when atStamp >= cancel.effectiveFrom.
+   * Earlier instants keep the historical meaning of the target.
+   */
+  _activeRecords: function(records, atStamp) {
     if (!records) return Result.ok([]);
+    if (typeof atStamp !== 'string' || !atStamp) {
+      return Result.fail(
+        'INVALID_LOCAL_DATETIME',
+        'Active-record projection requires an explicit local datetime'
+      );
+    }
     var cancelled = {};
     var i;
     for (i = 0; i < records.length; i++) {
@@ -202,7 +213,16 @@ const EffectiveScheduleService = {
         );
       }
       if (rec.changeKind === ScheduleChangeRepository.KIND.CANCEL && rec.targetChangeId) {
-        cancelled[rec.targetChangeId] = true;
+        if (!rec.effectiveFrom) {
+          return Result.fail(
+            'SCHEDULE_CHANGE_SOURCE_INVALID',
+            'CANCEL record is missing effectiveFrom',
+            { changeId: rec.changeId }
+          );
+        }
+        if (this.compareStamps(rec.effectiveFrom, atStamp) <= 0) {
+          cancelled[rec.targetChangeId] = true;
+        }
       }
     }
     var active = [];
@@ -277,8 +297,9 @@ const EffectiveScheduleService = {
           { changeId: rec.changeId }
         );
       }
+      // Half-open [effectiveFrom, effectiveTo)
       if (this.compareStamps(rec.effectiveFrom, atStamp) <= 0 &&
-          this.compareStamps(atStamp, rec.effectiveTo) <= 0) {
+          this.compareStamps(atStamp, rec.effectiveTo) < 0) {
         matches.push(rec);
       }
     }
