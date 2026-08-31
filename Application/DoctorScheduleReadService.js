@@ -184,8 +184,8 @@ const DoctorScheduleReadService = {
   },
 
   /**
-   * يقبل HH:mm كما يستهلكه SlotGenerator (split + parseInt).
-   * يحافظ على النص بعد trim دون إعادة تنسيق.
+   * يقبل فقط H:mm أو HH:mm بعد trim، دون تطبيع parseInt الجزئي.
+   * يحافظ على النص كما خُزّن (بعد trim) دون إعادة تنسيق.
    *
    * @param {*} value
    * @returns {Result} ok(string)
@@ -195,16 +195,13 @@ const DoctorScheduleReadService = {
       return Result.fail('SCHEDULE_SOURCE_INVALID', 'Clock value is not a string');
     }
     var trimmed = value.trim();
-    if (!trimmed) {
-      return Result.fail('SCHEDULE_SOURCE_INVALID', 'Clock value is empty');
+    if (!/^\d{1,2}:\d{2}$/.test(trimmed)) {
+      return Result.fail('SCHEDULE_SOURCE_INVALID', 'Clock value is not H:mm or HH:mm');
     }
     var parts = trimmed.split(':');
-    if (parts.length < 2) {
-      return Result.fail('SCHEDULE_SOURCE_INVALID', 'Clock value is not HH:mm');
-    }
     var hour = parseInt(parts[0], 10);
     var minute = parseInt(parts[1], 10);
-    if (isNaN(hour) || isNaN(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    if (hour > 23 || minute > 59) {
       return Result.fail('SCHEDULE_SOURCE_INVALID', 'Clock value is out of range');
     }
     return Result.ok(trimmed);

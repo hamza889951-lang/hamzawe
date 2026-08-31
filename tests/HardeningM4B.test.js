@@ -385,6 +385,46 @@ test('M4B-M8 — non-string work_start (Date-like object) fails, not converted v
   assert.strictEqual(r.error.code, 'SCHEDULE_SOURCE_INVALID');
 });
 
+test('M4B-M9 — partially-parseable clock strings fail (parseInt must not normalize them)', function() {
+  reset();
+  const cases = [
+    { work_start: '09abc', work_end: '14:00' },
+    { work_start: '8x:05', work_end: '14:00' },
+    { work_start: '09:30:xyz', work_end: '14:00' },
+    { work_start: '09:00:30', work_end: '14:00' },
+    { work_start: '09:60', work_end: '14:00' },
+    { work_start: '25:00', work_end: '14:00' },
+    { work_start: '09:00', work_end: '14abc' },
+    { work_start: '09:00', work_end: '14:00:01' }
+  ];
+  cases.forEach(function(pair) {
+    seedSettings(standardSettings(pair));
+    const r = read();
+    assert.strictEqual(
+      r.ok,
+      false,
+      'expected fail for ' + pair.work_start + '-' + pair.work_end
+    );
+    assert.strictEqual(r.error.code, 'SCHEDULE_SOURCE_INVALID');
+    assert.strictEqual(r.data, null);
+  });
+});
+
+test('M4B-M10 — strict clock still accepts H:mm and HH:mm', function() {
+  reset();
+  seedSettings(standardSettings({ work_start: '09:00', work_end: '14:00' }));
+  const padded = read();
+  assert.strictEqual(padded.ok, true);
+  assert.strictEqual(padded.data.workWindow.start, '09:00');
+  assert.strictEqual(padded.data.workWindow.end, '14:00');
+
+  seedSettings(standardSettings({ work_start: '8:05', work_end: '13:00' }));
+  const unpadded = read();
+  assert.strictEqual(unpadded.ok, true);
+  assert.strictEqual(unpadded.data.workWindow.start, '8:05');
+  assert.strictEqual(unpadded.data.workWindow.end, '13:00');
+});
+
 // ─────────────────────────────────────────────────────────────
 // SCOPE / M4-A CONTEXT
 // ─────────────────────────────────────────────────────────────
