@@ -68,6 +68,7 @@ Application/CancelService.js      Cancel confirmed appointment
 Application/CommandExecutor.js    Wraps commands: logs START/END, converts exceptions to Result.fail
 Application/DoctorAuthorizationService.js M4-A identity/authorization boundary (doctor only; fail-closed; no RBAC matrix)
 Application/DoctorControlEntry.js M4-A provider-neutral Doctor Control Entry (read-only; no schedule command)
+Application/DoctorScheduleReadService.js M4-B Doctor Schedule Read — Effective Schedule from SettingsRepository (read-only; no mutation)
 Application/MaintenanceService.js runCleanup (expired RESERVED→FREE) + runExpiration (FREE past→EXPIRED)
 Application/AttendanceService.js  M0 attendance boundary: markCompleted/markNoShow (MARK_COMPLETED / MARK_NO_SHOW) — trusted operator context + event→slot correlation (calendar_event_id, exactly-one) → StateMachine transition inside SlotRepository.atomicUpdate
 Repositories/SlotRepository.js    Slot CRUD; atomicUpdate (ScriptLock + fresh re-read + decisionFn)
@@ -324,6 +325,8 @@ Ranked by severity (P0=worst). All confirmed by code inspection.
   - Identity correction (2026-08-31): `ADMIN_PHONE` is **Owner / Operations notification destination only** and must NOT authorize or identify the doctor. Doctor identity source is the independent `DOCTOR_PHONE` Script Property, read only through `DoctorIdentityRepository`.
   - Decisions recorded: scope representation uses `{ clinicId: null }` for v1 implicit single-clinic while keeping future `Doctor → Clinic(s)` extensibility; no new conversation state (M4-B will define it when schedule interaction begins); no schedule/availability/appointment/calendar mutation in M4-A; no channel wording is introduced (final UX deferred to Supervisor).
   - Fail-closed: missing/unreadable/invalid `DOCTOR_PHONE` or unmatched phone → `DOCTOR_IDENTITY_SOURCE_UNAVAILABLE` / `DOCTOR_UNAUTHORIZED` → Router continues the existing patient flow; unknown actor can never reach Doctor Control. `ADMIN_PHONE` alone never grants Doctor authorization.
+  - GitHub: M4-A merged to `main` as PR #17 (2026-08-30, `1a7f589`).
+- **M4-B (Doctor Schedule Read / Effective Schedule Boundary) — implemented, pending supervisor review.** `Application/DoctorScheduleReadService.js` + `tests/HardeningM4B.test.js`. Path: M4-A `controlContext` → `readCurrentEffectiveSchedule` → `SettingsRepository.getSettingsResult()` / `getSlotDurationInfo()` → application Effective Schedule (`scope`, `source:'SETTINGS'`, `recurrence:'WEEKLY'`, `timezone:'Asia/Baghdad'`, `days`, `workWindow`, `slotDurationMinutes`). v1 Effective Schedule = current recurring Settings (no overrides, no `effectiveFrom`). Fail-closed: missing/unreadable Settings keep `SETTINGS_*`; malformed window/duration → `SCHEDULE_SOURCE_INVALID` (never closed/empty/healthy/silent 30). Read-only; does not modify M4-A, Router, Availability, Calendar, or WhatsApp. No doctor conversation state (channel UX is not M4-B).
 - **Always manual (owner):** git commit/push, Apps Script deploy, trigger setup, live testing. The agent only produces code.
 
 ## 16. How to Work on This Project Safely
