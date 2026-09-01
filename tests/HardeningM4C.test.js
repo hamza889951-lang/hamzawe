@@ -233,7 +233,6 @@ test('M4C-R1 — valid future recurring change commits an immutable record', fun
     schedule: {
       days: scheduleDays({ sunday: true, monday: true, wednesday: true, thursday: true, saturday: true }),
       workWindow: { start: '10:00', end: '14:00' },
-      slotDurationMinutes: 30
     }
   });
   assert.strictEqual(r.ok, true, JSON.stringify(r.error));
@@ -256,7 +255,6 @@ test('M4C-R2 — recurring change does not apply before effectiveFrom', function
     schedule: {
       days: scheduleDays({ monday: true }),
       workWindow: { start: '10:00', end: '14:00' },
-      slotDurationMinutes: 20
     }
   });
   const before = EFF.projectAt(controlContext(), '2026-09-14T10:00');
@@ -267,7 +265,7 @@ test('M4C-R2 — recurring change does not apply before effectiveFrom', function
   assert.strictEqual(after.ok, true);
   assert.strictEqual(after.data.source, 'RECURRING_CHANGE');
   assert.strictEqual(after.data.workWindow.start, '10:00');
-  assert.strictEqual(after.data.slotDurationMinutes, 20);
+  assert.strictEqual(after.data.slotDurationMinutes, 30);
 });
 
 test('M4C-R3 — later recurring change supersedes earlier one from its effectiveFrom', function() {
@@ -279,7 +277,6 @@ test('M4C-R3 — later recurring change supersedes earlier one from its effectiv
     schedule: {
       days: scheduleDays({ monday: true }),
       workWindow: { start: '10:00', end: '14:00' },
-      slotDurationMinutes: 30
     }
   });
   CMD.commitRecurringChange(controlContext(), {
@@ -289,7 +286,6 @@ test('M4C-R3 — later recurring change supersedes earlier one from its effectiv
     schedule: {
       days: scheduleDays({ monday: true, tuesday: true }),
       workWindow: { start: '08:00', end: '12:00' },
-      slotDurationMinutes: 20
     }
   });
   const mid = EFF.projectAt(controlContext(), '2026-09-20T10:00');
@@ -308,7 +304,6 @@ test('M4C-R4 — recurring change with effectiveFrom in the past fails', functio
     schedule: {
       days: scheduleDays({ monday: true }),
       workWindow: { start: '10:00', end: '14:00' },
-      slotDurationMinutes: 30
     }
   });
   assert.strictEqual(r.ok, false);
@@ -325,7 +320,6 @@ test('M4C-R5 — two recurring changes at the same effectiveFrom conflict', func
     schedule: {
       days: scheduleDays({ monday: true }),
       workWindow: { start: '10:00', end: '14:00' },
-      slotDurationMinutes: 30
     }
   });
   assert.strictEqual(first.ok, true);
@@ -336,7 +330,6 @@ test('M4C-R5 — two recurring changes at the same effectiveFrom conflict', func
     schedule: {
       days: scheduleDays({ tuesday: true }),
       workWindow: { start: '11:00', end: '15:00' },
-      slotDurationMinutes: 30
     }
   });
   assert.strictEqual(second.ok, false);
@@ -379,15 +372,19 @@ test('M4C-T2 — temporary close covers only its bounded half-open interval', fu
 
 test('M4C-T3 — exceptional open on a closed recurring day', function() {
   reset();
-  // Tuesday is closed in baseline.
+  // Tuesday is closed in baseline. v1 exceptional open takes the date only
+  // and reuses the regular Settings working window (09:00–14:00).
   const r = CMD.commitExceptionalOpen(controlContext(), {
     commandId: 'cmd-open-1',
     asOf: '2026-09-01T08:00',
-    effectiveFrom: '2026-09-22T09:00',
-    effectiveTo: '2026-09-22T13:00',
-    workWindow: { start: '09:00', end: '13:00' }
+    date: '2026-09-22'
   });
   assert.strictEqual(r.ok, true, JSON.stringify(r.error));
+  assert.strictEqual(r.data.record.effectiveFrom, '2026-09-22T00:00');
+  assert.strictEqual(r.data.record.effectiveTo, '2026-09-23T00:00');
+  assert.strictEqual(r.data.record.payload.workWindow.start, '09:00');
+  assert.strictEqual(r.data.record.payload.workWindow.end, '14:00');
+  assert.strictEqual(r.data.record.payload.workWindowSource, 'SETTINGS');
   // 2026-09-22 is Tuesday
   const at = EFF.projectAt(controlContext(), '2026-09-22T10:00');
   assert.strictEqual(at.ok, true, JSON.stringify(at.error));
@@ -409,9 +406,7 @@ test('M4C-T4 — overlapping temporary overrides conflict at command time', func
   const b = CMD.commitExceptionalOpen(controlContext(), {
     commandId: 'cmd-ov-b',
     asOf: '2026-09-01T08:00',
-    effectiveFrom: '2026-09-20T11:00',
-    effectiveTo: '2026-09-20T13:00',
-    workWindow: { start: '11:00', end: '13:00' }
+    date: '2026-09-20'
   });
   assert.strictEqual(b.ok, false);
   assert.strictEqual(b.error.code, 'SCHEDULE_INTENT_CONFLICT');
@@ -490,7 +485,6 @@ test('M4C-E2 — recurring + temporary close at same instant', function() {
     schedule: {
       days: scheduleDays({ sunday: true, monday: true, wednesday: true, thursday: true, saturday: true }),
       workWindow: { start: '10:00', end: '14:00' },
-      slotDurationMinutes: 30
     }
   });
   CMD.commitTemporaryClose(controlContext(), {
@@ -515,7 +509,6 @@ test('M4C-E3 — projection is deterministic and read-only', function() {
     schedule: {
       days: scheduleDays({ monday: true }),
       workWindow: { start: '10:00', end: '14:00' },
-      slotDurationMinutes: 30
     }
   });
   const writesBefore = state.writes.length;
@@ -546,7 +539,6 @@ test('M4C-C1 — cancelling a future change appends CANCEL and restores projecti
     schedule: {
       days: scheduleDays({ monday: true }),
       workWindow: { start: '10:00', end: '14:00' },
-      slotDurationMinutes: 20
     }
   });
   const cancel = CMD.cancelChange(controlContext(), {
@@ -584,7 +576,6 @@ test('M4C-C3 — wrong scope fails', function() {
     schedule: {
       days: scheduleDays({ monday: true }),
       workWindow: { start: '10:00', end: '14:00' },
-      slotDurationMinutes: 30
     }
   });
   const r = CMD.cancelChange(controlContext({ actorId: OTHER_DOCTOR, scope: { clinicId: null } }), {
@@ -605,7 +596,6 @@ test('M4C-C4 — CANCEL is temporal: past instants keep the target, later instan
     schedule: {
       days: scheduleDays({ monday: true }),
       workWindow: { start: '10:00', end: '14:00' },
-      slotDurationMinutes: 20
     }
   });
   const r = CMD.cancelChange(controlContext(), {
@@ -623,7 +613,7 @@ test('M4C-C4 — CANCEL is temporal: past instants keep the target, later instan
   const afterEffectiveBeforeCancel = EFF.projectAt(controlContext(), '2026-09-16T10:00');
   assert.strictEqual(afterEffectiveBeforeCancel.ok, true);
   assert.strictEqual(afterEffectiveBeforeCancel.data.source, 'RECURRING_CHANGE');
-  assert.strictEqual(afterEffectiveBeforeCancel.data.slotDurationMinutes, 20);
+  assert.strictEqual(afterEffectiveBeforeCancel.data.slotDurationMinutes, 30);
 
   const atCancel = EFF.projectAt(controlContext(), '2026-09-18T08:00');
   assert.strictEqual(atCancel.ok, true);
@@ -640,7 +630,6 @@ test('M4C-C5 — double cancel fails CHANGE_ALREADY_CANCELLED', function() {
     schedule: {
       days: scheduleDays({ monday: true }),
       workWindow: { start: '10:00', end: '14:00' },
-      slotDurationMinutes: 30
     }
   });
   const first = CMD.cancelChange(controlContext(), {
@@ -669,7 +658,6 @@ test('M4C-I1 — same commandId replays without a duplicate record', function() 
     schedule: {
       days: scheduleDays({ monday: true }),
       workWindow: { start: '10:00', end: '14:00' },
-      slotDurationMinutes: 30
     }
   };
   const a = CMD.commitRecurringChange(controlContext(), payload);
@@ -704,7 +692,6 @@ test('M4C-I3 — sequential commands see fresh records (no stale overwrite)', fu
     schedule: {
       days: scheduleDays({ monday: true }),
       workWindow: { start: '10:00', end: '14:00' },
-      slotDurationMinutes: 30
     }
   });
   const second = CMD.commitRecurringChange(controlContext(), {
@@ -714,7 +701,6 @@ test('M4C-I3 — sequential commands see fresh records (no stale overwrite)', fu
     schedule: {
       days: scheduleDays({ tuesday: true }),
       workWindow: { start: '11:00', end: '15:00' },
-      slotDurationMinutes: 20
     }
   });
   assert.strictEqual(second.ok, false);
@@ -751,7 +737,6 @@ test('M4C-H1 — malformed Settings fail command and projection', function() {
     schedule: {
       days: scheduleDays({ monday: true }),
       workWindow: { start: '10:00', end: '14:00' },
-      slotDurationMinutes: 30
     }
   });
   assert.strictEqual(cmd.ok, false);
@@ -812,7 +797,6 @@ test('M4C-H6 — non-boolean recurring day flags are rejected, not coerced', fun
       schedule: {
         days: days,
         workWindow: { start: '10:00', end: '14:00' },
-        slotDurationMinutes: 30
       }
     });
     assert.strictEqual(r.ok, false, 'expected fail for ' + JSON.stringify(value));
@@ -843,7 +827,6 @@ test('M4C-S1 — clinicId null v1 is stored and projected, not a global singleto
     schedule: {
       days: scheduleDays({ monday: true }),
       workWindow: { start: '10:00', end: '14:00' },
-      slotDurationMinutes: 30
     }
   });
   CMD.commitRecurringChange(controlContext({ actorId: OTHER_DOCTOR, scope: { clinicId: null } }), {
@@ -853,7 +836,6 @@ test('M4C-S1 — clinicId null v1 is stored and projected, not a global singleto
     schedule: {
       days: scheduleDays({ friday: true }),
       workWindow: { start: '08:00', end: '09:00' },
-      slotDurationMinutes: 15
     }
   });
   const a = EFF.projectAt(controlContext(), '2026-09-15T10:00');

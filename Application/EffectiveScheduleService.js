@@ -12,6 +12,12 @@
  * - read-only، بلا Clock.now داخل الحساب (الزمن دخل صريح).
  * - fail-closed عند مصدر فاسد / تعارض applicable غير معرّف.
  *
+ * M4-C Continuation (FROZEN CONTRACT v1 — 2026-09-01):
+ * - slotDurationMinutes التشغيلية تأتي حصراً من Settings baseline
+ *   (configured provenance عبر M4-B). أي slotDurationMinutes داخل
+ *   historical recurring payload هي immutable historical data وتُتجاهل
+ *   كسلطة تشغيلية — لا تُعاد كتابتها ولا تُستخدم في الإسقاط.
+ *
  * لا يضمن:
  * - أي mutation أو Availability materialization (M4-D).
  */
@@ -110,7 +116,11 @@ const EffectiveScheduleService = {
       recurrence: 'WEEKLY',
       days: recurring.days,
       workWindow: recurring.workWindow,
-      slotDurationMinutes: recurring.slotDurationMinutes,
+      // M4-C Continuation §4.2: operational duration is always the
+      // configured Settings value carried by the M4-B baseline —
+      // never a value from a (historical) schedule change record.
+      slotDurationMinutes: baseline.slotDurationMinutes,
+      slotDurationSource: 'SETTINGS',
       interval: {
         intent: intervalIntent,
         appliedOverrideChangeId: override ? override.changeId : null,
@@ -262,12 +272,13 @@ const EffectiveScheduleService = {
       return Result.ok({
         days: baseline.days,
         workWindow: baseline.workWindow,
-        slotDurationMinutes: baseline.slotDurationMinutes,
         sourceChangeId: null
       });
     }
     var payload = chosen.payload || {};
-    if (!payload.days || !payload.workWindow || typeof payload.slotDurationMinutes !== 'number') {
+    // Historical M4-C-v1 payloads may carry slotDurationMinutes; the field
+    // is immutable historical data and is IGNORED operationally (§4.2).
+    if (!payload.days || !payload.workWindow) {
       return Result.fail(
         'SCHEDULE_CHANGE_SOURCE_INVALID',
         'Recurring change payload is incomplete',
@@ -277,7 +288,6 @@ const EffectiveScheduleService = {
     return Result.ok({
       days: payload.days,
       workWindow: payload.workWindow,
-      slotDurationMinutes: payload.slotDurationMinutes,
       sourceChangeId: chosen.changeId
     });
   },
