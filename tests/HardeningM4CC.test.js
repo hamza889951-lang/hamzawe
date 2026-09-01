@@ -193,6 +193,7 @@ function createSandbox() {
   load('ConversationRepository.js', 'ConversationRepository');
   load('Application/BookingService.js', 'BookingService');
   load('Changeservice.js', 'ChangeService');
+  load('Application/DoctorControlInteractionService.js', 'DoctorControlInteractionService');
 
   // Deterministic sort_key interpretation for the test host (the real
   // parser builds Dates in the host timezone; production runs pinned to
@@ -274,6 +275,13 @@ function seedSlot(overrides) {
   return slot;
 }
 
+const CONVERSATIONS_HEADERS = [
+  'conversation_id', 'phone', 'state', 'temp_name', 'slot_id', 'updated_at',
+  'doctor_draft_kind', 'doctor_draft_days', 'doctor_draft_window',
+  'doctor_draft_from', 'doctor_draft_to', 'doctor_draft_target_change_id',
+  'doctor_draft_command_id'
+];
+
 function reset() {
   state.sheets = {};
   state.failRead = {};
@@ -291,6 +299,10 @@ function reset() {
   };
   state.sheets['Availability'] = {
     headers: AVAILABILITY_HEADERS.slice(),
+    rows: []
+  };
+  state.sheets['Conversations'] = {
+    headers: CONVERSATIONS_HEADERS.slice(),
     rows: []
   };
 }
@@ -808,6 +820,268 @@ test('M4CC-D4 — structural: no reminder subsystem was introduced', function() 
   const code = stripComments(fs.readFileSync(path.join(ROOT, 'Reminderservice.js'), 'utf8'));
   assert.ok(/isOperationallyAvailable\s*\(\s*row\.is_available\s*\)/.test(code));
   assert.strictEqual(/ReminderRepository|reminder_state|REMINDER_QUEUE/i.test(code), false);
+});
+
+// ═════════════════════════════════════════════════════════════
+// Section E — Doctor Control numbered interaction + Preview/Confirm
+// ═════════════════════════════════════════════════════════════
+
+const DCI = sandbox.DoctorControlInteractionService;
+
+function doctorRow() {
+  return state.sheets['Conversations'].rows.filter(function(r) {
+    return r.phone === DOCTOR_ID;
+  })[0];
+}
+
+test('M4CC-E1 — first doctor contact shows the numbered menu and opens a DOCTOR_MENU session', function() {
+  reset();
+  const r = DCI.handle(controlContext(), 'مرحبا');
+  assert.strictEqual(r.ok, true, JSON.stringify(r.error));
+  assert.ok(r.data.reply.indexOf('قائمة تحكم الطبيب') !== -1);
+  assert.ok(r.data.reply.indexOf('1)') !== -1);
+  assert.strictEqual(r.data.controlState, 'DOCTOR_MENU');
+  assert.strictEqual(doctorRow().state, 'DOCTOR_MENU');
+  assert.strictEqual(state.sheets['ScheduleChanges'].rows.length, 0);
+});
+
+test('M4CC-E2 — menu option 1 renders the current schedule read-only', function() {
+  reset();
+  DCI.handle(controlContext(), 'start');
+  const r = DCI.handle(controlContext(), '1');
+  assert.strictEqual(r.ok, true, JSON.stringify(r.error));
+  assert.ok(r.data.reply.indexOf('الجدول الحالي') !== -1);
+  assert.ok(r.data.reply.indexOf('09:00–14:00') !== -1);
+  assert.ok(r.data.reply.indexOf('30 دقيقة') !== -1);
+  assert.strictEqual(state.sheets['ScheduleChanges'].rows.length, 0);
+  assert.strictEqual(state.sends, 0);
+});
+
+test('M4CC-E3 — recurring flow: prompt → preview (no persistence) → confirm → single committed record', function() {
+  reset();
+  DCI.handle(controlContext(), 'start');
+  const prompt = DCI.handle(controlContext(), '2');
+  assert.ok(prompt.data.reply.indexOf('أيام الدوام | نافذة الدوام | تاريخ البدء') !== -1);
+  assert.strictEqual(doctorRow().state, 'DOCTOR_AWAITING_INPUT');
+  assert.strictEqual(doctorRow().doctor_draft_kind, 'RECURRING');
+
+  const preview = DCI.handle(controlContext(), '1,2 | 10:00-14:00 | 2026-09-15');
+  assert.strictEqual(preview.ok, true, JSON.stringify(preview.error));
+  assert.ok(preview.data.reply.indexOf('معاينة') !== -1);
+  assert.ok(preview.data.reply.indexOf('2026-09-15T00:00') !== -1);
+  assert.ok(preview.data.reply.indexOf('الحجوزات المتأثرة حاليًا:') !== -1);
+  // Preview is strictly read-only.
+  assert.strictEqual(state.sheets['ScheduleChanges'].rows.length, 0);
+  assert.strictEqual(doctorRow().state, 'DOCTOR_AWAITING_CONFIRMATION');
+  const commandId = doctorRow().doctor_draft_command_id;
+  assert.ok(/^SCMD_/.test(commandId));
+
+  const commit = DCI.handle(controlContext(), '1');
+  assert.strictEqual(commit.ok, true, JSON.stringify(commit.error));
+  assert.ok(commit.data.reply.indexOf('تم تنفيذ التغيير') !== -1);
+  assert.strictEqual(state.sheets['ScheduleChanges'].rows.length, 1);
+  const row = state.sheets['ScheduleChanges'].rows[0];
+  assert.strictEqual(row.commandId, commandId); // same idempotency identity
+  assert.strictEqual(row.effectiveFrom, '2026-09-15T00:00');
+  assert.strictEqual(row.changeKind, 'RECURRING');
+  // Session returns to the menu.
+  assert.strictEqual(doctorRow().state, 'DOCTOR_MENU');
+  assert.strictEqual(doctorRow().doctor_draft_command_id, '');
+  assert.strictEqual(state.sends, 0); // provider-neutral: replies are data, not sends
+});
+
+test('M4CC-E4 — preview reports affected-booking COUNT only (no patient details, no bus list)', function() {
+  reset();
+  seedSlot({
+    slot_id: 'SLT_AFF1',
+    sort_key: '202609161000',
+    status: 'CONFIRMED',
+    phone: '9647711111111',
+    patient_name: 'SECRET NAME'
+  });
+  seedSlot({
+    slot_id: 'SLT_AFF2',
+    sort_key: '202609161030',
+    status: 'RESERVED',
+    phone: '9647722222222',
+    patient_name: 'OTHER SECRET'
+  });
+  DCI.handle(controlContext(), 'start');
+  DCI.handle(controlContext(), '3');
+  const preview = DCI.handle(controlContext(), '2026-09-16'); // full-day close (Wednesday, open)
+  assert.strictEqual(preview.ok, true, JSON.stringify(preview.error));
+  assert.ok(preview.data.reply.indexOf('الحجوزات المتأثرة حاليًا: 2') !== -1);
+  assert.strictEqual(preview.data.reply.indexOf('SECRET'), -1);
+  assert.strictEqual(preview.data.reply.indexOf('9647711111111'), -1);
+  // Read-only: no schedule record, no availability/appointment mutation.
+  assert.strictEqual(state.sheets['ScheduleChanges'].rows.length, 0);
+  assert.strictEqual(findSlotRow('SLT_AFF1').status, 'CONFIRMED');
+  assert.strictEqual(findSlotRow('SLT_AFF1').is_available, 'TRUE');
+  assert.strictEqual(state.calendar, 0);
+});
+
+test('M4CC-E5 — declining the confirmation discards the draft and persists nothing', function() {
+  reset();
+  DCI.handle(controlContext(), 'start');
+  DCI.handle(controlContext(), '3');
+  DCI.handle(controlContext(), '2026-09-16');
+  const r = DCI.handle(controlContext(), '2');
+  assert.strictEqual(r.ok, true);
+  assert.ok(r.data.reply.indexOf('لم يُحفظ أي تغيير') !== -1);
+  assert.strictEqual(state.sheets['ScheduleChanges'].rows.length, 0);
+  assert.strictEqual(doctorRow().state, 'DOCTOR_MENU');
+  assert.strictEqual(doctorRow().doctor_draft_command_id, '');
+});
+
+test('M4CC-E6 — duplicate confirm with the same commandId replays without a duplicate record', function() {
+  reset();
+  DCI.handle(controlContext(), 'start');
+  DCI.handle(controlContext(), '3');
+  DCI.handle(controlContext(), '2026-09-16');
+  const savedDraft = {};
+  sandbox.ConversationRepository.DOCTOR_SESSION_FIELDS.forEach(function(f) {
+    savedDraft[f] = doctorRow()[f];
+  });
+  const first = DCI.handle(controlContext(), '1');
+  assert.strictEqual(first.ok, true);
+  assert.strictEqual(state.sheets['ScheduleChanges'].rows.length, 1);
+  // Simulate a redelivered confirm after a state write that did not land.
+  sandbox.ConversationRepository.setDoctorControlSession(
+    DOCTOR_ID, 'DOCTOR_AWAITING_CONFIRMATION', savedDraft
+  );
+  const second = DCI.handle(controlContext(), '1');
+  assert.strictEqual(second.ok, true, JSON.stringify(second.error));
+  assert.ok(second.data.reply.indexOf('منفذًا سابقًا') !== -1);
+  assert.strictEqual(state.sheets['ScheduleChanges'].rows.length, 1);
+});
+
+test('M4CC-E7 — unrepresentable input surfaces the explicit failure and stays in input state', function() {
+  reset();
+  DCI.handle(controlContext(), 'start');
+  DCI.handle(controlContext(), '3');
+  const r = DCI.handle(controlContext(), '2026-09-20 10:15 | 2026-09-20 10:45');
+  assert.strictEqual(r.ok, true);
+  assert.ok(r.data.reply.indexOf('UNREPRESENTABLE_SCHEDULE_INTERVAL') !== -1);
+  assert.strictEqual(doctorRow().state, 'DOCTOR_AWAITING_INPUT');
+  assert.strictEqual(state.sheets['ScheduleChanges'].rows.length, 0);
+});
+
+test('M4CC-E8 — exceptional open flow commits a Settings-window full-day record', function() {
+  reset();
+  DCI.handle(controlContext(), 'start');
+  DCI.handle(controlContext(), '4');
+  const preview = DCI.handle(controlContext(), '2026-09-22');
+  assert.strictEqual(preview.ok, true, JSON.stringify(preview.error));
+  assert.ok(preview.data.reply.indexOf('2026-09-22T00:00') !== -1);
+  assert.ok(preview.data.reply.indexOf('2026-09-23T00:00') !== -1);
+  const commit = DCI.handle(controlContext(), '1');
+  assert.strictEqual(commit.ok, true, JSON.stringify(commit.error));
+  const row = state.sheets['ScheduleChanges'].rows[0];
+  assert.strictEqual(row.changeKind, 'TEMPORARY_OPEN');
+  const payload = JSON.parse(row.payloadJson);
+  assert.strictEqual(payload.workWindow.start, '09:00');
+  assert.strictEqual(payload.workWindow.end, '14:00');
+  assert.strictEqual(payload.workWindowSource, 'SETTINGS');
+});
+
+test('M4CC-E9 — cancel flow: numbered list resolves to a semantic changeId; CANCEL appended, target untouched', function() {
+  reset();
+  const committed = CMD.commitTemporaryClose(controlContext(), {
+    commandId: 'cmd-e9-close',
+    asOf: '2026-09-01T08:00',
+    effectiveFrom: '2026-09-20T10:00',
+    effectiveTo: '2026-09-20T12:00'
+  });
+  assert.strictEqual(committed.ok, true);
+  const targetRowBefore = jsonClone(state.sheets['ScheduleChanges'].rows[0]);
+
+  DCI.handle(controlContext(), 'start');
+  const list = DCI.handle(controlContext(), '5');
+  assert.strictEqual(list.ok, true, JSON.stringify(list.error));
+  assert.ok(list.data.reply.indexOf('1) ') !== -1);
+  assert.ok(list.data.reply.indexOf('إغلاق مؤقت') !== -1);
+
+  const preview = DCI.handle(controlContext(), '1');
+  assert.strictEqual(preview.ok, true, JSON.stringify(preview.error));
+  assert.ok(preview.data.reply.indexOf('إلغاء تغيير مجدول') !== -1);
+  assert.strictEqual(doctorRow().doctor_draft_target_change_id, committed.data.record.changeId);
+
+  const commit = DCI.handle(controlContext(), '1');
+  assert.strictEqual(commit.ok, true, JSON.stringify(commit.error));
+  assert.strictEqual(state.sheets['ScheduleChanges'].rows.length, 2);
+  assert.strictEqual(state.sheets['ScheduleChanges'].rows[1].changeKind, 'CANCEL');
+  assert.strictEqual(
+    state.sheets['ScheduleChanges'].rows[1].targetChangeId,
+    committed.data.record.changeId
+  );
+  // Historical target record untouched.
+  assert.deepStrictEqual(jsonClone(state.sheets['ScheduleChanges'].rows[0]), targetRowBefore);
+});
+
+test('M4CC-E10 — missing doctor session columns fail closed (no silent draft loss)', function() {
+  reset();
+  state.sheets['Conversations'].headers = [
+    'conversation_id', 'phone', 'state', 'temp_name', 'slot_id', 'updated_at'
+  ];
+  const r = DCI.handle(controlContext(), 'start');
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.error.code, 'DOCTOR_CONTROL_SCHEMA_MISSING');
+});
+
+test('M4CC-E11 — interaction requires an M4-A control context', function() {
+  reset();
+  [null, {}, { actorId: '' }].forEach(function(ctx) {
+    const r = DCI.handle(ctx, '1');
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(r.error.code, 'INVALID_CONTROL_CONTEXT');
+  });
+});
+
+test('M4CC-E12 — structural: Router stays routing-only; interaction boundary stays provider-neutral and infrastructure-free', function() {
+  const router = stripComments(fs.readFileSync(path.join(ROOT, 'Core/Router.js'), 'utf8'));
+  [
+    /DoctorScheduleCommandService/, /ScheduleChangeRepository/, /EffectiveScheduleService/,
+    /effectiveFrom/, /workWindow/, /parseLocalDateTime/, /SettingsRepository/
+  ].forEach(function(rx) {
+    assert.strictEqual(rx.test(router), false, 'Router must not reference ' + rx);
+  });
+  assert.ok(/DoctorControlInteractionService/.test(router), 'Router hands off to the interaction boundary');
+
+  const dci = stripComments(fs.readFileSync(
+    path.join(ROOT, 'Application/DoctorControlInteractionService.js'), 'utf8'
+  ));
+  [
+    /WhatsAppAdapter/, /ultramsg|ultraMsg/i, /UrlFetchApp/, /SpreadsheetApp/,
+    /GoogleSheets/, /CalendarApp/, /GoogleCalendar/, /PropertiesService/,
+    /DoctorAuthorizationService/, /DOCTOR_PHONE/, /ADMIN_PHONE/
+  ].forEach(function(rx) {
+    assert.strictEqual(rx.test(dci), false, 'Interaction service must not reference ' + rx);
+  });
+
+  // The M4-A entry boundary was not rewritten.
+  const entry = stripComments(fs.readFileSync(path.join(ROOT, 'Application/DoctorControlEntry.js'), 'utf8'));
+  [/ConversationRepository/, /SlotRepository/, /CommandExecutor/, /DoctorScheduleCommandService/]
+    .forEach(function(rx) {
+      assert.strictEqual(rx.test(entry), false, 'DoctorControlEntry must stay the frozen M4-A entry');
+    });
+});
+
+test('M4CC-E13 — full-day close via interaction commits an exact half-open [00:00, next 00:00) interval', function() {
+  reset();
+  DCI.handle(controlContext(), 'start');
+  DCI.handle(controlContext(), '3');
+  DCI.handle(controlContext(), '2026-09-16');
+  const commit = DCI.handle(controlContext(), '1');
+  assert.strictEqual(commit.ok, true, JSON.stringify(commit.error));
+  const row = state.sheets['ScheduleChanges'].rows[0];
+  assert.strictEqual(row.changeKind, 'TEMPORARY_CLOSE');
+  assert.strictEqual(row.effectiveFrom, '2026-09-16T00:00');
+  assert.strictEqual(row.effectiveTo, '2026-09-17T00:00');
+  // Committed via the same EffectiveSchedule semantics the preview used.
+  const inside = EFF.projectAt(controlContext(), '2026-09-16T10:00');
+  assert.strictEqual(inside.data.interval.intent, 'CLOSED');
+  const after = EFF.projectAt(controlContext(), '2026-09-17T09:30');
+  assert.strictEqual(after.data.interval.intent, 'WORKING');
 });
 
 // ── Runner ──────────────────────────────────────────────────────

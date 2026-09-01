@@ -133,6 +133,7 @@ function createSandbox() {
 
   load('Utils/ULID.js', 'ULID');
   load('Utils/IdGenerator.js', 'IdGenerator');
+  load('Utils/DateUtils.js', 'DateUtils');
   load('Infrastructure/Lock.js', 'Lock');
   const originalLock = sandbox.Lock.runExclusive;
   sandbox.Lock.runExclusive = function(key, fn, timeoutMs) {

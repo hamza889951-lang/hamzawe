@@ -15,5 +15,8 @@ const IdGenerator = {
   },
   generateScheduleChangeId() {
     return 'SCH_' + ULID.generate();
+  },
+  generateScheduleCommandId() {
+    return 'SCMD_' + ULID.generate();
   }
 };

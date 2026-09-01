@@ -562,28 +562,15 @@ const DoctorScheduleCommandService = {
 
   /**
    * Pure next-calendar-day helper for full-day override boundaries.
+   * Single implementation lives in DateUtils (shared with the doctor
+   * interaction boundary).
    */
   _nextLocalDate: function(dateStr) {
-    var y = parseInt(dateStr.substring(0, 4), 10);
-    var m = parseInt(dateStr.substring(5, 7), 10);
-    var d = parseInt(dateStr.substring(8, 10), 10);
-    var parsed = EffectiveScheduleService.parseLocalDateTime(dateStr + 'T00:00');
-    if (!parsed.ok) return parsed;
-    var dim = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    var leap = (y % 4 === 0 && y % 100 !== 0) || (y % 400 === 0);
-    if (leap) dim[1] = 29;
-    d += 1;
-    if (d > dim[m - 1]) {
-      d = 1;
-      m += 1;
-      if (m > 12) {
-        m = 1;
-        y += 1;
-      }
+    var next = DateUtils.nextLocalDateString(dateStr);
+    if (!next) {
+      return Result.fail('INVALID_SCHEDULE_COMMAND', 'Date is not a real calendar date: ' + dateStr);
     }
-    var mm = m < 10 ? '0' + m : String(m);
-    var dd = d < 10 ? '0' + d : String(d);
-    return Result.ok(y + '-' + mm + '-' + dd);
+    return Result.ok(next);
   },
 
   _validateWorkWindow: function(window) {

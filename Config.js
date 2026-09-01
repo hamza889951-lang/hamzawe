@@ -47,7 +47,13 @@ const Config = {
       MENU_MAIN: 'MENU_MAIN',
       WAITING_NAME: 'WAITING_NAME',
       WAITING_CONFIRMATION: 'WAITING_CONFIRMATION',
-      BOOKED: 'BOOKED'
+      BOOKED: 'BOOKED',
+      // M4-C Continuation — Doctor Control interaction states (additive).
+      // Doctor rows in Conversations are unreachable by patient routing:
+      // the M4-A gate diverts the authorized doctor before patient flows.
+      DOCTOR_MENU: 'DOCTOR_MENU',
+      DOCTOR_AWAITING_INPUT: 'DOCTOR_AWAITING_INPUT',
+      DOCTOR_AWAITING_CONFIRMATION: 'DOCTOR_AWAITING_CONFIRMATION'
     }
   },
 
