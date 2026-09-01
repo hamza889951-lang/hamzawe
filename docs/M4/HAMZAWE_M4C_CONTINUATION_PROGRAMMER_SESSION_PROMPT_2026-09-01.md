@@ -7,7 +7,7 @@
 
 ## 1. Baseline والحالة الحالية
 
-الـbaseline الحالي هو:
+الـbaseline التاريخي هو:
 
 `main @ 35a28ccd6708c5d16293b60f6388293982edcd66`
 
@@ -31,17 +31,16 @@ No historical assumption that M4-D must automatically be next
 
 ## 2. الوثائق التي يجب قراءتها قبل أي تعديل
 
-اقرأ بالترتيب:
+اقرأ:
 
 1. `PROJECT_CONTEXT.md`
 2. `PROJECT_CONSTITUTION.txt`
 3. `docs/M4/M4C_CONTINUATION_FROZEN_CONTRACT_v1_2026-09-01.md`
 4. `docs/M4/M4_CONTRACT_REVIEW_DECISION_ADDENDUM_2026-09-01.md`
-5. `docs/M4/M4_CONTRACT_REVIEW_PACKAGE_2026-09-01.md`
-6. `docs/M4/M4_CAPABILITY_COMPLETION_DISCOVERY_2026-08-31.md`
-7. `docs/M4/M4_COMPLETION_CONTRACT_PLAN_2026-09-01.md`
 
-ثم افحص الكود الفعلي والـGit history والاختبارات ذات الصلة.
+بعد ذلك افحص الكود الفعلي والـGit history والاختبارات ذات الصلة، ولا تعتمد على وثيقة قديمة بدل الواقع.
+
+إذا وجدت أي وثيقة أخرى تتعلق بـM4-C/M4-D وغير موجودة في المستودع، تعامل معها كـhistorical reference لا كمصدر تنفيذ، وسجّل ذلك عند الحاجة.
 
 إذا تعارضت وثيقة قديمة مع العقد المجمد:
 
@@ -90,6 +89,8 @@ Temporary overrides تستخدم:
 والـeffective timestamps في `Asia/Baghdad`.
 
 Exceptional Open في v1 يعيد استخدام ساعات الدوام المعتادة من Settings، ولا يفتح نموذجًا جديدًا لمدخلات ساعات خاصة.
+
+Partial-day exceptional opening خارج v1.
 
 لا تدعم نموذج “عدد الباصات” أو أي reverse mapping من bus count إلى slot grid.
 
@@ -256,7 +257,7 @@ AND not already sent
 
 ## 12. Git discipline
 
-ابدأ من `main` الحالي المذكور أعلاه.
+ابدأ من `main` الحالي.
 
 اعمل في branch مخصص للمهمة.
 
@@ -313,7 +314,7 @@ correctness + architecture + deterministic behavior + reuse + downstream compati
 قبل أي implementation، أرسل:
 
 1. تأكيد أنك قرأت الوثائق المطلوبة.
-2. current `HEAD` ومقارنته بالـbaseline.
+2. current `HEAD` ومقارنته بالـbaseline التاريخي.
 3. قائمة الملفات التي ستفحصها.
 4. فهمك الدقيق لنطاق M4-C continuation.
 5. أي تناقض بين العقد والكود الفعلي.
