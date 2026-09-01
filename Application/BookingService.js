@@ -389,6 +389,17 @@ const BookingService = {
         );
         if (!check.ok) return check;
 
+        // M4-C Continuation §12: fresh re-verification inside the per-slot
+        // atomic boundary — a stale optimistic candidate must not be
+        // reserved after is_available became false.
+        if (!SlotRepository.isOperationallyAvailable(freshSlot.is_available)) {
+          return Result.fail(
+            'SLOT_UNAVAILABLE',
+            'Slot is no longer operationally available (is_available=false)',
+            { slotId: freshSlot.slot_id }
+          );
+        }
+
         return Result.ok({
           status: Config.VOCABULARY.STATUS.RESERVED,
           phone: phone,
@@ -400,7 +411,9 @@ const BookingService = {
 
       if (updateResult.ok) return Result.ok({ slot: slot });
 
-      if (updateResult.error && updateResult.error.code === 'INVALID_TRANSITION') {
+      if (updateResult.error &&
+          (updateResult.error.code === 'INVALID_TRANSITION' ||
+           updateResult.error.code === 'SLOT_UNAVAILABLE')) {
         excludedSlotIds.push(slot.slot_id);
         continue;
       }

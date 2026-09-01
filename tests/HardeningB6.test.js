@@ -146,6 +146,14 @@ sandbox.SlotRepository = {
     }
     Object.assign(persisted, decision.data);
     return sandbox.Result.ok(Object.assign({ slotId: slotId }, decision.data));
+  },
+  // Mock fidelity with the real repository surface (M4-C Continuation §12):
+  // reservation decision functions re-verify operational availability on
+  // the fresh slot inside atomicUpdate.
+  isOperationallyAvailable: function(value) {
+    if (value === true) return true;
+    if (typeof value === 'string' && value.trim().toUpperCase() === 'TRUE') return true;
+    return false;
   }
 };
 sandbox.SlotSelection = {

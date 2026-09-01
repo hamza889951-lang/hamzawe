@@ -11,6 +11,11 @@ const ReminderService = {
 
     var candidates = SlotRepository.query(function(row) {
       if (row.status !== Config.VOCABULARY.STATUS.CONFIRMED) return false;
+      // M4-C Continuation §15: operational availability gate — a reminder
+      // is suppressed while is_available=false. No new reminder state; if
+      // the slot reopens inside the window and Reminder_sent is still not
+      // TRUE, the existing process sends normally.
+      if (!SlotRepository.isOperationallyAvailable(row.is_available)) return false;
       if (ReminderService._isReminderAlreadySent(row.Reminder_sent)) return false;
       var startMs = LegacySlotTimeParser.toComparableTime(row.sort_key);
       if (startMs === null) return false;

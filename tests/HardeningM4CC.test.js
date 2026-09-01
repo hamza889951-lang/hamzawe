@@ -190,6 +190,24 @@ function createSandbox() {
   load('Slotselection.js', 'SlotSelection');
   load('BusNumberCalculator.js', 'BusNumberCalculator');
   load('Reminderservice.js', 'ReminderService');
+  load('ConversationRepository.js', 'ConversationRepository');
+  load('Application/BookingService.js', 'BookingService');
+  load('Changeservice.js', 'ChangeService');
+
+  // Deterministic sort_key interpretation for the test host (the real
+  // parser builds Dates in the host timezone; production runs pinned to
+  // Asia/Baghdad via appsscript.json).
+  sandbox.LegacySlotTimeParser.toComparableTime = function(sortKey) {
+    const s = String(sortKey);
+    if (!/^\d{12}$/.test(s)) return null;
+    return Date.UTC(
+      parseInt(s.substring(0, 4), 10),
+      parseInt(s.substring(4, 6), 10) - 1,
+      parseInt(s.substring(6, 8), 10),
+      parseInt(s.substring(8, 10), 10),
+      parseInt(s.substring(10, 12), 10)
+    );
+  };
 
   return { sandbox: sandbox, state: state };
 }
@@ -572,6 +590,224 @@ test('M4CC-B8 — representability follows the recurring window effective at the
     effectiveTo: '2026-09-16T11:00'
   });
   assert.strictEqual(aligned.ok, true, JSON.stringify(aligned.error));
+});
+
+// ═════════════════════════════════════════════════════════════
+// Section C — Reservation is_available atomic guard (§12)
+//
+// Reservation-producing path inventory (audited before change):
+//   1. BookingService._reserveEarliestBookable   (RESERVE_SLOT booking)
+//   2. ChangeService._reserveAlternativeSlot     (changeReservation —
+//      pre-confirm — AND changeConfirmedAppointment replacement)
+// StateMachine only defines the transition; MaintenanceService frees,
+// never reserves. RESERVED→CONFIRMED confirmations are lifecycle, not
+// reservation, and are intentionally NOT gated (§12.1/§14).
+// ═════════════════════════════════════════════════════════════
+
+function raceFlipAfterSelection(slotIdToFlip) {
+  // Simulates "reconciliation wins first": the optimistic SlotSelection
+  // read returns a stale available candidate, then is_available flips
+  // to FALSE before the atomicUpdate fresh re-read.
+  const original = sandbox.SlotSelection.findEarliestBookable;
+  sandbox.SlotSelection.findEarliestBookable = function(excludedSlotIds) {
+    const result = original.call(sandbox.SlotSelection, excludedSlotIds);
+    if (result.ok && result.data.slot_id === slotIdToFlip) {
+      state.sheets['Availability'].rows.forEach(function(row) {
+        if (row.slot_id === slotIdToFlip) row.is_available = 'FALSE';
+      });
+    }
+    return result;
+  };
+  return function restore() {
+    sandbox.SlotSelection.findEarliestBookable = original;
+  };
+}
+
+function findSlotRow(slotId) {
+  return state.sheets['Availability'].rows.filter(function(r) {
+    return r.slot_id === slotId;
+  })[0];
+}
+
+test('M4CC-C1 — stale optimistic candidate cannot be reserved after is_available flips to false', function() {
+  reset();
+  seedSlot({ slot_id: 'SLT_RACE', sort_key: '202609021000' });
+  const restore = raceFlipAfterSelection('SLT_RACE');
+  try {
+    const reservedUntil = new Date(new Date(state.nowIso).getTime() + 5 * 60000);
+    const r = sandbox.BookingService._reserveEarliestBookable('9647700000001', 'Patient X', reservedUntil);
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(r.error.code, 'NO_SLOT_AVAILABLE');
+  } finally {
+    restore();
+  }
+  const row = findSlotRow('SLT_RACE');
+  assert.strictEqual(row.status, 'FREE');          // closure freed nothing, reserved nothing
+  assert.strictEqual(row.is_available, 'FALSE');   // reconciliation outcome preserved
+  assert.strictEqual(row.phone, '');
+  assert.strictEqual(row.patient_name, '');
+});
+
+test('M4CC-C2 — reservation still succeeds when the fresh slot is FREE and available', function() {
+  reset();
+  seedSlot({ slot_id: 'SLT_OK', sort_key: '202609021000' });
+  const reservedUntil = new Date(new Date(state.nowIso).getTime() + 5 * 60000);
+  const r = sandbox.BookingService._reserveEarliestBookable('9647700000002', 'Patient Y', reservedUntil);
+  assert.strictEqual(r.ok, true, JSON.stringify(r.error));
+  assert.strictEqual(r.data.slot.slot_id, 'SLT_OK');
+  const row = findSlotRow('SLT_OK');
+  assert.strictEqual(row.status, 'RESERVED');
+  assert.strictEqual(row.phone, '9647700000002');
+});
+
+test('M4CC-C3 — SLOT_UNAVAILABLE is retried like a lost race: next candidate is reserved', function() {
+  reset();
+  seedSlot({ slot_id: 'SLT_FIRST', sort_key: '202609021000' });
+  seedSlot({ slot_id: 'SLT_SECOND', sort_key: '202609021030' });
+  const restore = raceFlipAfterSelection('SLT_FIRST');
+  try {
+    const reservedUntil = new Date(new Date(state.nowIso).getTime() + 5 * 60000);
+    const r = sandbox.BookingService._reserveEarliestBookable('9647700000003', 'Patient Z', reservedUntil);
+    assert.strictEqual(r.ok, true, JSON.stringify(r.error));
+    assert.strictEqual(r.data.slot.slot_id, 'SLT_SECOND');
+  } finally {
+    restore();
+  }
+  assert.strictEqual(findSlotRow('SLT_FIRST').status, 'FREE');
+  assert.strictEqual(findSlotRow('SLT_SECOND').status, 'RESERVED');
+});
+
+test('M4CC-C4 — ChangeService replacement reservation path has the same fresh guard', function() {
+  reset();
+  seedSlot({
+    slot_id: 'SLT_OLD',
+    sort_key: '202609021000',
+    status: 'RESERVED',
+    phone: '9647700000004',
+    patient_name: 'Patient W'
+  });
+  seedSlot({ slot_id: 'SLT_NEW', sort_key: '202609021030' });
+  const restore = raceFlipAfterSelection('SLT_NEW');
+  try {
+    const reservedUntil = new Date(new Date(state.nowIso).getTime() + 5 * 60000);
+    const r = sandbox.ChangeService._reserveAlternativeSlot(
+      '9647700000004', 'Patient W', reservedUntil, 'SLT_OLD'
+    );
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(r.error.code, 'NO_SLOT_AVAILABLE');
+  } finally {
+    restore();
+  }
+  // Old reservation untouched; stale candidate not reserved.
+  assert.strictEqual(findSlotRow('SLT_OLD').status, 'RESERVED');
+  assert.strictEqual(findSlotRow('SLT_NEW').status, 'FREE');
+  assert.strictEqual(findSlotRow('SLT_NEW').phone, '');
+});
+
+test('M4CC-C5 — schedule closure does not convert RESERVED/CONFIRMED to another lifecycle state', function() {
+  reset();
+  seedSlot({
+    slot_id: 'SLT_RSV',
+    sort_key: '202609021000',
+    status: 'RESERVED',
+    is_available: 'FALSE',
+    phone: '9647700000005'
+  });
+  seedSlot({
+    slot_id: 'SLT_CNF',
+    sort_key: '202609021030',
+    status: 'CONFIRMED',
+    is_available: 'FALSE',
+    phone: '9647700000006'
+  });
+  // A closure plus a booking attempt around them must leave both untouched.
+  const reservedUntil = new Date(new Date(state.nowIso).getTime() + 5 * 60000);
+  const r = sandbox.BookingService._reserveEarliestBookable('9647700000007', 'Patient V', reservedUntil);
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.error.code, 'NO_SLOT_AVAILABLE');
+  assert.strictEqual(findSlotRow('SLT_RSV').status, 'RESERVED');
+  assert.strictEqual(findSlotRow('SLT_CNF').status, 'CONFIRMED');
+});
+
+test('M4CC-C6 — per-slot atomicUpdate remains the only linearization point (no new lock kinds)', function() {
+  reset();
+  seedSlot({ slot_id: 'SLT_LOCK', sort_key: '202609021000' });
+  const reservedUntil = new Date(new Date(state.nowIso).getTime() + 5 * 60000);
+  sandbox.BookingService._reserveEarliestBookable('9647700000008', 'Patient U', reservedUntil);
+  const reservationLocks = state.lockKeys.filter(function(k) { return k.indexOf('slot:') === 0; });
+  assert.ok(reservationLocks.length >= 1, 'reservation must run under the per-slot lock');
+  state.lockKeys.forEach(function(k) {
+    assert.ok(
+      k.indexOf('slot:') === 0 || k.indexOf('schedule-intent:') === 0 || k === 'maintenance',
+      'unexpected new lock kind: ' + k
+    );
+  });
+});
+
+test('M4CC-C7 — structural: both reservation producers contain the fresh guard inside the decision function', function() {
+  const booking = stripComments(fs.readFileSync(path.join(ROOT, 'Application/BookingService.js'), 'utf8'));
+  const change = stripComments(fs.readFileSync(path.join(ROOT, 'Changeservice.js'), 'utf8'));
+  [booking, change].forEach(function(code) {
+    assert.ok(/isOperationallyAvailable\s*\(\s*freshSlot\.is_available\s*\)/.test(code),
+      'fresh is_available guard missing in a reservation producer');
+    assert.ok(/SLOT_UNAVAILABLE/.test(code));
+  });
+  // No parallel transaction primitives were introduced.
+  [booking, change].forEach(function(code) {
+    assert.strictEqual(/TransactionManager|globalLock|availabilityLock/i.test(code), false);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════
+// Section D — Reminder operational availability gate (§15)
+// ═════════════════════════════════════════════════════════════
+
+function seedReminderSlot(overrides) {
+  // now = 2026-09-01T06:00Z; reminder window = (now, now+240min]
+  return seedSlot(Object.assign({
+    slot_id: 'SLT_REM',
+    sort_key: '202609010800', // inside the window
+    status: 'CONFIRMED',
+    phone: '9647700000009',
+    patient_name: 'Patient R',
+    Reminder_sent: ''
+  }, overrides || {}));
+}
+
+test('M4CC-D1 — reminder is suppressed while is_available=false', function() {
+  reset();
+  seedReminderSlot({ is_available: 'FALSE' });
+  const r = sandbox.ReminderService.collectPendingReminders();
+  assert.strictEqual(r.ok, true, JSON.stringify(r.error));
+  assert.strictEqual(r.data.length, 0);
+});
+
+test('M4CC-D2 — reminder still sends for CONFIRMED + available + in window + not sent', function() {
+  reset();
+  seedReminderSlot({ is_available: 'TRUE' });
+  const r = sandbox.ReminderService.collectPendingReminders();
+  assert.strictEqual(r.ok, true, JSON.stringify(r.error));
+  assert.strictEqual(r.data.length, 1);
+  assert.strictEqual(r.data[0].slotId, 'SLT_REM');
+});
+
+test('M4CC-D3 — reopened slot inside the window with Reminder_sent=false sends normally (no new reminder state)', function() {
+  reset();
+  const slot = seedReminderSlot({ is_available: 'FALSE' });
+  assert.strictEqual(sandbox.ReminderService.collectPendingReminders().data.length, 0);
+  // Availability reconciliation reopens the slot; window still open.
+  slot.is_available = 'TRUE';
+  const r = sandbox.ReminderService.collectPendingReminders();
+  assert.strictEqual(r.data.length, 1);
+  // Existing idempotency unchanged: already-sent stays excluded.
+  slot.Reminder_sent = 'TRUE';
+  assert.strictEqual(sandbox.ReminderService.collectPendingReminders().data.length, 0);
+});
+
+test('M4CC-D4 — structural: no reminder subsystem was introduced', function() {
+  const code = stripComments(fs.readFileSync(path.join(ROOT, 'Reminderservice.js'), 'utf8'));
+  assert.ok(/isOperationallyAvailable\s*\(\s*row\.is_available\s*\)/.test(code));
+  assert.strictEqual(/ReminderRepository|reminder_state|REMINDER_QUEUE/i.test(code), false);
 });
 
 // ── Runner ──────────────────────────────────────────────────────
