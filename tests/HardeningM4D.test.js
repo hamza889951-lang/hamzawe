@@ -799,6 +799,112 @@ test('M4D-I4 — reconciliation marks slots correctly after TEMPORARY_CLOSE', fu
     state.sheets['Availability'].rows.find(s => s.slot_id === slot3.slot_id).is_available, true);
 });
 
+test('M4D-I5 — partial-day close: interval-level semantics with full generation', function() {
+  setupStandard();
+  
+  // Seed a full day of slots (09:00 to 13:30, 30-min intervals)
+  const slot0900 = seedSlot({ date: '2026/09/03', time: '09:00', sort_key: '202609030900', status: 'FREE', is_available: true });
+  const slot0930 = seedSlot({ date: '2026/09/03', time: '09:30', sort_key: '202609030930', status: 'FREE', is_available: true });
+  const slot1000 = seedSlot({ date: '2026/09/03', time: '10:00', sort_key: '202609031000', status: 'FREE', is_available: true });
+  const slot1030 = seedSlot({ date: '2026/09/03', time: '10:30', sort_key: '202609031030', status: 'FREE', is_available: true });
+  const slot1100 = seedSlot({ date: '2026/09/03', time: '11:00', sort_key: '202609031100', status: 'FREE', is_available: true });
+  const slot1130 = seedSlot({ date: '2026/09/03', time: '11:30', sort_key: '202609031130', status: 'FREE', is_available: true });
+  const slot1200 = seedSlot({ date: '2026/09/03', time: '12:00', sort_key: '202609031200', status: 'FREE', is_available: true });
+  const slot1230 = seedSlot({ date: '2026/09/03', time: '12:30', sort_key: '202609031230', status: 'FREE', is_available: true });
+  const slot1300 = seedSlot({ date: '2026/09/03', time: '13:00', sort_key: '202609031300', status: 'FREE', is_available: true });
+  const slot1330 = seedSlot({ date: '2026/09/03', time: '13:30', sort_key: '202609031330', status: 'FREE', is_available: true });
+  
+  const initialSlotCount = state.sheets['Availability'].rows.length;
+  
+  // Apply partial TEMPORARY_CLOSE from 10:00 to 12:00
+  CMD.commitTemporaryClose(controlContext(), {
+    commandId: 'cmd-partial-close',
+    asOf: '2026-09-01T00:00',
+    effectiveFrom: '2026-09-03T10:00',
+    effectiveTo: '2026-09-03T12:00'
+  });
+  
+  state.nowIso = '2026-09-01T06:00:00.000Z';
+  const r = HM.ensureHorizon(controlContext());
+  assert.strictEqual(r.ok, true, JSON.stringify(r.error));
+  
+  // CRITICAL: Day remains OPEN at day-level (partial close, not full-day close)
+  // Generation should NOT skip this day entirely
+  
+  // Verify: slots BEFORE close window (09:00, 09:30) remain is_available=true
+  assert.strictEqual(
+    state.sheets['Availability'].rows.find(s => s.slot_id === slot0900.slot_id).is_available,
+    true,
+    'Slot 09:00 (before close) should remain available'
+  );
+  assert.strictEqual(
+    state.sheets['Availability'].rows.find(s => s.slot_id === slot0930.slot_id).is_available,
+    true,
+    'Slot 09:30 (before close) should remain available'
+  );
+  
+  // Verify: slots WITHIN close window (10:00, 10:30, 11:00, 11:30) become is_available=false
+  assert.strictEqual(
+    state.sheets['Availability'].rows.find(s => s.slot_id === slot1000.slot_id).is_available,
+    false,
+    'Slot 10:00 (within close) should be unavailable'
+  );
+  assert.strictEqual(
+    state.sheets['Availability'].rows.find(s => s.slot_id === slot1030.slot_id).is_available,
+    false,
+    'Slot 10:30 (within close) should be unavailable'
+  );
+  assert.strictEqual(
+    state.sheets['Availability'].rows.find(s => s.slot_id === slot1100.slot_id).is_available,
+    false,
+    'Slot 11:00 (within close) should be unavailable'
+  );
+  assert.strictEqual(
+    state.sheets['Availability'].rows.find(s => s.slot_id === slot1130.slot_id).is_available,
+    false,
+    'Slot 11:30 (within close) should be unavailable'
+  );
+  
+  // Verify: slots AFTER close window (12:00, 12:30, 13:00, 13:30) remain is_available=true
+  assert.strictEqual(
+    state.sheets['Availability'].rows.find(s => s.slot_id === slot1200.slot_id).is_available,
+    true,
+    'Slot 12:00 (after close) should remain available'
+  );
+  assert.strictEqual(
+    state.sheets['Availability'].rows.find(s => s.slot_id === slot1230.slot_id).is_available,
+    true,
+    'Slot 12:30 (after close) should remain available'
+  );
+  assert.strictEqual(
+    state.sheets['Availability'].rows.find(s => s.slot_id === slot1300.slot_id).is_available,
+    true,
+    'Slot 13:00 (after close) should remain available'
+  );
+  assert.strictEqual(
+    state.sheets['Availability'].rows.find(s => s.slot_id === slot1330.slot_id).is_available,
+    true,
+    'Slot 13:30 (after close) should remain available'
+  );
+  
+  // Verify: no duplicate slots were created (deduplication working)
+  const sept3Slots = state.sheets['Availability'].rows.filter(s => s.date === '2026/09/03');
+  assert.strictEqual(
+    sept3Slots.length,
+    10,
+    'Should have exactly 10 slots for the day (no duplicates from generation)'
+  );
+  
+  // Verify: [slotStart, slotStart+duration) containment enforced
+  // Slot at 11:30 (11:30-12:00) should be unavailable because it overlaps with close window
+  // This confirms interval semantics, not just start-time comparison
+  assert.strictEqual(
+    state.sheets['Availability'].rows.find(s => s.slot_id === slot1130.slot_id).is_available,
+    false,
+    'Slot [11:30, 12:00) overlaps with close window, should be unavailable'
+  );
+});
+
 // ══════════════════════════════════════════════════════════
 // J — Layering
 // ══════════════════════════════════════════════════════════
