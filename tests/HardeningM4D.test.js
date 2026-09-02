@@ -1338,25 +1338,28 @@ test('M4D-PREV-4 — preview: valid config succeeds and uses calculateGeneration
   assert.strictEqual(typeof result.data.workingDays, 'number', 'Should have workingDays count');
 });
 
-test('M4D-PREV-5 — preview fails when Availability query fails', function() {
+test('M4D-PREV-5 — preview fails when Availability source fails', function() {
   setupStandard();
-  state.nowIso = '2026-09-01T06:00:00.000Z';
+  // Simulate real source-level failure at GoogleSheets layer
+  state.failRead['Availability'] = true;
   
-  // Mock SlotRepository.queryResult to return failure
-  const originalQueryResult = sandbox.SlotRepository.queryResult;
-  sandbox.SlotRepository.queryResult = function() {
-    return { ok: false, error: { code: 'INJECTED_QUERY_FAILURE', message: 'Simulated query failure' } };
-  };
+  const r = HM.preview(controlContext());
   
-  try {
-    const r = HM.preview(controlContext());
-    assert.strictEqual(r.ok, false, 'preview should fail when Availability query fails');
-    assert.strictEqual(r.error.code, 'AVAILABILITY_QUERY_FAILED',
-      'Error code should be AVAILABILITY_QUERY_FAILED');
-  } finally {
-    // Restore original queryResult
-    sandbox.SlotRepository.queryResult = originalQueryResult;
-  }
+  assert.strictEqual(r.ok, false, 'preview should fail when Availability source fails');
+  assert.strictEqual(r.error.code, 'AVAILABILITY_QUERY_FAILED',
+    'Error code should be AVAILABILITY_QUERY_FAILED');
+});
+
+test('M4D-E6 — ensureHorizon fails closed when Availability source fails', function() {
+  setupStandard();
+  // Simulate real source-level failure at GoogleSheets layer
+  state.failRead['Availability'] = true;
+  
+  const r = HM.ensureHorizon(controlContext());
+  
+  assert.strictEqual(r.ok, false, 'ensureHorizon should fail when Availability source fails');
+  assert.strictEqual(r.error.code, 'AVAILABILITY_QUERY_FAILED',
+    'Error code should be AVAILABILITY_QUERY_FAILED');
 });
 
 // ── Run ──
