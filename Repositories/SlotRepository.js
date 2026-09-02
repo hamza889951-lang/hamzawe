@@ -73,6 +73,11 @@ const SlotRepository = {
       var decision = decisionFn(slot);
       if (!decision.ok) return decision;
 
+      // Skip update if decision.data is empty (no fields to update)
+      if (!decision.data || Object.keys(decision.data).length === 0) {
+        return Result.ok({ slotId: slotId });
+      }
+
       var updated = GoogleSheets.updateRowByColumn(
         Config.VOCABULARY.SHEETS.AVAILABILITY, 'slot_id', slotId, decision.data
       );
