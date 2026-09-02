@@ -452,7 +452,7 @@ const EffectiveScheduleService = {
     );
     if (!listResult.ok) return listResult;
 
-    return this._evaluateSlotFromSources(
+    return this.evaluateSlotFromSources(
       scopeResult.data,
       atResult.data,
       baselineResult.data,
@@ -464,7 +464,7 @@ const EffectiveScheduleService = {
   /**
    * M4-D — Pure slot evaluation from already-loaded sources (no I/O).
    */
-  _evaluateSlotFromSources: function(scope, at, baseline, records, slotDurationMinutes) {
+  evaluateSlotFromSources: function(scope, at, baseline, records, slotDurationMinutes) {
     var slotStartMin = at.minutes;
     var slotEndStamp = this._addMinutesToStamp(at, slotDurationMinutes);
 

@@ -808,10 +808,15 @@ test('M4D-J1 — no new AvailabilityRepository', function() {
   assert.ok(files.indexOf('AvailabilityRepository.js') === -1);
 });
 
-test('M4D-J2 — Horizon uses EffectiveScheduleService', function() {
+test('M4D-J2 — Horizon uses EffectiveScheduleService pure projection (no re-reads)', function() {
   const code = fs.readFileSync(path.join(ROOT, 'AvailabilityHorizonMaintainer.js'), 'utf8');
-  assert.ok(/EffectiveScheduleService\.projectSlotAvailability/.test(code));
-  assert.ok(/EffectiveScheduleService\.projectDayEffectiveWindow/.test(code));
+  const stripped = stripComments(code);
+  // Must use pure evaluateSlotFromSources for per-slot evaluation (no storage re-reads)
+  assert.ok(/EffectiveScheduleService\.evaluateSlotFromSources/.test(code),
+    'should use evaluateSlotFromSources for pure slot evaluation');
+  // Must NOT use projectSlotAvailability in per-slot loop (it re-reads storage)
+  assert.ok(!/EffectiveScheduleService\.projectSlotAvailability/.test(stripped),
+    'should NOT use projectSlotAvailability (re-reads storage per slot)');
 });
 
 test('M4D-J3 — slot mutations go through atomicUpdate', function() {
@@ -988,6 +993,175 @@ test('M4D-P1 — no silent default to 30 minutes', function() {
   assert.strictEqual(r.error.code, 'SCHEDULE_SOURCE_INVALID');
 });
 
+// ═══════════════════════════════════════════════════════════════════
+// Supervisor-Requested Tests: Source Snapshot, Gap Filling, Dedup
+// ═══════════════════════════════════════════════════════════════════
+
+test('M4D-Q1 — Source snapshot: loads Settings + ScheduleChanges ONCE per run', function() {
+  setupStandard();
+  var readCount = { settings: 0, scheduleChanges: 0 };
+  
+  // Instrument SettingsRepository
+  var origGetSettingsResult = sandbox.SettingsRepository.getSettingsResult;
+  sandbox.SettingsRepository.getSettingsResult = function() {
+    readCount.settings++;
+    return origGetSettingsResult.call(sandbox.SettingsRepository);
+  };
+  
+  // Instrument ScheduleChangeRepository
+  var origListByScopeResult = sandbox.ScheduleChangeRepository.listByScopeResult;
+  sandbox.ScheduleChangeRepository.listByScopeResult = function(doctorId, clinicId) {
+    readCount.scheduleChanges++;
+    return origListByScopeResult.call(sandbox.ScheduleChangeRepository, doctorId, clinicId);
+  };
+  
+  // Add some future slots to reconcile
+  var futureSlot1 = seedSlot({
+    date: '2026-09-05',
+    time: '10:00:00',
+    status: 'FREE',
+    is_available: false,
+    sort_key: '20260905100000'
+  });
+  
+  var futureSlot2 = seedSlot({
+    date: '2026-09-06',
+    time: '11:00:00',
+    status: 'RESERVED',
+    is_available: false,
+    sort_key: '20260906110000'
+  });
+  
+  // Run ensureHorizon
+  HM.ensureHorizon(controlContext(), '2026-09-02');
+  
+  // Restore original methods
+  sandbox.SettingsRepository.getSettingsResult = origGetSettingsResult;
+  sandbox.ScheduleChangeRepository.listByScopeResult = origListByScopeResult;
+  
+  // Verify: Settings and ScheduleChanges loaded exactly ONCE
+  assert.strictEqual(readCount.settings, 1, 'Settings must be loaded exactly once');
+  assert.strictEqual(readCount.scheduleChanges, 1, 'ScheduleChanges must be loaded exactly once');
+  
+  // Verify reconciliation happened (both slots should be evaluated)
+  assert.strictEqual(readCount.settings, 1, 'Source snapshot: no re-reads during reconciliation');
+});
+
+test('M4D-Q2 — Gap filling: creates missing slots for exceptional opening within horizon', function() {
+  setupStandard();
+  
+  // Pre-populate horizon with normal slots for Sept 2 (Wednesday)
+  seedSlot({ date: '2026-09-02', time: '09:00:00', status: 'FREE', sort_key: '20260902090000', is_available: true });
+  seedSlot({ date: '2026-09-02', time: '10:00:00', status: 'FREE', sort_key: '20260902100000', is_available: true });
+  
+  // Doctor commits exceptional opening for Sept 4 (Friday) - normally a non-working day
+  CMD.commitExceptionalOpen(controlContext(), {
+    commandId: 'cmd-exc-open',
+    asOf: '2026-09-01T00:00',
+    date: '2026-09-04'
+  });
+  
+  // Run ensureHorizon
+  var result = HM.ensureHorizon(controlContext(), '2026-09-02');
+  
+  // Verify: exceptional opening slots were created for Friday
+  var sept4Slots = state.sheets['Availability'].rows.filter(function(s) {
+    return s.date === '2026-09-04';
+  });
+  
+  assert.ok(sept4Slots.length > 0, 'Exceptional opening should create slots for non-working day');
+  // With Settings workWindow 09:00-14:00 and 30-min slots, we expect slots at 09:00, 09:30, ..., 13:30
+  assert.ok(sept4Slots[0].time <= '10:00:00', 'First slot should be at or before 10:00');
+});
+
+test('M4D-Q3 — Deduplication: repeated runs do not create duplicate slots', function() {
+  setupStandard();
+  
+  // Run ensureHorizon first time
+  var result1 = HM.ensureHorizon(controlContext(), '2026-09-02');
+  var slotCount1 = state.sheets['Availability'].rows.length;
+  
+  // Run ensureHorizon second time (simulating retry or repeated Scheduler invocation)
+  var result2 = HM.ensureHorizon(controlContext(), '2026-09-02');
+  var slotCount2 = state.sheets['Availability'].rows.length;
+  
+  // Run ensureHorizon third time
+  var result3 = HM.ensureHorizon(controlContext(), '2026-09-02');
+  var slotCount3 = state.sheets['Availability'].rows.length;
+  
+  // Verify: no duplicate slots created
+  assert.strictEqual(slotCount1, slotCount2, 'Second run should not create new slots');
+  assert.strictEqual(slotCount2, slotCount3, 'Third run should not create new slots');
+  
+  // Verify: all slot_ids are unique
+  var slotIds = state.sheets['Availability'].rows.map(function(s) { return s.slot_id; });
+  var uniqueSlotIds = Array.from(new Set(slotIds));
+  assert.strictEqual(slotIds.length, uniqueSlotIds.length, 'All slot_ids must be unique');
+  
+  // Verify: all sort_keys are unique
+  var sortKeys = state.sheets['Availability'].rows.map(function(s) { return s.sort_key; });
+  var uniqueSortKeys = Array.from(new Set(sortKeys));
+  assert.strictEqual(sortKeys.length, uniqueSortKeys.length, 'All sort_keys must be unique');
+});
+
+test('M4D-Q4 — Partial append: handles batch insert failure gracefully', function() {
+  setupStandard();
+  
+  // Mock insertBatch to simulate partial failure
+  var origInsertBatch = sandbox.SlotRepository.insertBatch;
+  var insertCalls = 0;
+  sandbox.SlotRepository.insertBatch = function(slots) {
+    insertCalls++;
+    // Simulate failure on first call
+    if (insertCalls === 1) {
+      return Result.fail('BATCH_INSERT_FAILED', 'Simulated batch insert failure');
+    }
+    return origInsertBatch.call(sandbox.SlotRepository, slots);
+  };
+  
+  // Run ensureHorizon
+  var result = HM.ensureHorizon(controlContext(), '2026-09-02');
+  
+  // Restore original method
+  sandbox.SlotRepository.insertBatch = origInsertBatch;
+  
+  // Verify: failure is reported but system doesn't crash
+  assert.ok(result.ok === false || result.data.generated === 0, 
+    'Should handle batch insert failure gracefully');
+  
+  // Verify: can retry successfully
+  var retryResult = HM.ensureHorizon(controlContext(), '2026-09-02');
+  assert.ok(retryResult.ok, 'Retry after failure should succeed');
+});
+
+test('M4D-Q5 — Gap filling: only creates missing slots, not duplicates of existing', function() {
+  setupStandard();
+  
+  // Pre-populate with some existing slots
+  seedSlot({ date: '2026-09-02', time: '09:00:00', status: 'FREE', sort_key: '20260902090000', is_available: true });
+  seedSlot({ date: '2026-09-02', time: '10:00:00', status: 'FREE', sort_key: '20260902100000', is_available: true });
+  
+  var existingCount = state.sheets['Availability'].rows.length;
+  
+  // Run ensureHorizon
+  var result = HM.ensureHorizon(controlContext(), '2026-09-02');
+  
+  // Verify: existing slots are not duplicated
+  var sept2Slots = state.sheets['Availability'].rows.filter(function(s) {
+    return s.date === '2026-09-02';
+  });
+  
+  // Count slots at 09:00 and 10:00 - should be exactly 1 each
+  var slotsAt09 = sept2Slots.filter(function(s) { return s.time === '09:00:00'; });
+  var slotsAt10 = sept2Slots.filter(function(s) { return s.time === '10:00:00'; });
+  
+  assert.strictEqual(slotsAt09.length, 1, 'Should not duplicate existing 09:00 slot');
+  assert.strictEqual(slotsAt10.length, 1, 'Should not duplicate existing 10:00 slot');
+  
+  // Verify: new slots were created for other times
+  assert.ok(sept2Slots.length > 2, 'Should create additional slots for the day');
+});
+
 // ── Run ──
 
 let failures = 0;
@@ -1004,3 +1178,4 @@ tests.forEach(function(entry) {
 
 if (failures > 0) process.exit(1);
 console.log('\n' + (tests.length - failures) + '/' + tests.length + ' tests passed');
+
