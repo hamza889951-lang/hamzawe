@@ -25,6 +25,14 @@
  * - impact = عدد الحجوزات المتأثرة فقط (لا أسماء مرضى ولا قائمة باصات).
  * - Commit فقط بعد تأكيد صريح، بنفس commandId المولّد عند الـpreview
  *   (duplicate confirm → IDEMPOTENT_REPLAY، لا سجل مكرر).
+ * - Preview هو INFORMATIONAL preview (وليس commit-authoritative snapshot):
+ *   لا يُمرَّر ناتج الـpreview إلى الـcommit إطلاقًا. عند التأكيد يُعاد بناء
+ *   الأمر الدلالي من الـdraft بـasOf جديد من Clock.now()، ثم يعيد
+ *   DoctorScheduleCommandService كامل الـvalidation/projection/conflict
+ *   detection ضد الحالة الحالية داخل قفل الـscope. إذا تغيرت البيانات بين
+ *   الـpreview والتأكيد فالـcommit يفشل بصدق (مثل SCHEDULE_INTENT_CONFLICT)
+ *   ولا يُنفَّذ بناءً على preview قديم. impact count معلوماتي فقط وليس
+ *   شرط commit.
  * - جلسة الطبيب في Conversations عبر bounded schema صريح
  *   (ConversationRepository.DOCTOR_SESSION_FIELDS) — fail-closed عند
  *   غياب الأعمدة.
@@ -215,7 +223,7 @@ const DoctorControlInteractionService = {
       doctor_draft_kind: 'RECURRING',
       doctor_draft_days: days.data.join(','),
       doctor_draft_window: window.data.start + '-' + window.data.end,
-      doctor_draft_from: parts[2],
+      doctor_draft_effective_from: parts[2],
       doctor_draft_command_id: IdGenerator.generateScheduleCommandId()
     };
     return this._previewAndAsk(controlContext, phone, draft);
@@ -248,8 +256,8 @@ const DoctorControlInteractionService = {
     }
     var draft = {
       doctor_draft_kind: 'TEMPORARY_CLOSE',
-      doctor_draft_from: from,
-      doctor_draft_to: to,
+      doctor_draft_effective_from: from,
+      doctor_draft_effective_to: to,
       doctor_draft_command_id: IdGenerator.generateScheduleCommandId()
     };
     return this._previewAndAsk(controlContext, phone, draft);
@@ -261,7 +269,7 @@ const DoctorControlInteractionService = {
     }
     var draft = {
       doctor_draft_kind: 'TEMPORARY_OPEN',
-      doctor_draft_from: text,
+      doctor_draft_effective_from: text,
       doctor_draft_command_id: IdGenerator.generateScheduleCommandId()
     };
     return this._previewAndAsk(controlContext, phone, draft);
@@ -435,7 +443,7 @@ const DoctorControlInteractionService = {
       return Result.ok({
         commandId: commandId,
         asOf: asOf,
-        effectiveDate: draft.doctor_draft_from,
+        effectiveDate: draft.doctor_draft_effective_from,
         schedule: {
           days: days,
           workWindow: { start: windowParts[0], end: windowParts[1] }
@@ -446,15 +454,15 @@ const DoctorControlInteractionService = {
       return Result.ok({
         commandId: commandId,
         asOf: asOf,
-        effectiveFrom: draft.doctor_draft_from,
-        effectiveTo: draft.doctor_draft_to
+        effectiveFrom: draft.doctor_draft_effective_from,
+        effectiveTo: draft.doctor_draft_effective_to
       });
     }
     if (kind === 'TEMPORARY_OPEN') {
       return Result.ok({
         commandId: commandId,
         asOf: asOf,
-        date: draft.doctor_draft_from
+        date: draft.doctor_draft_effective_from
       });
     }
     if (kind === 'CANCEL_CHANGE') {

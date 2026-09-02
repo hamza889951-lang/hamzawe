@@ -105,19 +105,48 @@ Flow (WhatsApp text, numbers = presentation only, no buttons):
    immediately to the semantic `changeId` stored in the draft; commit appends
    a CANCEL record; the target record is untouched.
 
+#### Preview → Confirm temporal semantics (PR #20 review decision)
+
+**Preview is an INFORMATIONAL preview, not a commit-authoritative snapshot.**
+There is no persistent preview snapshot and no snapshot subsystem.
+
+Mechanics (verified in code, enforced by tests M4CC-E15/E16):
+
+- The preview result object is **never passed into the commit path**. The only
+  state carried from Preview to Confirm is the bounded draft (the semantic
+  command inputs + the preview-time `commandId` for idempotency).
+- On Confirm, the semantic command is rebuilt from the draft with a **fresh
+  `asOf` from `Clock.now()`**, and `DoctorScheduleCommandService.commit*`
+  re-runs the **full** validation / baseline read / record listing /
+  projection / conflict detection **against current state inside the
+  per-scope lock** (`runExclusiveForScope`).
+- If data changed between Preview and Confirm, the commit fails honestly
+  (e.g. `SCHEDULE_INTENT_CONFLICT` for a newly overlapping override) — it is
+  never executed on the basis of a stale preview (M4CC-E15).
+- The affected-booking count is informational only: it is not a commit
+  precondition and the commit neither re-checks nor acts on it — bookings are
+  never auto-cancelled regardless of the count (M4CC-E16).
+- No new locking and no Availability mutation were added for this.
+
 Session state (owner condition #1 — bounded schema, no JSON blob):
 `ConversationRepository` gained doctor-session operations on the existing
 Conversations sheet — `DOCTOR_SESSION_FIELDS` = 7 clear-purpose columns
-(`doctor_draft_kind`, `doctor_draft_command_id`, `doctor_draft_days`,
+(**canonical names, PR #20 review decision — single naming everywhere**):
+`doctor_draft_kind`, `doctor_draft_command_id`, `doctor_draft_days`,
 `doctor_draft_window`, `doctor_draft_effective_from`,
-`doctor_draft_effective_to`, `doctor_draft_target_change_id`) plus the three
+`doctor_draft_effective_to`, `doctor_draft_target_change_id` — plus the three
 additive `Config` conversation states `DOCTOR_MENU` / `DOCTOR_AWAITING_INPUT`
 / `DOCTOR_AWAITING_CONFIRMATION` on the existing `state` column. Unknown draft
 keys are rejected (`INVALID_DOCTOR_SESSION_FIELD`); every write sets **all**
 draft fields (unspecified → `''`) so no stale residue survives a state change.
 Missing doctor columns fail closed with `DOCTOR_CONTROL_SCHEMA_MISSING`
 (because `Infrastructure/GoogleSheets.js` silently drops unknown columns, a
-schema check is mandatory — see §4 deployment).
+schema check is mandatory — see §4 deployment). The single source of truth
+for the column list is `ConversationRepository.DOCTOR_SESSION_FIELDS`; test
+**M4CC-E14** enforces that this document, `PROJECT_CONTEXT.md`, and the test
+fixtures all list exactly those names — no alternative schema is accepted,
+silently or otherwise (M4CC-E10 all-columns-missing, M4CC-E17 single column
+missing mid-flow: fail closed before any command execution or partial write).
 
 Router (owner condition #2): `Core/Router.js` only hands
 `controlContext + raw message` to the interaction service after the frozen
@@ -186,13 +215,16 @@ Scope key stays `(doctorId, clinicId)` with `clinicId = null` in v1.
 
 ## 3. Tests & regression
 
-- `tests/HardeningM4CC.test.js`: 41/41 — sections A (duration authority),
+- `tests/HardeningM4CC.test.js`: 45/45 — sections A (duration authority),
   B (boundaries/representability), C (reservation guard + lock whitelist),
   D (reminder gate, structural), E (interaction: menu, read-only preview with
   count-only impact, confirm/discard, idempotent replay, unrepresentable
   input, exceptional open, cancel flow, fail-closed schema, invalid context,
   structural routing-only / provider-neutrality / frozen-entry scans,
-  half-open full-day close verified through projection).
+  half-open full-day close verified through projection; PR #20 revision:
+  E14 schema↔documentation exact-match, E15 stale-preview confirm re-validation,
+  E16 informational count / lifecycle boundary, E17 single-column mid-flow
+  fail-closed).
 - `tests/HardeningM4C.test.js`: 37/37. `tests/HardeningM4A.test.js`: 29/29
   (frozen entry unaffected). `tests/HardeningB6.test.js`: 34/34.
 - `node --check` clean on all changed files.
@@ -209,7 +241,9 @@ assert exact `asOf` values.
 
 ## 4. Deployment preconditions (manual, owner)
 
-1. **Conversations sheet**: add the 7 columns
+1. **Conversations sheet**: add the 7 columns (exact names — these are the
+   canonical `ConversationRepository.DOCTOR_SESSION_FIELDS`, enforced against
+   this document by test M4CC-E14):
    `doctor_draft_kind`, `doctor_draft_command_id`, `doctor_draft_days`,
    `doctor_draft_window`, `doctor_draft_effective_from`,
    `doctor_draft_effective_to`, `doctor_draft_target_change_id`
@@ -248,3 +282,61 @@ assert exact `asOf` values.
 Out of scope, unchanged, and NOT implemented (per contract): availability
 materialization (M4-D), automatic cancel/reschedule, patient disruption /
 replacement flows, calendar mutations, pricing, analytics, multi-clinic.
+
+---
+
+## 6. PR #20 revision (Supervisor REQUEST CHANGES) — 2026-09-02
+
+### 6.1 Issues addressed
+
+1. **Deployment schema mismatch** — the code previously used shortened
+   column names for the interval fields (`…_draft_from` / `…_draft_to`)
+   while this document specified
+   `doctor_draft_effective_from` / `doctor_draft_effective_to`. Resolved by
+   renaming the **code** to the supervisor-preferred canonical names (more
+   precise semantics). One naming now exists across
+   `ConversationRepository.DOCTOR_SESSION_FIELDS` (single source of truth),
+   `DoctorControlInteractionService`, tests, this document, and
+   `PROJECT_CONTEXT.md`. No data migration (feature not yet deployed; no
+   historical data uses the old names). No alternative schema is accepted
+   silently; fail-closed behavior unchanged. Test **M4CC-E14** proves the
+   documented deployment schema equals the code schema exactly.
+2. **Preview → Confirm temporal semantics** — decision recorded above
+   (§1.5 "Preview → Confirm temporal semantics"): informational preview;
+   Confirm rebuilds the command with fresh `asOf` and the command service
+   re-validates against current state inside the per-scope lock. No code
+   change was required — the implementation already behaved this way;
+   regression tests **M4CC-E15** (stale preview → honest
+   `SCHEDULE_INTENT_CONFLICT`, no commit) and **M4CC-E16** (count is
+   informational, commit never gates on it, bookings untouched) now pin it.
+3. **Draft schema robustness** — **M4CC-E17** added: a single missing doctor
+   column mid-flow (at confirmation) fails closed with
+   `DOCTOR_CONTROL_SCHEMA_MISSING` before any command execution, with zero
+   partial writes (session row byte-identical).
+
+### 6.2 DoctorControlInteractionService boundary audit (item 3)
+
+Audited against the "second Schedule Engine" checklist — findings:
+
+| Concern | Finding |
+|---|---|
+| Recurring schedule semantics | NOT duplicated — day/window/effective-boundary validation and record building live only in `DoctorScheduleCommandService._buildRecurring`; the interaction layer does input-format parsing only (digits→day keys, `HH:mm-HH:mm` split) |
+| Temporal projection | NOT duplicated — impact count calls `EffectiveScheduleService.projectFromSources` / `parseLocalDateTime` / `compareStamps`; no local projection math |
+| Cancellation semantics | NOT duplicated — commit delegates to `DoctorScheduleCommandService.cancelChange`; the cancellable list reuses `ScheduleChangeRepository.listByScopeResult` + `EffectiveScheduleService._activeRecords` |
+| Settings parsing | NOT duplicated — schedule rendering reads via `DoctorScheduleReadService.readCurrentEffectiveSchedule`; exceptional-open window is resolved inside the command service |
+| Booking policy / SlotSelection | NOT duplicated — impact count is a read-only `SlotRepository.queryResult` over RESERVED/CONFIRMED; no selection, reservation, or retry logic |
+| Infrastructure access | none (structural test M4CC-E12) |
+
+Remaining coupling: the `EffectiveScheduleService._activeRecords` private
+cross-call — genuine reuse (not duplication); promoting it to a public API is
+a refactor beyond PR #20 scope → stays recorded as **P2** in §5. No new
+abstraction was created in this revision.
+
+### 6.3 Frozen decisions — confirmed unchanged in this revision
+
+Settings duration authority; recurring `T00:00` Asia/Baghdad boundary;
+Settings-window exceptional open; `[start,end)` overrides; read-only
+count-only preview; `FREE && is_available` atomic reservation guard;
+reminder `is_available` gate; appointment/slot lifecycle, cancellation
+semantics, RESERVED expiration; no new engine/truth/lock/provider logic.
+The frozen contract file was **not** modified; no contract amendment needed.

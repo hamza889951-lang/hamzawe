@@ -97,8 +97,8 @@ const ConversationRepository = {
     'doctor_draft_kind',             // RECURRING | TEMPORARY_CLOSE | TEMPORARY_OPEN | CANCEL_CHANGE
     'doctor_draft_days',             // CSV of semantic day keys (recurring only)
     'doctor_draft_window',           // 'HH:mm-HH:mm' (recurring only)
-    'doctor_draft_from',             // 'YYYY-MM-DD' or 'YYYY-MM-DDTHH:mm'
-    'doctor_draft_to',               // 'YYYY-MM-DDTHH:mm' (temporary close only)
+    'doctor_draft_effective_from',   // 'YYYY-MM-DD' or 'YYYY-MM-DDTHH:mm'
+    'doctor_draft_effective_to',     // 'YYYY-MM-DDTHH:mm' (temporary close only)
     'doctor_draft_target_change_id', // cancel only
     'doctor_draft_command_id'        // idempotency identity for preview→commit
   ],

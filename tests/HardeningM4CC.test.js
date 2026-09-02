@@ -278,7 +278,7 @@ function seedSlot(overrides) {
 const CONVERSATIONS_HEADERS = [
   'conversation_id', 'phone', 'state', 'temp_name', 'slot_id', 'updated_at',
   'doctor_draft_kind', 'doctor_draft_days', 'doctor_draft_window',
-  'doctor_draft_from', 'doctor_draft_to', 'doctor_draft_target_change_id',
+  'doctor_draft_effective_from', 'doctor_draft_effective_to', 'doctor_draft_target_change_id',
   'doctor_draft_command_id'
 ];
 
@@ -1082,6 +1082,117 @@ test('M4CC-E13 — full-day close via interaction commits an exact half-open [00
   assert.strictEqual(inside.data.interval.intent, 'CLOSED');
   const after = EFF.projectAt(controlContext(), '2026-09-17T09:30');
   assert.strictEqual(after.data.interval.intent, 'WORKING');
+});
+
+test('M4CC-E14 — canonical doctor-session schema: code and deployment documentation list the exact same columns', function() {
+  const fields = Array.from(sandbox.ConversationRepository.DOCTOR_SESSION_FIELDS).sort();
+  assert.strictEqual(fields.length, 7);
+  // Every doctor_draft_* name mentioned in deployment/status docs must be a
+  // real schema field, and every schema field must appear in the deployment doc.
+  [
+    'docs/M4/M4C_CONTINUATION_IMPLEMENTATION_NOTES_v1.md',
+    'PROJECT_CONTEXT.md'
+  ].forEach(function(docPath) {
+    const doc = fs.readFileSync(path.join(ROOT, docPath), 'utf8');
+    const mentioned = {};
+    (doc.match(/doctor_draft_[a-z_]+/g) || []).forEach(function(name) {
+      mentioned[name.replace(/_+$/, '')] = true;
+    });
+    const docNames = Object.keys(mentioned).sort();
+    assert.deepStrictEqual(
+      docNames, fields,
+      docPath + ' column names must match ConversationRepository.DOCTOR_SESSION_FIELDS exactly'
+    );
+  });
+  // No test may seed a schema the code does not declare.
+  const seeded = CONVERSATIONS_HEADERS.filter(function(h) {
+    return h.indexOf('doctor_draft_') === 0;
+  }).sort();
+  assert.deepStrictEqual(seeded, fields);
+});
+
+test('M4CC-E15 — preview is informational: confirm re-validates current state and refuses a stale-preview commit', function() {
+  reset();
+  DCI.handle(controlContext(), 'start');
+  DCI.handle(controlContext(), '3');
+  const preview = DCI.handle(controlContext(), '2026-09-20 10:00 | 2026-09-20 12:00');
+  assert.strictEqual(preview.ok, true, JSON.stringify(preview.error));
+  assert.strictEqual(doctorRow().state, 'DOCTOR_AWAITING_CONFIRMATION');
+  const draftCommandId = doctorRow().doctor_draft_command_id;
+
+  // State changes between Preview and Confirm: an overlapping temporary
+  // override is committed through the normal command path.
+  const interfering = CMD.commitTemporaryClose(controlContext(), {
+    commandId: 'cmd-e15-interfering',
+    asOf: '2026-09-01T08:00',
+    effectiveFrom: '2026-09-20T11:00',
+    effectiveTo: '2026-09-20T13:00'
+  });
+  assert.strictEqual(interfering.ok, true, JSON.stringify(interfering.error));
+  assert.strictEqual(state.sheets['ScheduleChanges'].rows.length, 1);
+
+  // Confirm must NOT execute based on the stale preview: the commit path
+  // re-runs projection/validation against current records and fails honestly.
+  const confirm = DCI.handle(controlContext(), '1');
+  assert.strictEqual(confirm.ok, true); // interaction reply is ok; the operation failed
+  assert.ok(confirm.data.reply.indexOf('فشل التنفيذ') !== -1);
+  assert.ok(confirm.data.reply.indexOf('SCHEDULE_INTENT_CONFLICT') !== -1);
+  // Only the interfering record exists; nothing was committed for the draft.
+  assert.strictEqual(state.sheets['ScheduleChanges'].rows.length, 1);
+  assert.strictEqual(state.sheets['ScheduleChanges'].rows[0].commandId, 'cmd-e15-interfering');
+  const draftCommitted = state.sheets['ScheduleChanges'].rows.some(function(r) {
+    return r.commandId === draftCommandId;
+  });
+  assert.strictEqual(draftCommitted, false);
+  assert.strictEqual(doctorRow().state, 'DOCTOR_MENU');
+});
+
+test('M4CC-E16 — affected-booking count is informational only: commit never gates on it and never touches bookings', function() {
+  reset();
+  DCI.handle(controlContext(), 'start');
+  DCI.handle(controlContext(), '3');
+  const preview = DCI.handle(controlContext(), '2026-09-16');
+  assert.strictEqual(preview.ok, true, JSON.stringify(preview.error));
+  assert.ok(preview.data.reply.indexOf('الحجوزات المتأثرة حاليًا: 0') !== -1);
+
+  // A booking lands inside the interval AFTER the preview was rendered.
+  seedSlot({
+    slot_id: 'SLT_E16',
+    sort_key: '202609161000',
+    status: 'CONFIRMED',
+    phone: '9647733333333'
+  });
+
+  const confirm = DCI.handle(controlContext(), '1');
+  assert.strictEqual(confirm.ok, true, JSON.stringify(confirm.error));
+  assert.ok(confirm.data.reply.indexOf('تم تنفيذ التغيير') !== -1);
+  assert.strictEqual(state.sheets['ScheduleChanges'].rows.length, 1);
+  // Lifecycle boundary: closure never auto-cancels; the booking is untouched.
+  assert.strictEqual(findSlotRow('SLT_E16').status, 'CONFIRMED');
+  assert.strictEqual(findSlotRow('SLT_E16').is_available, 'TRUE');
+  assert.strictEqual(state.calendar, 0);
+});
+
+test('M4CC-E17 — a single missing doctor column mid-flow fails closed before any command execution or partial write', function() {
+  reset();
+  DCI.handle(controlContext(), 'start');
+  DCI.handle(controlContext(), '3');
+  DCI.handle(controlContext(), '2026-09-16');
+  assert.strictEqual(doctorRow().state, 'DOCTOR_AWAITING_CONFIRMATION');
+  const rowBefore = jsonClone(doctorRow());
+
+  // Deployment drift: exactly one required column disappears.
+  state.sheets['Conversations'].headers =
+    state.sheets['Conversations'].headers.filter(function(h) {
+      return h !== 'doctor_draft_effective_to';
+    });
+
+  const confirm = DCI.handle(controlContext(), '1');
+  assert.strictEqual(confirm.ok, false);
+  assert.strictEqual(confirm.error.code, 'DOCTOR_CONTROL_SCHEMA_MISSING');
+  // No command execution, no partial write, no session mutation.
+  assert.strictEqual(state.sheets['ScheduleChanges'].rows.length, 0);
+  assert.deepStrictEqual(jsonClone(doctorRow()), rowBefore);
 });
 
 // ── Runner ──────────────────────────────────────────────────────
