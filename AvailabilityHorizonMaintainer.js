@@ -679,20 +679,24 @@ const AvailabilityHorizonMaintainer = {
     }
 
     // Count existing slots in the generation window
-    var existingCount = 0;
-    try {
-      var windowEndDate = new Date(plan.startDate.getTime());
-      windowEndDate.setDate(windowEndDate.getDate() + plan.daysCount);
-      var windowEndMs = windowEndDate.getTime();
-      var windowStartMs = plan.startDate.getTime();
+    var existingCount;
+    var windowEndDate = new Date(plan.startDate.getTime());
+    windowEndDate.setDate(windowEndDate.getDate() + plan.daysCount);
+    var windowEndMs = windowEndDate.getTime();
+    var windowStartMs = plan.startDate.getTime();
 
+    try {
       existingCount = SlotRepository.query(function(row) {
         var sortValue = LegacySlotTimeParser.toComparableTime(row.sort_key);
         if (sortValue === null) return false;
         return sortValue >= windowStartMs && sortValue < windowEndMs;
       }).length;
     } catch (e) {
-      // ignore query errors in preview
+      return Result.fail(
+        'AVAILABILITY_QUERY_FAILED',
+        'Failed to query existing slots during preview',
+        { error: e.message }
+      );
     }
 
     // Count required slots using pure day-level projection

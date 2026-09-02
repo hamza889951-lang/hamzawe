@@ -1338,6 +1338,27 @@ test('M4D-PREV-4 — preview: valid config succeeds and uses calculateGeneration
   assert.strictEqual(typeof result.data.workingDays, 'number', 'Should have workingDays count');
 });
 
+test('M4D-PREV-5 — preview fails when Availability query fails', function() {
+  setupStandard();
+  state.nowIso = '2026-09-01T06:00:00.000Z';
+  
+  // Mock SlotRepository.query to throw an error
+  const originalQuery = sandbox.SlotRepository.query;
+  sandbox.SlotRepository.query = function() {
+    throw new Error('INJECTED_QUERY_FAILURE');
+  };
+  
+  try {
+    const r = HM.preview(controlContext());
+    assert.strictEqual(r.ok, false, 'preview should fail when Availability query fails');
+    assert.strictEqual(r.error.code, 'AVAILABILITY_QUERY_FAILED',
+      'Error code should be AVAILABILITY_QUERY_FAILED');
+  } finally {
+    // Restore original query
+    sandbox.SlotRepository.query = originalQuery;
+  }
+});
+
 // ── Run ──
 
 let failures = 0;
@@ -1354,3 +1375,4 @@ tests.forEach(function(entry) {
 
 if (failures > 0) process.exit(1);
 console.log('\n' + (tests.length - failures) + '/' + tests.length + ' tests passed');
+
