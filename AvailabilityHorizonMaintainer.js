@@ -107,7 +107,6 @@ const AvailabilityHorizonMaintainer = {
       var slotDuration = durationInfo.minutes;
 
       // ── Step 3: Build EffectiveSchedule baseline from already-loaded Settings ──
-      // Use the settings we already loaded in Step 2 to avoid re-reading
       var scopeResult = EffectiveScheduleService._scopeFromControlContext(controlContext);
       if (!scopeResult.ok) return scopeResult;
       
@@ -122,11 +121,7 @@ const AvailabilityHorizonMaintainer = {
       }
       var baseline = baselineResult.data;
 
-      var scopeResult = EffectiveScheduleService._scopeFromControlContext(controlContext);
-      if (!scopeResult.ok) return scopeResult;
-      var scope = scopeResult.data;
-
-      var listResult = ScheduleChangeRepository.listByScopeResult(scope.doctorId, scope.clinicId);
+      var listResult = ScheduleChangeRepository.listByScopeResult(scopeResult.data.doctorId, scopeResult.data.clinicId);
       if (!listResult.ok) {
         LogRepository.write({
           timestamp: Clock.now(), command: 'GENERATE_AVAILABILITY', phone: '',
@@ -137,30 +132,69 @@ const AvailabilityHorizonMaintainer = {
       }
       var records = listResult.data;
 
-      // ── Step 4: Read candidate future slots ONCE (shared snapshot) ──
-      var nowMs = Clock.now().getTime();
-      var targetDays = parseInt(settings.slot_generation_days, 10);
-      if (isNaN(targetDays) || targetDays <= 0) {
-        var daysFail = Result.fail(
-          'INVALID_SLOT_GENERATION_DAYS',
-          'slot_generation_days must be a positive integer',
-          { value: settings.slot_generation_days }
-        );
+      // ── Step 4a: Find latest sort key (for horizon calculation) ──
+      var latestResult = SlotRepository.findLatestSortKey();
+      if (!latestResult.ok) {
         LogRepository.write({
           timestamp: Clock.now(), command: 'GENERATE_AVAILABILITY', phone: '',
           slotId: '', stage: 'END', success: false, durationMs: null,
-          error: JSON.stringify({ reason: daysFail.error.code })
+          error: JSON.stringify({ reason: latestResult.error.code })
         });
-        return daysFail;
+        return latestResult;
       }
-      
+      var latestSortKey = latestResult.data;
+
+      // ── Step 4b: Calculate generation plan using existing Horizon semantics ──
+      var planResult = SlotGenerator.calculateGenerationPlan(latestSortKey, settings);
+      if (!planResult.ok) {
+        LogRepository.write({
+          timestamp: Clock.now(), command: 'GENERATE_AVAILABILITY', phone: '',
+          slotId: '', stage: 'END', success: false, durationMs: null,
+          error: JSON.stringify({ reason: planResult.error.code })
+        });
+        return planResult;
+      }
+      var plan = planResult.data;
+
+      // ── Step 4c: Read ALL slots in generation window (for deduplication) ──
+      // This includes past slots from today if generation starts today
+      var nowMs = Clock.now().getTime();
+      var allSlotsInWindow = [];
+      if (plan.needsGeneration && plan.startDate) {
+        try {
+          // Calculate the end date for the generation window
+          var windowEndDate = new Date(plan.startDate.getTime());
+          windowEndDate.setDate(windowEndDate.getDate() + plan.daysCount);
+          var windowEndMs = windowEndDate.getTime();
+          var windowStartMs = plan.startDate.getTime();
+
+          allSlotsInWindow = SlotRepository.query(function(row) {
+            var sortValue = LegacySlotTimeParser.toComparableTime(row.sort_key);
+            if (sortValue === null) return false;
+            return sortValue >= windowStartMs && sortValue < windowEndMs;
+          });
+        } catch (e) {
+          var slotsFail = Result.fail(
+            'SLOT_QUERY_FAILED',
+            'Failed to query slots in generation window',
+            e.message
+          );
+          LogRepository.write({
+            timestamp: Clock.now(), command: 'GENERATE_AVAILABILITY', phone: '',
+            slotId: '', stage: 'END', success: false, durationMs: null,
+            error: JSON.stringify({ reason: slotsFail.error.code })
+          });
+          return slotsFail;
+        }
+      }
+
+      // ── Step 4d: Read future non-terminal slots (for reconciliation) ──
       var futureSlots;
       try {
         futureSlots = SlotRepository.query(function(row) {
           var sortValue = LegacySlotTimeParser.toComparableTime(row.sort_key);
           if (sortValue === null) return false;
-          var cutoff = nowMs + (targetDays * 24 * 60 * 60 * 1000);
-          return sortValue >= nowMs && sortValue < cutoff;
+          return sortValue >= nowMs;
         });
       } catch (e) {
         var slotsFail = Result.fail(
@@ -177,18 +211,16 @@ const AvailabilityHorizonMaintainer = {
       }
 
       // ── Step 5: Reconcile existing non-terminal future slots ──
-      // Uses pure projection with same source snapshot (no re-reads)
       var reconcileResult = AvailabilityHorizonMaintainer._reconcileExistingSlots(
         baseline, records, slotDuration, nowMs, futureSlots
       );
 
-      // ── Step 6: Generate missing slots (gap filling) ──
-      // Computes required operational starts - existing starts = missing
+      // ── Step 6: Generate missing slots using generation plan ──
       var generateResult = AvailabilityHorizonMaintainer._generateMissingSlots(
-        controlContext, baseline, records, settings, slotDuration, nowMs, futureSlots
+        controlContext, baseline, records, settings, slotDuration, plan, allSlotsInWindow
       );
 
-      // ── Step 6: Aggregate results ──
+      // ── Step 7: Aggregate results ──
       var totalGenerated = generateResult.ok ? generateResult.data.generated : 0;
       var totalReconciled = reconcileResult.ok ? reconcileResult.data.reconciled : 0;
       var reconcileErrors = reconcileResult.ok ? reconcileResult.data.errors : 0;
@@ -328,23 +360,24 @@ const AvailabilityHorizonMaintainer = {
    * required operational starts - existing operational starts = missing starts.
    * Uses pre-loaded source snapshot. Deduplicates by sort_key before insert.
    */
-  _generateMissingSlots: function(controlContext, baseline, records, settings, slotDuration, nowMs, futureSlots) {
-    // Compute the date range for generation
-    var targetDays = parseInt(settings.slot_generation_days, 10);
-    if (isNaN(targetDays) || targetDays <= 0) {
-      return Result.fail(
-        'INVALID_SLOT_GENERATION_DAYS',
-        'slot_generation_days must be a positive integer',
-        { value: settings.slot_generation_days }
-      );
+  _generateMissingSlots: function(controlContext, baseline, records, settings, slotDuration, plan, allSlotsInWindow) {
+    // Use the generation plan from SlotGenerator.calculateGenerationPlan()
+    // This preserves existing Horizon semantics (calendar-day based)
+    if (!plan || !plan.needsGeneration) {
+      return Result.ok({
+        generated: 0,
+        failedDays: 0,
+        deduplicatedSkipped: 0
+      });
     }
-    var startDate = Clock.now();
-    startDate.setHours(0, 0, 0, 0);
 
-    // Build existing slots map from pre-loaded snapshot
+    var startDate = plan.startDate;
+    var daysCount = plan.daysCount;
+
+    // Build existing slots map from pre-loaded snapshot (includes all slots in window)
     var existingSlotsMap = {};  // sort_key → slot
-    for (var i = 0; i < futureSlots.length; i++) {
-      existingSlotsMap[futureSlots[i].sort_key] = futureSlots[i];
+    for (var i = 0; i < allSlotsInWindow.length; i++) {
+      existingSlotsMap[allSlotsInWindow[i].sort_key] = allSlotsInWindow[i];
     }
 
     // Generate missing slots for each date
@@ -353,7 +386,7 @@ const AvailabilityHorizonMaintainer = {
     var deduplicatedSkipped = 0;
     var currentDate = new Date(startDate.getTime());
 
-    for (var d = 0; d < targetDays; d++) {
+    for (var d = 0; d < daysCount; d++) {
       try {
         var dateStr = AvailabilityHorizonMaintainer._formatDateStr(currentDate);
         var atResult = EffectiveScheduleService.parseLocalDateTime(dateStr + 'T12:00');
@@ -455,34 +488,7 @@ const AvailabilityHorizonMaintainer = {
   /**
    * Get temporary overrides for a date range (full day).
    */
-  _getOverridesForDate: function(active, atData, dateStr) {
-    var temporaryClose = null;
-    var temporaryOpen = null;
 
-    for (var i = 0; i < active.length; i++) {
-      var rec = active[i];
-      if (rec.changeKind !== ScheduleChangeRepository.KIND.TEMPORARY_CLOSE &&
-          rec.changeKind !== ScheduleChangeRepository.KIND.TEMPORARY_OPEN) {
-        continue;
-      }
-      if (!rec.effectiveFrom || !rec.effectiveTo) continue;
-
-      // Check if override overlaps this date
-      var dayStart = dateStr + 'T00:00';
-      var dayEnd = dateStr + 'T23:59';
-
-      if (EffectiveScheduleService.compareStamps(rec.effectiveFrom, dayEnd) <= 0 &&
-          EffectiveScheduleService.compareStamps(dayStart, rec.effectiveTo) < 0) {
-        if (rec.changeKind === ScheduleChangeRepository.KIND.TEMPORARY_CLOSE) {
-          temporaryClose = rec;
-        } else {
-          temporaryOpen = rec;
-        }
-      }
-    }
-
-    return { temporaryClose: temporaryClose, temporaryOpen: temporaryOpen };
-  },
 
   /**
    * Convert a slot row to a local stamp 'YYYY-MM-DDTHH:mm'.
