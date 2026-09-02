@@ -177,23 +177,23 @@ const AvailabilityHorizonMaintainer = {
       var nowMs = Clock.now().getTime();
       var allSlotsInWindow = [];
       if (plan.needsGeneration && plan.startDate) {
-        try {
-          // Calculate the end date for the generation window
-          var windowEndDate = new Date(plan.startDate.getTime());
-          windowEndDate.setDate(windowEndDate.getDate() + plan.daysCount);
-          var windowEndMs = windowEndDate.getTime();
-          var windowStartMs = plan.startDate.getTime();
+        // Calculate the end date for the generation window
+        var windowEndDate = new Date(plan.startDate.getTime());
+        windowEndDate.setDate(windowEndDate.getDate() + plan.daysCount);
+        var windowEndMs = windowEndDate.getTime();
+        var windowStartMs = plan.startDate.getTime();
 
-          allSlotsInWindow = SlotRepository.query(function(row) {
-            var sortValue = LegacySlotTimeParser.toComparableTime(row.sort_key);
-            if (sortValue === null) return false;
-            return sortValue >= windowStartMs && sortValue < windowEndMs;
-          });
-        } catch (e) {
+        var queryResult = SlotRepository.queryResult(function(row) {
+          var sortValue = LegacySlotTimeParser.toComparableTime(row.sort_key);
+          if (sortValue === null) return false;
+          return sortValue >= windowStartMs && sortValue < windowEndMs;
+        });
+        
+        if (!queryResult.ok) {
           var slotsFail = Result.fail(
             'SLOT_QUERY_FAILED',
             'Failed to query slots in generation window',
-            e.message
+            queryResult.error
           );
           LogRepository.write({
             timestamp: Clock.now(), command: 'GENERATE_AVAILABILITY', phone: '',
@@ -202,6 +202,8 @@ const AvailabilityHorizonMaintainer = {
           });
           return slotsFail;
         }
+        
+        allSlotsInWindow = queryResult.data;
       }
 
       // ── Step 4e: Read future non-terminal slots (for reconciliation) ──
@@ -240,18 +242,18 @@ const AvailabilityHorizonMaintainer = {
       }
 
       var futureSlots;
-      try {
-        futureSlots = SlotRepository.query(function(row) {
-          var sortValue = LegacySlotTimeParser.toComparableTime(row.sort_key);
-          if (sortValue === null) return false;
-          // Reconciliation bounded by Horizon: [nowMs, reconciliationUpperBoundMs)
-          return sortValue >= nowMs && sortValue < reconciliationUpperBoundMs;
-        });
-      } catch (e) {
+      var futureQueryResult = SlotRepository.queryResult(function(row) {
+        var sortValue = LegacySlotTimeParser.toComparableTime(row.sort_key);
+        if (sortValue === null) return false;
+        // Reconciliation bounded by Horizon: [nowMs, reconciliationUpperBoundMs)
+        return sortValue >= nowMs && sortValue < reconciliationUpperBoundMs;
+      });
+      
+      if (!futureQueryResult.ok) {
         var slotsFail = Result.fail(
           'SLOT_QUERY_FAILED',
           'Failed to query future slots',
-          e.message
+          futureQueryResult.error
         );
         LogRepository.write({
           timestamp: Clock.now(), command: 'GENERATE_AVAILABILITY', phone: '',
@@ -260,6 +262,8 @@ const AvailabilityHorizonMaintainer = {
         });
         return slotsFail;
       }
+      
+      futureSlots = futureQueryResult.data;
 
       // ── Step 5: Reconcile existing non-terminal future slots ──
       var reconcileResult = AvailabilityHorizonMaintainer._reconcileExistingSlots(
@@ -679,25 +683,26 @@ const AvailabilityHorizonMaintainer = {
     }
 
     // Count existing slots in the generation window
-    var existingCount;
     var windowEndDate = new Date(plan.startDate.getTime());
     windowEndDate.setDate(windowEndDate.getDate() + plan.daysCount);
     var windowEndMs = windowEndDate.getTime();
     var windowStartMs = plan.startDate.getTime();
 
-    try {
-      existingCount = SlotRepository.query(function(row) {
-        var sortValue = LegacySlotTimeParser.toComparableTime(row.sort_key);
-        if (sortValue === null) return false;
-        return sortValue >= windowStartMs && sortValue < windowEndMs;
-      }).length;
-    } catch (e) {
+    var existingQueryResult = SlotRepository.queryResult(function(row) {
+      var sortValue = LegacySlotTimeParser.toComparableTime(row.sort_key);
+      if (sortValue === null) return false;
+      return sortValue >= windowStartMs && sortValue < windowEndMs;
+    });
+    
+    if (!existingQueryResult.ok) {
       return Result.fail(
         'AVAILABILITY_QUERY_FAILED',
         'Failed to query existing slots during preview',
-        { error: e.message }
+        existingQueryResult.error
       );
     }
+    
+    var existingCount = existingQueryResult.data.length;
 
     // Count required slots using pure day-level projection
     var wouldGenerate = 0;

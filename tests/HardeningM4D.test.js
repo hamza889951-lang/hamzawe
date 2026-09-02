@@ -1342,10 +1342,10 @@ test('M4D-PREV-5 — preview fails when Availability query fails', function() {
   setupStandard();
   state.nowIso = '2026-09-01T06:00:00.000Z';
   
-  // Mock SlotRepository.query to throw an error
-  const originalQuery = sandbox.SlotRepository.query;
-  sandbox.SlotRepository.query = function() {
-    throw new Error('INJECTED_QUERY_FAILURE');
+  // Mock SlotRepository.queryResult to return failure
+  const originalQueryResult = sandbox.SlotRepository.queryResult;
+  sandbox.SlotRepository.queryResult = function() {
+    return { ok: false, error: { code: 'INJECTED_QUERY_FAILURE', message: 'Simulated query failure' } };
   };
   
   try {
@@ -1354,8 +1354,8 @@ test('M4D-PREV-5 — preview fails when Availability query fails', function() {
     assert.strictEqual(r.error.code, 'AVAILABILITY_QUERY_FAILED',
       'Error code should be AVAILABILITY_QUERY_FAILED');
   } finally {
-    // Restore original query
-    sandbox.SlotRepository.query = originalQuery;
+    // Restore original queryResult
+    sandbox.SlotRepository.queryResult = originalQueryResult;
   }
 });
 

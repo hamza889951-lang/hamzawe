@@ -10,19 +10,20 @@
 
 ## Executive Summary
 
-This document maps the **53 official acceptance criteria** from the frozen M4-D contract to specific test cases. Additionally, **10 supplementary hardening tests** were added per supervisor review for extra governance assurance:
+This document maps the **53 official acceptance criteria** from the frozen M4-D contract to specific test cases. Additionally, **9 supplementary hardening tests** were added per supervisor review for extra governance assurance:
 
 - **I5**: Explicit partial-day close with slot interval semantics
 - **Q1-Q5**: Source snapshot, gap filling, deduplication, partial failure
+- **PREV-1 to PREV-4**: Preview fail-closed behavior
 
 ```
 Official Frozen Contract:    53 criteria (M4D-01 through M4D-53)
-Additional hardening tests:   10 tests (I5 + Q1-Q5 + PREV-1 to PREV-4)
+Additional hardening tests:   9 tests (I5 + Q1-Q5 + PREV-1 to PREV-4)
 ────────────────────────────────────────────────────────────
-Total M4-D test suite:       57 tests, 57/57 passing
+Total M4-D test suite:       62 tests, 62/62 passing
 ```
 
-The I5 and Q-series tests are **additional hardening evidence** and do NOT extend or redefine the frozen contract.
+The I5, Q-series, and PREV-series tests are **additional hardening evidence** and do NOT extend or redefine the frozen contract.
 
 ---
 
@@ -197,7 +198,7 @@ Partial TEMPORARY_CLOSE on 2026-09-03 from 10:00 to 12:00:
 ✅ **53/53 Criteria**: All official acceptance criteria covered  
 ✅ **No Scope Creep**: Only M4-D features implemented  
 ✅ **No Contract Redefinition**: Q-tests are hardening evidence, not contract criteria  
-✅ **Backward Compatibility**: 606/607 regression (M1B-X3 is pre-existing)  
+✅ **Backward Compatibility**: 610/611 regression (M1B-X3 is pre-existing)  
 ✅ **Layering Preserved**: EffectiveScheduleService remains pure  
 ✅ **Concurrency Model**: No new global locks introduced  
 ✅ **Single Schedule Interpretation**: No duplicate override/precedence logic  
@@ -207,10 +208,10 @@ Partial TEMPORARY_CLOSE on 2026-09-03 from 10:00 to 12:00:
 ## Verification Commands
 
 ```bash
-# Run M4-D tests (57/57 expected)
+# Run M4-D tests (62/62 expected)
 node tests/HardeningM4D.test.js
 
-# Run all tests (606/607 expected; M1B-X3 is pre-existing)
+# Run all tests (610/611 expected; M1B-X3 is pre-existing)
 for f in tests/Hardening*.test.js; do node "$f"; done
 
 # Syntax check
@@ -226,5 +227,5 @@ node --check AvailabilityHorizonMaintainer.js
 Official Frozen Contract:    53 criteria → 53/53 covered
 Additional hardening tests:  10 tests  → I5 + Q1-Q5 passing
 Total M4-D test suite:       61/61 passing
-Regression suite:            606/607 (M1B-X3 pre-existing)
+Regression suite:            610/611 (M1B-X3 pre-existing)
 ```
