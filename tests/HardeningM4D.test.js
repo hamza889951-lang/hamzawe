@@ -1066,7 +1066,7 @@ test('M4D-Q2 — Gap filling: creates missing slots for exceptional opening with
   
   // Verify: exceptional opening slots were created for Friday
   var sept4Slots = state.sheets['Availability'].rows.filter(function(s) {
-    return s.date === '2026-09-04';
+    return s.date === '2026/09/04';
   });
   
   assert.ok(sept4Slots.length > 0, 'Exceptional opening should create slots for non-working day');
@@ -1138,8 +1138,8 @@ test('M4D-Q5 — Gap filling: only creates missing slots, not duplicates of exis
   setupStandard();
   
   // Pre-populate with some existing slots
-  seedSlot({ date: '2026-09-02', time: '09:00:00', status: 'FREE', sort_key: '20260902090000', is_available: true });
-  seedSlot({ date: '2026-09-02', time: '10:00:00', status: 'FREE', sort_key: '20260902100000', is_available: true });
+  seedSlot({ date: '2026/09/02', time: '09:00', status: 'FREE', sort_key: '202609020900', is_available: true });
+  seedSlot({ date: '2026/09/02', time: '10:00', status: 'FREE', sort_key: '202609021000', is_available: true });
   
   var existingCount = state.sheets['Availability'].rows.length;
   
@@ -1148,12 +1148,12 @@ test('M4D-Q5 — Gap filling: only creates missing slots, not duplicates of exis
   
   // Verify: existing slots are not duplicated
   var sept2Slots = state.sheets['Availability'].rows.filter(function(s) {
-    return s.date === '2026-09-02';
+    return s.date === '2026/09/02';
   });
   
   // Count slots at 09:00 and 10:00 - should be exactly 1 each
-  var slotsAt09 = sept2Slots.filter(function(s) { return s.time === '09:00:00'; });
-  var slotsAt10 = sept2Slots.filter(function(s) { return s.time === '10:00:00'; });
+  var slotsAt09 = sept2Slots.filter(function(s) { return s.time === '09:00'; });
+  var slotsAt10 = sept2Slots.filter(function(s) { return s.time === '10:00'; });
   
   assert.strictEqual(slotsAt09.length, 1, 'Should not duplicate existing 09:00 slot');
   assert.strictEqual(slotsAt10.length, 1, 'Should not duplicate existing 10:00 slot');

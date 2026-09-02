@@ -592,6 +592,142 @@ const EffectiveScheduleService = {
    * @param {string} dateStr — 'YYYY-MM-DD'
    * @returns {Result} ok({ isWorkingDay, workWindow: {start, end}, slotDurationMinutes, source })
    */
+  /**
+   * M4-D — Pure day-level effective projection from pre-loaded sources (no I/O).
+   * Returns the effective working interval for an entire date, considering
+   * recurring schedule AND temporary overrides.
+   *
+   * This is the SINGLE boundary for day-level schedule interpretation.
+   * The materializer must NOT implement its own override/precedence logic.
+   *
+   * @param {Object} at — parsed date info from parseLocalDateTime (at noon)
+   * @param {Object} baseline — from DoctorScheduleReadService._toEffectiveSchedule
+   * @param {Array} records — from ScheduleChangeRepository.listByScopeResult
+   * @returns {Result} ok({ isOpen, workWindow, slotDurationMinutes, source, overrideKind })
+   */
+  projectDayEffectiveWindowFromSources: function(at, baseline, records) {
+    var activeResult = this._activeRecords(records, at.stamp);
+    if (!activeResult.ok) return activeResult;
+    var active = activeResult.data;
+
+    var recurringResult = this._effectiveRecurring(baseline, active, at.stamp);
+    if (!recurringResult.ok) return recurringResult;
+    var recurring = recurringResult.data;
+
+    var weekday = this._weekdaySunday0(at.year, at.month, at.day);
+    var dayKey = this.DAY_KEYS[weekday];
+    var recurringDayOpen = recurring.days[dayKey] === true;
+
+    // Check for temporary overrides that cover this entire date
+    // Date range: [dateStr T00:00, next-day T00:00)
+    var dateStr = this._pad4(at.year) + '-' + this._pad2(at.month) + '-' + this._pad2(at.day);
+    var dayStartStamp = dateStr + 'T00:00';
+    var dayEndStamp;
+    // Compute next day
+    var nextDay = at.day + 1;
+    var nextMonth = at.month;
+    var nextYear = at.year;
+    var dim = this._daysInMonth(at.year, at.month);
+    if (nextDay > dim) {
+      nextDay = 1;
+      nextMonth += 1;
+      if (nextMonth > 12) { nextMonth = 1; nextYear += 1; }
+    }
+    dayEndStamp = this._pad4(nextYear) + '-' + this._pad2(nextMonth) + '-' + this._pad2(nextDay) + 'T00:00';
+
+    // Find applicable temporary overrides for this date
+    var applicableClose = null;
+    var applicableOpen = null;
+    var closeMatches = [];
+    var openMatches = [];
+
+    for (var i = 0; i < active.length; i++) {
+      var rec = active[i];
+      if (rec.changeKind !== ScheduleChangeRepository.KIND.TEMPORARY_CLOSE &&
+          rec.changeKind !== ScheduleChangeRepository.KIND.TEMPORARY_OPEN) {
+        continue;
+      }
+      if (!rec.effectiveFrom || !rec.effectiveTo) {
+        return Result.fail(
+          'SCHEDULE_CHANGE_SOURCE_INVALID',
+          'Temporary override requires effectiveFrom and effectiveTo',
+          { changeId: rec.changeId }
+        );
+      }
+      // Overlap: effectiveFrom < dayEndStamp AND dayStartStamp < effectiveTo
+      if (this.compareStamps(rec.effectiveFrom, dayEndStamp) < 0 &&
+          this.compareStamps(dayStartStamp, rec.effectiveTo) < 0) {
+        if (rec.changeKind === ScheduleChangeRepository.KIND.TEMPORARY_CLOSE) {
+          closeMatches.push(rec);
+        } else {
+          openMatches.push(rec);
+        }
+      }
+    }
+
+    if (closeMatches.length > 1) {
+      return Result.fail('SCHEDULE_INTENT_CONFLICT', 'Multiple temporary close overrides for date', {
+        changeIds: closeMatches.map(function(m) { return m.changeId; }), date: dateStr
+      });
+    }
+    if (openMatches.length > 1) {
+      return Result.fail('SCHEDULE_INTENT_CONFLICT', 'Multiple temporary open overrides for date', {
+        changeIds: openMatches.map(function(m) { return m.changeId; }), date: dateStr
+      });
+    }
+    applicableClose = closeMatches.length ? closeMatches[0] : null;
+    applicableOpen = openMatches.length ? openMatches[0] : null;
+
+    // Determine effective day state
+    var isOpen = false;
+    var workWindow = null;
+    var overrideKind = null;
+
+    if (applicableClose && applicableOpen) {
+      return Result.fail('SCHEDULE_INTENT_CONFLICT', 'Both close and open overrides apply for date', {
+        date: dateStr
+      });
+    }
+
+    if (applicableOpen) {
+      // Exceptional open: day becomes open with Settings workWindow
+      isOpen = true;
+      workWindow = { start: baseline.workWindow.start, end: baseline.workWindow.end };
+      overrideKind = 'TEMPORARY_OPEN';
+    } else if (applicableClose) {
+      // Check if close covers the entire day
+      var closeCoversFullDay = (
+        this.compareStamps(applicableClose.effectiveFrom, dayStartStamp) <= 0 &&
+        this.compareStamps(dayEndStamp, applicableClose.effectiveTo) <= 0
+      );
+      if (closeCoversFullDay) {
+        // Full-day close: day is closed
+        isOpen = false;
+        workWindow = null;
+        overrideKind = 'TEMPORARY_CLOSE_FULL';
+      } else {
+        // Partial close: day is still open (reconciliation handles individual slots)
+        isOpen = recurringDayOpen;
+        workWindow = recurringDayOpen ? { start: recurring.workWindow.start, end: recurring.workWindow.end } : null;
+        overrideKind = 'TEMPORARY_CLOSE_PARTIAL';
+      }
+    } else {
+      // No override: use recurring schedule
+      isOpen = recurringDayOpen;
+      workWindow = recurringDayOpen ? { start: recurring.workWindow.start, end: recurring.workWindow.end } : null;
+      overrideKind = null;
+    }
+
+    return Result.ok({
+      isOpen: isOpen,
+      workWindow: workWindow,
+      slotDurationMinutes: baseline.slotDurationMinutes,
+      source: recurring.sourceChangeId ? 'RECURRING_CHANGE' : 'SETTINGS',
+      overrideKind: overrideKind
+    });
+  },
+
+
   projectDayEffectiveWindow: function(controlContext, dateStr) {
     var scopeResult = this._scopeFromControlContext(controlContext);
     if (!scopeResult.ok) return scopeResult;
