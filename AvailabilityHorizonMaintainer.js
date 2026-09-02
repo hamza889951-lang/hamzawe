@@ -649,53 +649,76 @@ const AvailabilityHorizonMaintainer = {
     if (!listResult.ok) return listResult;
     var records = listResult.data;
 
-    // Compute generation plan
-    var targetDays = parseInt(settings.slot_generation_days, 10) || 30;
-    var today = Clock.now();
-    today.setHours(0, 0, 0, 0);
+    // ── Validate slot_generation_days (M4-D fail-closed) ──
+    var targetDays = parseInt(settings.slot_generation_days, 10);
+    if (isNaN(targetDays) || targetDays <= 0) {
+      return Result.fail(
+        'INVALID_SLOT_GENERATION_DAYS',
+        'slot_generation_days must be a positive integer for preview',
+        { value: settings.slot_generation_days }
+      );
+    }
 
-    // Count existing slots
+    // ── Use calculateGenerationPlan semantics (same as ensureHorizon) ──
+    var latestResult = SlotRepository.findLatestSortKey();
+    if (!latestResult.ok) return latestResult;
+    var latestSortKey = latestResult.data;
+
+    var planResult = SlotGenerator.calculateGenerationPlan(latestSortKey, settings);
+    if (!planResult.ok) return planResult;
+    var plan = planResult.data;
+
+    // If no generation needed, return early
+    if (!plan.needsGeneration) {
+      return Result.ok({
+        plan: plan,
+        wouldGenerate: 0,
+        workingDays: 0,
+        message: 'Horizon already covers target days'
+      });
+    }
+
+    // Count existing slots in the generation window
     var existingCount = 0;
     try {
-      var endDate = new Date(today.getTime());
-      endDate.setDate(endDate.getDate() + targetDays);
+      var windowEndDate = new Date(plan.startDate.getTime());
+      windowEndDate.setDate(windowEndDate.getDate() + plan.daysCount);
+      var windowEndMs = windowEndDate.getTime();
+      var windowStartMs = plan.startDate.getTime();
+
       existingCount = SlotRepository.query(function(row) {
         var sortValue = LegacySlotTimeParser.toComparableTime(row.sort_key);
         if (sortValue === null) return false;
-        return sortValue >= today.getTime() && sortValue < endDate.getTime();
+        return sortValue >= windowStartMs && sortValue < windowEndMs;
       }).length;
     } catch (e) {
-      // ignore
+      // ignore query errors in preview
     }
 
-    // Count required slots
+    // Count required slots using pure day-level projection
     var wouldGenerate = 0;
     var workingDays = 0;
-    var currentDate = new Date(today.getTime());
+    var currentDate = new Date(plan.startDate.getTime());
 
-    for (var d = 0; d < targetDays; d++) {
+    for (var d = 0; d < plan.daysCount; d++) {
       var dateStr = this._formatDateStr(currentDate);
       var atResult = EffectiveScheduleService.parseLocalDateTime(dateStr + 'T12:00');
       if (atResult.ok) {
-        var activeResult = EffectiveScheduleService._activeRecords(records, atResult.data.stamp);
-        if (activeResult.ok) {
-          var recurringResult = EffectiveScheduleService._effectiveRecurring(baseline, activeResult.data, atResult.data.stamp);
-          if (recurringResult.ok) {
-            var weekday = EffectiveScheduleService._weekdaySunday0(atResult.data.year, atResult.data.month, atResult.data.day);
-            var dayKey = EffectiveScheduleService.DAY_KEYS[weekday];
-            var dayOpen = recurringResult.data.days[dayKey] === true;
+        // Use the SINGLE pure boundary for day-level projection
+        var dayResult = EffectiveScheduleService.projectDayEffectiveWindowFromSources(
+          atResult.data,
+          baseline,
+          records
+        );
 
-            if (dayOpen) {
-              workingDays += 1;
-              var effWindow = recurringResult.data.workWindow;
-              var wStart = EffectiveScheduleService._clockToMinutes(effWindow.start);
-              var wEnd = EffectiveScheduleService._clockToMinutes(effWindow.end);
-              var currentMinutes = wStart;
-              while (currentMinutes + slotDuration <= wEnd) {
-                wouldGenerate += 1;
-                currentMinutes += slotDuration;
-              }
-            }
+        if (dayResult.ok && dayResult.data.isOpen && dayResult.data.workWindow) {
+          workingDays += 1;
+          var wStart = EffectiveScheduleService._clockToMinutes(dayResult.data.workWindow.start);
+          var wEnd = EffectiveScheduleService._clockToMinutes(dayResult.data.workWindow.end);
+          var currentMinutes = wStart;
+          while (currentMinutes + slotDuration <= wEnd) {
+            wouldGenerate += 1;
+            currentMinutes += slotDuration;
           }
         }
       }
@@ -703,7 +726,7 @@ const AvailabilityHorizonMaintainer = {
     }
 
     return Result.ok({
-      plan: { needsGeneration: true, startDate: today, daysCount: targetDays },
+      plan: plan,
       wouldGenerate: Math.max(0, wouldGenerate - existingCount),
       workingDays: workingDays
     });

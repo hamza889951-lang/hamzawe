@@ -1266,6 +1266,78 @@ test('M4D-Q5 — Gap filling: respects Horizon semantics (start after latest slo
   assert.strictEqual(sept2Slots.length, 2, 'Should not generate additional slots for Sept 2');
 });
 
+test('M4D-PREV-1 — preview: invalid slot_generation_days fails closed', function() {
+  setupStandard();
+  
+  // Override settings with invalid slot_generation_days
+  var settings = standardSettings({ slot_generation_days: 'invalid' });
+  state.sheets['Settings'] = {
+    headers: Object.keys(settings),
+    rows: [Object.assign({}, settings)]
+  };
+
+  // Run preview
+  var result = HM.preview(controlContext());
+
+  // Should fail with INVALID_SLOT_GENERATION_DAYS, not silently use 30
+  assert.strictEqual(result.ok, false, 'Preview should fail with invalid slot_generation_days');
+  assert.strictEqual(result.error.code, 'INVALID_SLOT_GENERATION_DAYS',
+    'Error code should be INVALID_SLOT_GENERATION_DAYS');
+});
+
+test('M4D-PREV-2 — preview: zero slot_generation_days fails closed', function() {
+  setupStandard();
+  
+  // Override settings with zero slot_generation_days
+  var settings = standardSettings({ slot_generation_days: '0' });
+  state.sheets['Settings'] = {
+    headers: Object.keys(settings),
+    rows: [Object.assign({}, settings)]
+  };
+
+  // Run preview
+  var result = HM.preview(controlContext());
+
+  // Should fail with INVALID_SLOT_GENERATION_DAYS
+  assert.strictEqual(result.ok, false, 'Preview should fail with zero slot_generation_days');
+  assert.strictEqual(result.error.code, 'INVALID_SLOT_GENERATION_DAYS',
+    'Error code should be INVALID_SLOT_GENERATION_DAYS');
+});
+
+test('M4D-PREV-3 — preview: negative slot_generation_days fails closed', function() {
+  setupStandard();
+  
+  // Override settings with negative slot_generation_days
+  var settings = standardSettings({ slot_generation_days: '-5' });
+  state.sheets['Settings'] = {
+    headers: Object.keys(settings),
+    rows: [Object.assign({}, settings)]
+  };
+
+  // Run preview
+  var result = HM.preview(controlContext());
+
+  // Should fail with INVALID_SLOT_GENERATION_DAYS
+  assert.strictEqual(result.ok, false, 'Preview should fail with negative slot_generation_days');
+  assert.strictEqual(result.error.code, 'INVALID_SLOT_GENERATION_DAYS',
+    'Error code should be INVALID_SLOT_GENERATION_DAYS');
+});
+
+test('M4D-PREV-4 — preview: valid config succeeds and uses calculateGenerationPlan', function() {
+  setupStandard();
+  state.nowIso = '2026-09-01T06:00:00.000Z';
+  
+  // Run preview with valid config
+  var result = HM.preview(controlContext());
+
+  // Should succeed
+  assert.strictEqual(result.ok, true, 'Preview should succeed with valid config');
+  assert.ok(result.data.plan, 'Should include plan');
+  assert.strictEqual(typeof result.data.plan.needsGeneration, 'boolean', 'Plan should have needsGeneration');
+  assert.strictEqual(typeof result.data.wouldGenerate, 'number', 'Should have wouldGenerate count');
+  assert.strictEqual(typeof result.data.workingDays, 'number', 'Should have workingDays count');
+});
+
 // ── Run ──
 
 let failures = 0;
@@ -1282,4 +1354,3 @@ tests.forEach(function(entry) {
 
 if (failures > 0) process.exit(1);
 console.log('\n' + (tests.length - failures) + '/' + tests.length + ' tests passed');
-
