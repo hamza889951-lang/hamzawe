@@ -165,6 +165,15 @@ const SlotRepository = {
       if (trimmed === 'TRUE') return true;
     }
     return false;
+  },
+
+  /**
+   * M4-C Continuation §12 — public operational-availability flag check
+   * for reservation decision functions running inside atomicUpdate.
+   * Same truth as the internal read predicate: true / 'TRUE' only.
+   */
+  isOperationallyAvailable: function(value) {
+    return SlotRepository._isAvailable(value);
   }
 };
 

@@ -103,7 +103,19 @@ const Router = {
         typeof DoctorControlEntry !== 'undefined') {
       var doctorAuth = DoctorAuthorizationService.authorizeDoctor(phone);
       if (doctorAuth.ok && doctorAuth.data && doctorAuth.data.authorized === true) {
-        return DoctorControlEntry.enter(doctorAuth.data);
+        var entryResult = DoctorControlEntry.enter(doctorAuth.data);
+        if (!entryResult.ok) return entryResult;
+        // M4-C Continuation: routing-only hand-off of the accepted entry
+        // context + raw message to the doctor interaction boundary. Router
+        // parses nothing; typeof guard keeps older/partial bundles
+        // fail-closed on the read-only M4-A entry result.
+        if (typeof DoctorControlInteractionService !== 'undefined') {
+          return DoctorControlInteractionService.handle(
+            entryResult.data.controlContext,
+            message
+          );
+        }
+        return entryResult;
       }
     }
 

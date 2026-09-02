@@ -93,3 +93,48 @@ DateUtils.formatSortKey = function(dateValue) {
   if (mn.length < 2) mn = '0' + mn;
   return '' + yyyy + Mnth + dy + hr + mn;
 };
+
+/**
+ * M4-C Continuation — local schedule stamp 'YYYY-MM-DDTHH:mm'.
+ * Pure conversion of a passed-in Date using local getters; production
+ * runtime is pinned to Asia/Baghdad (appsscript.json), so this yields
+ * the clinic-local stamp used by the M4 schedule boundary.
+ */
+DateUtils.formatLocalStamp = function(dateValue) {
+  if (!dateValue) return '';
+  var yyyy = dateValue.getFullYear();
+  var mm = String(dateValue.getMonth() + 1);
+  if (mm.length < 2) mm = '0' + mm;
+  var dd = String(dateValue.getDate());
+  if (dd.length < 2) dd = '0' + dd;
+  var hh = String(dateValue.getHours());
+  if (hh.length < 2) hh = '0' + hh;
+  var mn = String(dateValue.getMinutes());
+  if (mn.length < 2) mn = '0' + mn;
+  return yyyy + '-' + mm + '-' + dd + 'T' + hh + ':' + mn;
+};
+
+/**
+ * M4-C Continuation — next calendar date for a 'YYYY-MM-DD' string.
+ * Pure Gregorian arithmetic (no Date object, no timezone dependency).
+ * Single implementation shared by the M4 schedule boundary.
+ */
+DateUtils.nextLocalDateString = function(dateStr) {
+  if (typeof dateStr !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return null;
+  var y = parseInt(dateStr.substring(0, 4), 10);
+  var m = parseInt(dateStr.substring(5, 7), 10);
+  var d = parseInt(dateStr.substring(8, 10), 10);
+  var dim = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  var leap = (y % 4 === 0 && y % 100 !== 0) || (y % 400 === 0);
+  if (leap) dim[1] = 29;
+  if (m < 1 || m > 12 || d < 1 || d > dim[m - 1]) return null;
+  d += 1;
+  if (d > dim[m - 1]) {
+    d = 1;
+    m += 1;
+    if (m > 12) { m = 1; y += 1; }
+  }
+  var mm = m < 10 ? '0' + m : String(m);
+  var dd = d < 10 ? '0' + d : String(d);
+  return y + '-' + mm + '-' + dd;
+};
