@@ -73,6 +73,11 @@ const SlotRepository = {
       var decision = decisionFn(slot);
       if (!decision.ok) return decision;
 
+      // Skip update if decision.data is empty (no fields to update)
+      if (!decision.data || Object.keys(decision.data).length === 0) {
+        return Result.ok({ slotId: slotId });
+      }
+
       var updated = GoogleSheets.updateRowByColumn(
         Config.VOCABULARY.SHEETS.AVAILABILITY, 'slot_id', slotId, decision.data
       );
@@ -178,17 +183,21 @@ const SlotRepository = {
 };
 
 SlotRepository.findLatestSortKey = function() {
-  var all = GoogleSheets.getAllRows(Config.VOCABULARY.SHEETS.AVAILABILITY);
-  if (all.length === 0) return Result.ok(null);
+  try {
+    var all = GoogleSheets.getAllRows(Config.VOCABULARY.SHEETS.AVAILABILITY);
+    if (all.length === 0) return Result.ok(null);
 
-  var maxKey = null;
-  for (var i = 0; i < all.length; i++) {
-    var key = all[i].sort_key;
-    if (key && (maxKey === null || key > maxKey)) {
-      maxKey = key;
+    var maxKey = null;
+    for (var i = 0; i < all.length; i++) {
+      var key = all[i].sort_key;
+      if (key && (maxKey === null || key > maxKey)) {
+        maxKey = key;
+      }
     }
+    return Result.ok(maxKey);
+  } catch (e) {
+    return Result.fail('AVAILABILITY_QUERY_FAILED', 'Failed to read Availability sheet for latest sort key', e.message);
   }
-  return Result.ok(maxKey);
 };
 
 SlotRepository.insertBatch = function(slots) {
