@@ -10,15 +10,15 @@
 
 ## Executive Summary
 
-This document maps the **53 official acceptance criteria** from the frozen M4-D contract to specific test cases. Additionally, **9 supplementary hardening tests** were added per supervisor review for extra governance assurance:
+This document maps the **53 official acceptance criteria** from the frozen M4-D contract to specific test cases. Additionally, **11 supplementary hardening tests** were added per supervisor review for extra governance assurance:
 
 - **I5**: Explicit partial-day close with slot interval semantics
 - **Q1-Q5**: Source snapshot, gap filling, deduplication, partial failure
-- **PREV-1 to PREV-4**: Preview fail-closed behavior
+- **PREV-1 to PREV-5**: Preview fail-closed behavior
 
 ```
 Official Frozen Contract:    53 criteria (M4D-01 through M4D-53)
-Additional hardening tests:   9 tests (I5 + Q1-Q5 + PREV-1 to PREV-4)
+Additional hardening tests:  11 tests (I5 + Q1-Q5 + PREV-1 to PREV-5)
 ────────────────────────────────────────────────────────────
 Total M4-D test suite:       62 tests, 62/62 passing
 ```
@@ -87,9 +87,9 @@ The I5, Q-series, and PREV-series tests are **additional hardening evidence** an
 
 ---
 
-## Supplementary Hardening Tests (I5 + Q1-Q5 + PREV-1 to PREV-4)
+## Supplementary Hardening Tests (I5 + Q1-Q5 + PREV-1 to PREV-5)
 
-These 10 tests were added per supervisor review as additional governance evidence. They are **not part of the frozen contract** and do **not** extend the acceptance criteria beyond M4D-01..M4D-53.
+These 11 tests were added per supervisor review as additional governance evidence. They are **not part of the frozen contract** and do **not** extend the acceptance criteria beyond M4D-01..M4D-53.
 
 | Test | Description | Purpose |
 |------|-------------|---------|
@@ -103,6 +103,7 @@ These 10 tests were added per supervisor review as additional governance evidenc
 | M4D-PREV-2 | preview: zero slot_generation_days fails closed | Verifies preview() rejects zero value |
 | M4D-PREV-3 | preview: negative slot_generation_days fails closed | Verifies preview() rejects negative value |
 | M4D-PREV-4 | preview: valid config succeeds and uses calculateGenerationPlan | Verifies preview() uses correct semantics |
+| M4D-PREV-5 | preview fails when Availability query fails | Verifies preview() uses source-level fail-closed |
 
 
 ---
@@ -185,10 +186,10 @@ Partial TEMPORARY_CLOSE on 2026-09-03 from 10:00 to 12:00:
 ### Generation (3 tests)
 - **C1-C3**: Missing slot generation
 
-### Supplementary Hardening (10 tests)
+### Supplementary Hardening (11 tests)
 - **I5**: Partial-day close interval-level semantics
 - **Q1-Q5**: Source snapshot, gap filling, deduplication, partial failure
-- **PREV-1 to PREV-4**: Preview fail-closed behavior for invalid slot_generation_days
+- **PREV-1 to PREV-5**: Preview fail-closed behavior for invalid slot_generation_days and Availability query failures
 
 ---
 
@@ -198,7 +199,7 @@ Partial TEMPORARY_CLOSE on 2026-09-03 from 10:00 to 12:00:
 ✅ **53/53 Criteria**: All official acceptance criteria covered  
 ✅ **No Scope Creep**: Only M4-D features implemented  
 ✅ **No Contract Redefinition**: Q-tests are hardening evidence, not contract criteria  
-✅ **Backward Compatibility**: 610/611 regression (M1B-X3 is pre-existing)  
+✅ **Backward Compatibility**: 636/637 regression (M1B-X3 is pre-existing)  
 ✅ **Layering Preserved**: EffectiveScheduleService remains pure  
 ✅ **Concurrency Model**: No new global locks introduced  
 ✅ **Single Schedule Interpretation**: No duplicate override/precedence logic  
@@ -211,7 +212,7 @@ Partial TEMPORARY_CLOSE on 2026-09-03 from 10:00 to 12:00:
 # Run M4-D tests (62/62 expected)
 node tests/HardeningM4D.test.js
 
-# Run all tests (610/611 expected; M1B-X3 is pre-existing)
+# Run all tests (636/637 expected; M1B-X3 is pre-existing)
 for f in tests/Hardening*.test.js; do node "$f"; done
 
 # Syntax check
@@ -225,7 +226,7 @@ node --check AvailabilityHorizonMaintainer.js
 
 ```
 Official Frozen Contract:    53 criteria → 53/53 covered
-Additional hardening tests:  10 tests  → I5 + Q1-Q5 passing
-Total M4-D test suite:       61/61 passing
-Regression suite:            610/611 (M1B-X3 pre-existing)
+Additional hardening tests:  11 tests  → I5 + Q1-Q5 + PREV-1 to PREV-5 passing
+Total M4-D test suite:       62/62 passing
+Regression suite:            636/637 (M1B-X3 pre-existing)
 ```
