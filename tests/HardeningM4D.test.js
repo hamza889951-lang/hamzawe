@@ -418,7 +418,7 @@ test('M4D-C3 — no slots on non-working days', function() {
 // D — Terminal slot preservation
 // ══════════════════════════════════════════════════════════
 
-test('M4D-D1 — RESERVED slots are never modified', function() {
+test('M4D-D1 — RESERVED: is_available is reconciled but status is preserved', function() {
   setupStandard();
   const slot = seedSlot({
     sort_key: '202609021000', date: '2026/09/02', time: '10:00',
@@ -429,23 +429,70 @@ test('M4D-D1 — RESERVED slots are never modified', function() {
   const r = HM.ensureHorizon(controlContext());
   assert.strictEqual(r.ok, true, JSON.stringify(r.error));
   const current = state.sheets['Availability'].rows.find(s => s.slot_id === slot.slot_id);
+  // status is preserved (StateMachine ownership)
   assert.strictEqual(current.status, 'RESERVED');
   assert.strictEqual(current.patient_name, 'Test Patient');
+  // is_available is reconciled to match EffectiveSchedule (it's a working slot)
+  assert.strictEqual(current.is_available, true);
 });
 
-test('M4D-D2 — CONFIRMED slots are never modified', function() {
+test('M4D-D2 — CONFIRMED: is_available is reconciled but status is preserved', function() {
   setupStandard();
-  seedSlot({
-    sort_key: '202609021000', status: 'CONFIRMED', is_available: false
+  const slot = seedSlot({
+    sort_key: '202609021000', status: 'CONFIRMED', is_available: false,
+    phone: '9647001234567'
   });
   state.nowIso = '2026-09-01T06:00:00.000Z';
   const r = HM.ensureHorizon(controlContext());
   assert.strictEqual(r.ok, true, JSON.stringify(r.error));
-  const s = state.sheets['Availability'].rows.find(s => s.status === 'CONFIRMED');
+  const s = state.sheets['Availability'].rows.find(s => s.slot_id === slot.slot_id);
+  // status preserved
+  assert.strictEqual(s.status, 'CONFIRMED');
+  // is_available reconciled (working day, within window)
+  assert.strictEqual(s.is_available, true);
+});
+
+test('M4D-D2b — CONFIRMED on non-working day: is_available set false, status preserved', function() {
+  setupStandard();
+  // 2026-09-04 is Friday (non-working)
+  const slot = seedSlot({
+    sort_key: '202609041000', status: 'CONFIRMED', is_available: true,
+    phone: '9647001234567'
+  });
+  state.nowIso = '2026-09-01T06:00:00.000Z';
+  const r = HM.ensureHorizon(controlContext());
+  assert.strictEqual(r.ok, true, JSON.stringify(r.error));
+  const s = state.sheets['Availability'].rows.find(s => s.slot_id === slot.slot_id);
+  assert.strictEqual(s.status, 'CONFIRMED');
   assert.strictEqual(s.is_available, false);
 });
 
-test('M4D-D3 — EXPIRED/CANCELLED/COMPLETED/NO_SHOW slots are never modified', function() {
+test('M4D-D2c — RESERVED when doctor closes that interval: is_available=false, status=RESERVED', function() {
+  setupStandard();
+  // Reserve a slot
+  const slot = seedSlot({
+    sort_key: '202609021000', status: 'RESERVED', is_available: true,
+    phone: '9647001234567', patient_name: 'Test'
+  });
+  // Doctor closes that time window
+  CMD.commitTemporaryClose(controlContext(), {
+    commandId: 'cmd-close-reserved',
+    asOf: '2026-09-01T00:00',
+    effectiveFrom: '2026-09-02T10:00',
+    effectiveTo: '2026-09-02T11:00'
+  });
+  state.nowIso = '2026-09-01T06:00:00.000Z';
+  const r = HM.ensureHorizon(controlContext());
+  assert.strictEqual(r.ok, true, JSON.stringify(r.error));
+  const s = state.sheets['Availability'].rows.find(s => s.slot_id === slot.slot_id);
+  // status stays RESERVED — lifecycle untouched
+  assert.strictEqual(s.status, 'RESERVED');
+  assert.strictEqual(s.patient_name, 'Test');
+  // is_available flipped to false because EffectiveSchedule says closed
+  assert.strictEqual(s.is_available, false);
+});
+
+test('M4D-D3 — Terminal states (EXPIRED, CANCELLED, COMPLETED, NO_SHOW) are never modified', function() {
   setupStandard();
   ['EXPIRED', 'CANCELLED', 'COMPLETED', 'NO_SHOW'].forEach(function(st, idx) {
     seedSlot({ sort_key: '2026090' + (2 + idx) + '1000', status: st, is_available: false });

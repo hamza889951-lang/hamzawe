@@ -15,7 +15,9 @@
  *
  * يضمن:
  * - EffectiveSchedule هو مصدر الحقيقة لـ is_available.
- * - Terminal slots (non-FREE) لا تُلمس إطلاقًا.
+ * - Terminal lifecycle slots (EXPIRED, CANCELLED, COMPLETED, NO_SHOW) لا تُلمس إطلاقًا.
+ * - FREE/RESERVED/CONFIRMED → is_available يُعاد معايَرته وفق EffectiveSchedule
+ *   مع الحفاظ على status كما هو (status ملك StateMachine، is_available projection).
  * - أي mutation لـ Slot تمر عبر SlotRepository.atomicUpdate.
  * - لا rounding أو splitting أو shifting للـ slots الموجودة.
  * - Fail closed عند فشل مصدر الجدول.
@@ -167,17 +169,26 @@ const AvailabilityHorizonMaintainer = {
   },
 
   /**
-   * Reconcile existing FREE future slots against EffectiveSchedule.
-   * For each FREE slot where slotStart >= now:
+   * Reconcile existing future slots against EffectiveSchedule.
+   * For each non-terminal slot where slotStart >= now:
    * - Evaluate slot availability via EffectiveScheduleService
    * - If is_available differs from effective → update via atomicUpdate
-   * Terminal slots are never touched.
+   *
+   * Reconciled statuses: FREE, RESERVED, CONFIRMED
+   *   (is_available is an EffectiveSchedule projection, independent of status)
+   * Terminal statuses (never touched): EXPIRED, CANCELLED, COMPLETED, NO_SHOW
    */
   _reconcileExistingSlots: function(controlContext, nowMs, slotDuration) {
+    var TERMINAL_STATUSES = {
+      EXPIRED: true,
+      CANCELLED: true,
+      COMPLETED: true,
+      NO_SHOW: true
+    };
     var futureSlots;
     try {
       futureSlots = SlotRepository.query(function(row) {
-        if (row.status !== Config.VOCABULARY.STATUS.FREE) return false;
+        if (TERMINAL_STATUSES[row.status]) return false;
         var sortValue = LegacySlotTimeParser.toComparableTime(row.sort_key);
         if (sortValue === null) return false;
         return sortValue >= nowMs;
