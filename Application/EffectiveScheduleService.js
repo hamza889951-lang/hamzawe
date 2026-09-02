@@ -18,8 +18,16 @@
  *   historical recurring payload هي immutable historical data وتُتجاهل
  *   كسلطة تشغيلية — لا تُعاد كتابتها ولا تُستخدم في الإسقاط.
  *
+ * M4-D — slot-level availability evaluation:
+ * - projectSlotAvailability: evaluates whether a specific slot interval
+ *   [slotStart, slotStart + duration) should be operationally available
+ *   based on the EffectiveSchedule. Read-only; no mutation.
+ * - projectDayEffectiveWindow: returns the effective recurring-level
+ *   work window for a given date (used by horizon materialization).
+ *
  * لا يضمن:
- * - أي mutation أو Availability materialization (M4-D).
+ * - أي mutation أو Availability materialization (materialization is in
+ *   AvailabilityHorizonMaintainer, which calls this service).
  */
 const EffectiveScheduleService = {
 
@@ -358,5 +366,265 @@ const EffectiveScheduleService = {
     var leap = (year % 4 === 0 && year % 100 !== 0) || (year % 400 === 0);
     if (leap) dim[1] = 29;
     return day <= dim[month - 1];
+  },
+
+  _daysInMonth: function(year, month) {
+    var dim = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    var leap = (year % 4 === 0 && year % 100 !== 0) || (year % 400 === 0);
+    if (leap) dim[1] = 29;
+    return dim[month - 1];
+  },
+
+  _pad2: function(n) {
+    return n < 10 ? '0' + n : String(n);
+  },
+
+  _pad4: function(n) {
+    if (n < 10) return '000' + n;
+    if (n < 100) return '00' + n;
+    if (n < 1000) return '0' + n;
+    return String(n);
+  },
+
+  _formatStamp: function(year, month, day, hh, mm) {
+    return this._pad4(year) + '-' + this._pad2(month) + '-' + this._pad2(day) + 'T' + this._pad2(hh) + ':' + this._pad2(mm);
+  },
+
+  /**
+   * Compute the stamp for slotStart + durationMinutes.
+   * Handles day overflow (midnight crossing) correctly.
+   */
+  _addMinutesToStamp: function(at, durationMinutes) {
+    var totalMin = at.minutes + durationMinutes;
+    var year = at.year;
+    var month = at.month;
+    var day = at.day;
+
+    while (totalMin >= 1440) {
+      totalMin -= 1440;
+      day += 1;
+      var dim = this._daysInMonth(year, month);
+      if (day > dim) {
+        day = 1;
+        month += 1;
+        if (month > 12) { month = 1; year += 1; }
+      }
+    }
+
+    var hh = Math.floor(totalMin / 60);
+    var mm = totalMin % 60;
+    return this._formatStamp(year, month, day, hh, mm);
+  },
+
+  /**
+   * M4-D — Evaluate whether a specific slot interval should be
+   * operationally available based on the EffectiveSchedule.
+   *
+   * The slot interval [slotStartStamp, slotStartStamp + slotDurationMinutes)
+   * must fall entirely within the effective work interval.
+   *
+   * @param {Object} controlContext
+   * @param {string} slotStartStamp — 'YYYY-MM-DDTHH:mm' Asia/Baghdad
+   * @param {number} slotDurationMinutes — configured operational duration
+   * @returns {Result} ok({ available: boolean, intent: string })
+   */
+  projectSlotAvailability: function(controlContext, slotStartStamp, slotDurationMinutes) {
+    var scopeResult = this._scopeFromControlContext(controlContext);
+    if (!scopeResult.ok) return scopeResult;
+
+    var atResult = this.parseLocalDateTime(slotStartStamp);
+    if (!atResult.ok) return atResult;
+
+    if (typeof slotDurationMinutes !== 'number' || !isFinite(slotDurationMinutes) || slotDurationMinutes <= 0) {
+      return Result.fail(
+        'INVALID_SLOT_DURATION',
+        'slotDurationMinutes must be a positive finite number',
+        { value: slotDurationMinutes }
+      );
+    }
+
+    var baselineResult = DoctorScheduleReadService.readCurrentEffectiveSchedule(controlContext);
+    if (!baselineResult.ok) return baselineResult;
+
+    var listResult = ScheduleChangeRepository.listByScopeResult(
+      scopeResult.data.doctorId,
+      scopeResult.data.clinicId
+    );
+    if (!listResult.ok) return listResult;
+
+    return this._evaluateSlotFromSources(
+      scopeResult.data,
+      atResult.data,
+      baselineResult.data,
+      listResult.data,
+      slotDurationMinutes
+    );
+  },
+
+  /**
+   * M4-D — Pure slot evaluation from already-loaded sources (no I/O).
+   */
+  _evaluateSlotFromSources: function(scope, at, baseline, records, slotDurationMinutes) {
+    var slotStartMin = at.minutes;
+    var slotEndStamp = this._addMinutesToStamp(at, slotDurationMinutes);
+
+    var activeResult = this._activeRecords(records, at.stamp);
+    if (!activeResult.ok) return activeResult;
+    var active = activeResult.data;
+
+    var recurringResult = this._effectiveRecurring(baseline, active, at.stamp);
+    if (!recurringResult.ok) return recurringResult;
+    var recurring = recurringResult.data;
+
+    var effWindow = recurring.workWindow;
+    var wStart = this._clockToMinutes(effWindow.start);
+    var wEnd = this._clockToMinutes(effWindow.end);
+
+    var weekday = this._weekdaySunday0(at.year, at.month, at.day);
+    var dayKey = this.DAY_KEYS[weekday];
+    var dayOpen = recurring.days[dayKey] === true;
+
+    // Check for applicable temporary overrides that overlap the slot interval
+    var overrideCheck = this._overridesForSlotInterval(active, at.stamp, slotEndStamp);
+    if (!overrideCheck.ok) return overrideCheck;
+    var overrides = overrideCheck.data;
+
+    // Determine availability
+    var available = false;
+    var intent = 'CLOSED';
+
+    if (overrides.temporaryClose) {
+      // TEMPORARY_CLOSE overlaps some part of the slot → not available
+      intent = 'CLOSED';
+      available = false;
+    } else if (overrides.temporaryOpen) {
+      // EXCEPTIONAL_OPEN replaces normal window
+      var ow = overrides.temporaryOpen.payload && overrides.temporaryOpen.payload.workWindow;
+      if (!ow) {
+        return Result.fail(
+          'SCHEDULE_CHANGE_SOURCE_INVALID',
+          'Exceptional open override is missing workWindow',
+          { changeId: overrides.temporaryOpen.changeId }
+        );
+      }
+      var owStart = this._clockToMinutes(ow.start);
+      var owEnd = this._clockToMinutes(ow.end);
+      if (owStart !== null && owEnd !== null &&
+          slotStartMin >= owStart && (slotStartMin + slotDurationMinutes) <= owEnd) {
+        available = true;
+        intent = 'EXCEPTIONAL_OPEN';
+      }
+    } else if (dayOpen) {
+      // Normal working day — slot must fit entirely within work window
+      if (wStart !== null && wEnd !== null &&
+          slotStartMin >= wStart && (slotStartMin + slotDurationMinutes) <= wEnd) {
+        available = true;
+        intent = 'WORKING';
+      }
+    }
+
+    return Result.ok({ available: available, intent: intent });
+  },
+
+  /**
+   * Find temporary overrides (CLOSE or OPEN) whose [effectiveFrom, effectiveTo)
+   * overlaps with [slotStartStamp, slotEndStamp).
+   *
+   * Overlap: A < D AND C < B for intervals [A,B) and [C,D).
+   */
+  _overridesForSlotInterval: function(active, slotStartStamp, slotEndStamp) {
+    var temporaryClose = null;
+    var temporaryOpen = null;
+    var closeMatches = [];
+    var openMatches = [];
+
+    for (var i = 0; i < active.length; i++) {
+      var rec = active[i];
+      if (rec.changeKind !== ScheduleChangeRepository.KIND.TEMPORARY_CLOSE &&
+          rec.changeKind !== ScheduleChangeRepository.KIND.TEMPORARY_OPEN) {
+        continue;
+      }
+      if (!rec.effectiveFrom || !rec.effectiveTo) {
+        return Result.fail(
+          'SCHEDULE_CHANGE_SOURCE_INVALID',
+          'Temporary override requires effectiveFrom and effectiveTo',
+          { changeId: rec.changeId }
+        );
+      }
+      // Overlap: effectiveFrom < slotEndStamp AND slotStartStamp < effectiveTo
+      if (this.compareStamps(rec.effectiveFrom, slotEndStamp) < 0 &&
+          this.compareStamps(slotStartStamp, rec.effectiveTo) < 0) {
+        if (rec.changeKind === ScheduleChangeRepository.KIND.TEMPORARY_CLOSE) {
+          closeMatches.push(rec);
+        } else {
+          openMatches.push(rec);
+        }
+      }
+    }
+
+    if (closeMatches.length > 1) {
+      return Result.fail(
+        'SCHEDULE_INTENT_CONFLICT',
+        'Multiple temporary close overrides overlap the slot interval',
+        { changeIds: closeMatches.map(function(m) { return m.changeId; }) }
+      );
+    }
+    if (openMatches.length > 1) {
+      return Result.fail(
+        'SCHEDULE_INTENT_CONFLICT',
+        'Multiple temporary open overrides overlap the slot interval',
+        { changeIds: openMatches.map(function(m) { return m.changeId; }) }
+      );
+    }
+
+    return Result.ok({
+      temporaryClose: closeMatches.length ? closeMatches[0] : null,
+      temporaryOpen: openMatches.length ? openMatches[0] : null
+    });
+  },
+
+  /**
+   * M4-D — Returns the effective recurring-level schedule for a date.
+   * Used by AvailabilityHorizonMaintainer for slot generation decisions.
+   * Does NOT consider temporary overrides (those are per-slot during reconciliation).
+   *
+   * @param {Object} controlContext
+   * @param {string} dateStr — 'YYYY-MM-DD'
+   * @returns {Result} ok({ isWorkingDay, workWindow: {start, end}, slotDurationMinutes, source })
+   */
+  projectDayEffectiveWindow: function(controlContext, dateStr) {
+    var scopeResult = this._scopeFromControlContext(controlContext);
+    if (!scopeResult.ok) return scopeResult;
+
+    // Build a stamp for noon on the given date to evaluate
+    var atResult = this.parseLocalDateTime(dateStr + 'T12:00');
+    if (!atResult.ok) return atResult;
+
+    var baselineResult = DoctorScheduleReadService.readCurrentEffectiveSchedule(controlContext);
+    if (!baselineResult.ok) return baselineResult;
+
+    var listResult = ScheduleChangeRepository.listByScopeResult(
+      scopeResult.data.doctorId,
+      scopeResult.data.clinicId
+    );
+    if (!listResult.ok) return listResult;
+
+    var activeResult = this._activeRecords(listResult.data, atResult.data.stamp);
+    if (!activeResult.ok) return activeResult;
+
+    var recurringResult = this._effectiveRecurring(baselineResult.data, activeResult.data, atResult.data.stamp);
+    if (!recurringResult.ok) return recurringResult;
+    var recurring = recurringResult.data;
+
+    var weekday = this._weekdaySunday0(atResult.data.year, atResult.data.month, atResult.data.day);
+    var dayKey = this.DAY_KEYS[weekday];
+    var dayOpen = recurring.days[dayKey] === true;
+
+    return Result.ok({
+      isWorkingDay: dayOpen,
+      workWindow: recurring.workWindow,
+      slotDurationMinutes: baselineResult.data.slotDurationMinutes,
+      source: recurring.sourceChangeId ? 'RECURRING_CHANGE' : 'SETTINGS'
+    });
   }
 };
