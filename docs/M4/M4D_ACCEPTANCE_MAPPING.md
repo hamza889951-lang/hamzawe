@@ -10,14 +10,14 @@
 
 ## Executive Summary
 
-This document maps the **53 official acceptance criteria** from the frozen M4-D contract to specific test cases. Additionally, **6 supplementary hardening tests** were added per supervisor review for extra governance assurance:
+This document maps the **53 official acceptance criteria** from the frozen M4-D contract to specific test cases. Additionally, **10 supplementary hardening tests** were added per supervisor review for extra governance assurance:
 
 - **I5**: Explicit partial-day close with slot interval semantics
 - **Q1-Q5**: Source snapshot, gap filling, deduplication, partial failure
 
 ```
 Official Frozen Contract:    53 criteria (M4D-01 through M4D-53)
-Additional hardening tests:   6 tests  (I5 + Q1 through Q5)
+Additional hardening tests:   10 tests (I5 + Q1-Q5 + PREV-1 to PREV-4)
 ────────────────────────────────────────────────────────────
 Total M4-D test suite:       57 tests, 57/57 passing
 ```
@@ -86,9 +86,9 @@ The I5 and Q-series tests are **additional hardening evidence** and do NOT exten
 
 ---
 
-## Supplementary Hardening Tests (I5 + Q1 through Q5)
+## Supplementary Hardening Tests (I5 + Q1-Q5 + PREV-1 to PREV-4)
 
-These 6 tests were added per supervisor review as additional governance evidence. They are **not part of the frozen contract** and do **not** extend the acceptance criteria beyond M4D-01..M4D-53.
+These 10 tests were added per supervisor review as additional governance evidence. They are **not part of the frozen contract** and do **not** extend the acceptance criteria beyond M4D-01..M4D-53.
 
 | Test | Description | Purpose |
 |------|-------------|---------|
@@ -98,6 +98,11 @@ These 6 tests were added per supervisor review as additional governance evidence
 | M4D-Q3 | Deduplication: repeated runs do not create duplicate slots | Verifies sort_key deduplication |
 | M4D-Q4 | Partial append: handles batch insert failure gracefully | Verifies partial failure isolation |
 | M4D-Q5 | Gap filling: only creates missing slots, not duplicates of existing | Verifies required - existing = missing semantics |
+| M4D-PREV-1 | preview: invalid slot_generation_days fails closed | Verifies preview() has no silent fallback on invalid config |
+| M4D-PREV-2 | preview: zero slot_generation_days fails closed | Verifies preview() rejects zero value |
+| M4D-PREV-3 | preview: negative slot_generation_days fails closed | Verifies preview() rejects negative value |
+| M4D-PREV-4 | preview: valid config succeeds and uses calculateGenerationPlan | Verifies preview() uses correct semantics |
+
 
 ---
 
@@ -179,9 +184,10 @@ Partial TEMPORARY_CLOSE on 2026-09-03 from 10:00 to 12:00:
 ### Generation (3 tests)
 - **C1-C3**: Missing slot generation
 
-### Supplementary Hardening (6 tests)
+### Supplementary Hardening (10 tests)
 - **I5**: Partial-day close interval-level semantics
 - **Q1-Q5**: Source snapshot, gap filling, deduplication, partial failure
+- **PREV-1 to PREV-4**: Preview fail-closed behavior for invalid slot_generation_days
 
 ---
 
@@ -218,7 +224,7 @@ node --check AvailabilityHorizonMaintainer.js
 
 ```
 Official Frozen Contract:    53 criteria → 53/53 covered
-Additional hardening tests:   6 tests  → I5 + Q1-Q5 passing
-Total M4-D test suite:       57/57 passing
+Additional hardening tests:  10 tests  → I5 + Q1-Q5 passing
+Total M4-D test suite:       61/61 passing
 Regression suite:            606/607 (M1B-X3 pre-existing)
 ```
