@@ -54,6 +54,8 @@ function createSandbox() {
   const state = {
     sheets: {},
     failRead: {},
+    failReadSlotId: null,
+    readHook: null,
     failWrite: false,
     logs: [],
     sends: [],
@@ -106,6 +108,14 @@ function createSandbox() {
     },
     findRowByColumn: function(name, column, value) {
       guardRead(name);
+      // Generic read hook: fired BEFORE the row is returned, so a test can
+      // model a concurrent decision becoming visible at the exact instant a
+      // sweep reads (round 2, P2).
+      if (state.readHook) state.readHook(name, column, value);
+      if (name === 'Availability' && state.failReadSlotId &&
+          column === 'slot_id' && String(value) === String(state.failReadSlotId)) {
+        throw new Error('INJECTED_READ_FAILURE: slot ' + value);
+      }
       const rows = state.sheets[name].rows;
       for (let i = 0; i < rows.length; i++) {
         if (String(rows[i][column]) === String(value)) return Object.assign({}, rows[i]);
@@ -254,6 +264,8 @@ function resetAll() {
     Conversations: { headers: CONVERSATION_HEADERS.slice(), rows: [] }
   };
   state.failRead = {};
+  state.failReadSlotId = null;
+  state.readHook = null;
   state.failWrite = false;
   state.logs = [];
   state.sends = [];
@@ -2018,7 +2030,7 @@ test('M4F-87 — [F11] every final mutation re-reads proposal, original, target 
     disruption_kind: current.disruption_kind,
     disruption_expires_at_ms: current.disruption_expires_at_ms
   };
-  const stale = SVC._revalidate(ctx2.phone, proposal, sandbox.Clock.now());
+  const stale = SVC._revalidateForConfirmation(ctx2.phone, proposal, sandbox.Clock.now());
   assert.strictEqual(stale.ok, false);
   assert.strictEqual(stale.error.code, 'M4F_CONFLICTING_ACTION', 'fresh proposal read');
 
@@ -2044,11 +2056,17 @@ test('M4F-88 — [F12] decline does not modify a slot that is no longer owned by
 
   const reply = respond(ctx.phone, '2');
 
-  assert.strictEqual(reply.data.failureCode, 'M4F_STALE_CANDIDATE', 'classified, not a silent success');
+  // The cleanup itself still succeeds — the pending interaction must never
+  // outlive its proposal — but the release is ownership-checked and therefore
+  // classified rather than performed. No silent success claiming a move.
+  assert.strictEqual(reply.data.declined, true);
+  assert.strictEqual(reply.data.released, false, 'nothing was released');
+  assert.strictEqual(reply.data.releaseReason, 'NOT_OWNED_BY_PROPOSAL', 'classified, not a silent success');
+
   const after = slotById(ctx.candidate.slot_id);
   assert.strictEqual(after.status, before.status, 'unrelated slot untouched');
   assert.strictEqual(after.phone, '9647809999999', 'foreign ownership preserved');
-  assert.strictEqual(conversationOf(ctx.phone).state, 'WAITING_DISRUPTION_CONFIRMATION');
+  assert.strictEqual(conversationOf(ctx.phone).disruption_proposal_id, '', 'pending cleared');
 });
 
 test('M4F-89 — [F12] timeout does not modify a slot that is no longer owned by the proposal', function() {
@@ -2148,6 +2166,286 @@ test('M4F-92 — [F15] the service owns no duplicated boundary (ownership, not l
    'BookingService.confirmReservedSlot'].forEach(function(token) {
     assert.ok(src.indexOf(token) !== -1, 'must reuse the existing boundary: ' + token);
   });
+});
+
+
+// ═════════════════════════════════════════════════════════════════════════
+
+// ═════════════════════════════════════════════════════════════════════════
+// ROUND 2 — decline/timeout cleanup semantics (P1)
+// ═════════════════════════════════════════════════════════════════════════
+
+test('M4F-93 — [R2-P1] decline still frees the target when the original reopened', function() {
+  resetAll();
+  const ctx = happyPath('CONFIRMED');
+  runStage();
+
+  // M4-D / schedule-change recovery made the original available again. The
+  // disruption that justified the proposal no longer exists — but the
+  // reserved target must still be releasable by the patient.
+  const original = slotById(ctx.original.slot_id);
+  original.is_available = true;
+  const before = Object.assign({}, original);
+
+  const reply = respond(ctx.phone, '2');
+
+  assert.strictEqual(reply.data.declined, true, 'the patient can still decline');
+  assert.strictEqual(reply.data.released, true, 'the reserved target is freed');
+  assert.strictEqual(slotById(ctx.candidate.slot_id).status, 'FREE', 'target freed');
+  assert.strictEqual(slotById(ctx.candidate.slot_id).phone, '', 'target ownership released');
+
+  const after = slotById(ctx.original.slot_id);
+  assert.strictEqual(after.status, before.status, 'original status untouched');
+  assert.strictEqual(after.phone, before.phone, 'original ownership untouched');
+  assert.strictEqual(after.is_available, true, 'original availability untouched');
+  assert.strictEqual(conversationOf(ctx.phone).disruption_proposal_id, '', 'pending cleared');
+  assert.strictEqual(reservedCountFor(ctx.phone), 0, 'no leaked reservation');
+  assert.strictEqual(confirmedCountFor(ctx.phone), 1, 'exactly one active appointment');
+});
+
+test('M4F-94 — [R2-P1] decline still cleans up when the original changed or was cancelled', function() {
+  resetAll();
+  const ctx = happyPath('CONFIRMED');
+  runStage();
+
+  // The original left the proposal's expected lifecycle entirely.
+  slotById(ctx.original.slot_id).status = 'CANCELLED';
+  const before = Object.assign({}, slotById(ctx.original.slot_id));
+
+  const reply = respond(ctx.phone, '2');
+
+  assert.strictEqual(reply.data.declined, true);
+  assert.strictEqual(reply.data.released, true, 'target freed');
+  assert.strictEqual(slotById(ctx.candidate.slot_id).status, 'FREE');
+
+  const after = slotById(ctx.original.slot_id);
+  assert.strictEqual(after.status, before.status, 'no cross-appointment mutation');
+  assert.strictEqual(after.phone, before.phone, 'foreign slot untouched');
+  assert.strictEqual(conversationOf(ctx.phone).disruption_proposal_id, '', 'pending cleared');
+  assert.strictEqual(reservedCountFor(ctx.phone), 0);
+});
+
+test('M4F-95 — [R2-P1] one state, two semantics: confirmation refuses, decline cleans up', function() {
+  resetAll();
+  const ctx = happyPath('CONFIRMED');
+  runStage();
+
+  slotById(ctx.original.slot_id).is_available = true;
+
+  // The split is proven by the SAME durable state producing two different,
+  // each contract-correct, outcomes.
+  const confirm = respond(ctx.phone, '1');
+  assert.strictEqual(confirm.data.failureCode, 'M4F_STALE_ORIGINAL',
+    'confirmation still refuses: moving is now unnecessary');
+  assert.strictEqual(slotById(ctx.candidate.slot_id).status, 'RESERVED', 'confirmation mutated nothing');
+
+  const decline = respond(ctx.phone, '2');
+  assert.strictEqual(decline.data.declined, true, 'cleanup is not gated on the original');
+  assert.strictEqual(slotById(ctx.candidate.slot_id).status, 'FREE', 'target freed by the decline');
+  assert.strictEqual(slotById(ctx.original.slot_id).is_available, true, 'original still untouched');
+});
+
+test('M4F-96 — [R2-P1] cleanup revalidation still guards the proposal identity', function() {
+  resetAll();
+  const ctx = happyPath('CONFIRMED');
+  runStage();
+
+  const current = Object.assign({}, conversationOf(ctx.phone));
+  const stale = {
+    disruption_proposal_id: 'DSP_SUPERSEDED',
+    disruption_original_slot_id: current.disruption_original_slot_id,
+    disruption_proposal_slot_id: current.disruption_proposal_slot_id,
+    disruption_kind: current.disruption_kind,
+    disruption_expires_at_ms: current.disruption_expires_at_ms
+  };
+
+  const result = SVC._decline(ctx.phone, stale);
+
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.error.code, 'M4F_CONFLICTING_ACTION', 'identity is still enforced');
+  assert.strictEqual(slotById(ctx.candidate.slot_id).status, 'RESERVED', 'no mutation on a stale decision');
+  assert.strictEqual(conversationOf(ctx.phone).disruption_proposal_id, current.disruption_proposal_id,
+    'the current interaction was not cleared');
+});
+
+test('M4F-97 — [R2-P1] decline is a cleanup, not an expiry decision: it never consults the clock', function() {
+  resetAll();
+  const ctx = happyPath('CONFIRMED');
+  runStage();
+
+  const proposal = {
+    disruption_proposal_id: conversationOf(ctx.phone).disruption_proposal_id,
+    disruption_original_slot_id: conversationOf(ctx.phone).disruption_original_slot_id,
+    disruption_proposal_slot_id: conversationOf(ctx.phone).disruption_proposal_slot_id,
+    disruption_kind: conversationOf(ctx.phone).disruption_kind,
+    disruption_expires_at_ms: conversationOf(ctx.phone).disruption_expires_at_ms
+  };
+
+  // Well past the 30-minute window.
+  state.nowIso = new Date(EVAL_MS + 90 * 60000).toISOString();
+
+  const result = SVC._decline(ctx.phone, proposal);
+
+  assert.strictEqual(result.ok, true, 'an expired proposal is still cleaned up');
+  assert.strictEqual(result.data.released, true, 'release, never keep');
+  assert.strictEqual(slotById(ctx.candidate.slot_id).status, 'FREE');
+  assert.strictEqual(conversationOf(ctx.phone).disruption_proposal_id, '', 'pending cleared');
+});
+
+// ═════════════════════════════════════════════════════════════════════════
+// ROUND 2 — recovery sweep vs concurrent inbound confirmation (P2)
+// ═════════════════════════════════════════════════════════════════════════
+
+test('M4F-98 — [R2-P2] a stale sweep never clears a newer interaction', function() {
+  resetAll();
+  const ctx = happyPath('RESERVED');
+  runStage();
+  failAfterConfirmation(ctx.candidate.slot_id);
+  respond(ctx.phone, '1');
+  state.failWrite = false;
+
+  // A partially completed confirmation. While the sweep releases the original
+  // (phase B, outside the lock), a concurrent inbound decision replaces the
+  // interaction with a NEWER proposal.
+  let injected = false;
+  state.writeHook = function(name, row, fields) {
+    if (injected) return;
+    if (name === 'Availability' && row.slot_id === ctx.original.slot_id && fields.status === 'FREE') {
+      injected = true;
+      state.writeHook = null;
+      conversationOf(ctx.phone).disruption_proposal_id = 'DSP_NEWER';
+    }
+  };
+
+  const result = runStage();
+
+  assert.strictEqual(injected, true, 'the interleaving actually happened at the release');
+  assert.strictEqual(result.data.recovered.length, 1);
+  assert.strictEqual(result.data.recovered[0].outcome, 'STALE_SWEEP_ABORTED',
+    'the sweep abandoned the clear');
+  assert.strictEqual(conversationOf(ctx.phone).disruption_proposal_id, 'DSP_NEWER',
+    'the newer interaction survived');
+  assert.strictEqual(conversationOf(ctx.phone).state, 'WAITING_DISRUPTION_CONFIRMATION',
+    'the newer interaction was not erased');
+});
+
+test('M4F-99 — [R2-P2] the sweep skips a phone whose interaction already moved on', function() {
+  resetAll();
+  const ctx = happyPath('RESERVED');
+  runStage();
+  failAfterConfirmation(ctx.candidate.slot_id);
+  respond(ctx.phone, '1');
+  state.failWrite = false;
+
+  // The sweep enumerates the pending rows, and at the instant it performs its
+  // fresh per-phone read the interaction has already been replaced by a newer
+  // proposal. Its enumerated snapshot is therefore stale.
+  let injected = false;
+  state.readHook = function(name) {
+    if (injected) return;
+    if (name === 'Conversations') {
+      injected = true;
+      state.readHook = null;
+      conversationOf(ctx.phone).disruption_proposal_id = 'DSP_NEWER';
+    }
+  };
+
+  const result = runStage();
+
+  assert.strictEqual(injected, true, 'the concurrent change landed at the sweep read');
+  assert.strictEqual(result.data.recovered.length, 0, 'nothing decided from a stale snapshot');
+  assert.strictEqual(slotById(ctx.original.slot_id).status, 'RESERVED', 'the sweep mutated nothing');
+  assert.strictEqual(conversationOf(ctx.phone).disruption_proposal_id, 'DSP_NEWER', 'newer interaction intact');
+});
+
+test('M4F-100 — [R2-P2] the sweep still converges when the original was released concurrently', function() {
+  resetAll();
+  const ctx = happyPath('RESERVED');
+  runStage();
+  failAfterConfirmation(ctx.candidate.slot_id);
+  respond(ctx.phone, '1');
+  state.failWrite = false;
+
+  // A concurrent path already released the original hold.
+  const original = slotById(ctx.original.slot_id);
+  original.status = 'FREE';
+  original.phone = '';
+
+  const result = runStage();
+
+  assert.strictEqual(result.data.recovered.length, 1);
+  assert.strictEqual(result.data.recovered[0].outcome, 'CLEARED', 'interaction finalized only');
+  assert.strictEqual(conversationOf(ctx.phone).state, 'BOOKED', 'pending cleared');
+  assert.strictEqual(confirmedCountFor(ctx.phone), 1);
+  assert.strictEqual(reservedCountFor(ctx.phone), 0);
+});
+
+// ═════════════════════════════════════════════════════════════════════════
+// ROUND 2 — notification retry requires a freshly verified target (P2)
+// ═════════════════════════════════════════════════════════════════════════
+
+test('M4F-101 — [R2-P2] a retry never sends when the target cannot be read', function() {
+  resetAll();
+  const ctx = happyPath('CONFIRMED');
+  state.sendShouldFail = true;
+  runStage();
+  const proposalId = conversationOf(ctx.phone).disruption_proposal_id;
+
+  state.sendShouldFail = false;
+  state.sends.length = 0;
+  state.failReadSlotId = ctx.candidate.slot_id;
+
+  const result = runStage();
+  const notification = result.data.skipped[0].notification;
+
+  assert.strictEqual(notification.retried, false);
+  assert.strictEqual(notification.reason, 'TARGET_READ_FAILED', 'classified for recovery');
+  assert.strictEqual(notification.staleCandidate, true);
+  assert.strictEqual(state.sends.length, 0, 'no notification was sent');
+  assert.strictEqual(conversationOf(ctx.phone).disruption_proposal_id, proposalId,
+    'the proposal is retained for recovery, not silently dropped');
+});
+
+test('M4F-102 — [R2-P2] a retry never sends when the target is no longer the proposal’s reservation', function() {
+  resetAll();
+  const ctx = happyPath('CONFIRMED');
+  state.sendShouldFail = true;
+  runStage();
+
+  state.sendShouldFail = false;
+  state.sends.length = 0;
+  // Maintenance released the reserved target meanwhile.
+  slotById(ctx.candidate.slot_id).status = 'FREE';
+  slotById(ctx.candidate.slot_id).phone = '';
+
+  const result = runStage();
+  const notification = result.data.skipped[0].notification;
+
+  assert.strictEqual(notification.retried, false);
+  assert.strictEqual(notification.reason, 'STALE_CANDIDATE', 'classified, never notified');
+  assert.strictEqual(notification.staleCandidate, true);
+  assert.strictEqual(state.sends.length, 0, 'no truncated message reached the patient');
+});
+
+test('M4F-103 — [R2-P2] a verified target is retried with the same proposal identity', function() {
+  resetAll();
+  const ctx = happyPath('CONFIRMED');
+  state.sendShouldFail = true;
+  runStage();
+  const proposalId = conversationOf(ctx.phone).disruption_proposal_id;
+
+  state.sendShouldFail = false;
+  state.sends.length = 0;
+
+  const result = runStage();
+  const notification = result.data.skipped[0].notification;
+
+  assert.strictEqual(notification.retried, true, 'a verified reservation is retried');
+  assert.strictEqual(notification.proposalId, proposalId, 'same proposal identity');
+  assert.strictEqual(state.sends.length, 1, 'exactly one retry notification');
+  assert.strictEqual(state.sends[0].text.indexOf('غير محدد'), -1,
+    'the retry never offers an undefined slot');
+  assert.strictEqual(reservedCountFor(ctx.phone), 1, 'no second reservation');
 });
 
 

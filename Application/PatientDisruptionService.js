@@ -105,7 +105,8 @@ const PatientDisruptionService = {
     ORIGINAL_RACE: 'M4F_ORIGINAL_RACE',
     NO_ALTERNATIVE: 'M4F_NO_ALTERNATIVE',
     B6_RECOVERY_REQUIRED: 'M4F_B6_RECOVERY_REQUIRED',
-    RECOVERY_REQUIRED: 'M4F_PROPOSAL_CLEANUP_REQUIRED'
+    RECOVERY_REQUIRED: 'M4F_PROPOSAL_CLEANUP_REQUIRED',
+    RECOVERY_STALE_ABORTED: 'M4F_RECOVERY_STALE_ABORTED'
   },
 
   /**
@@ -422,7 +423,7 @@ const PatientDisruptionService = {
     }
 
     if (this._isDecline(normalizedMessage)) {
-      const declined = this._decline(phone, proposal, now);
+      const declined = this._decline(phone, proposal);
       if (!declined.ok) return this._replyForFailure(declined, disruptionState, 'decline');
       return declined;
     }
@@ -707,8 +708,46 @@ const PatientDisruptionService = {
       return { retried: false, reason: 'NOT_RETRYABLE', status: proposal.disruption_notification_status };
     }
 
+    // A retry may only describe a reservation this proposal still owns. If
+    // the target cannot be freshly verified as RESERVED + owned, there is
+    // nothing safe to offer the patient: sending anyway would produce a
+    // truncated message offering an undefined slot (round 2, P2). The state
+    // is classified for recovery instead of being notified.
     const readResult = SlotRepository.findByIdResult(proposal.disruption_proposal_slot_id);
-    const candidate = readResult.ok ? readResult.data : null;
+    if (!readResult.ok) {
+      this._log(this.LOG.NOTIFICATION_FAILED, phone, proposal.disruption_proposal_slot_id, false, {
+        proposalId: proposal.disruption_proposal_id,
+        reason: 'TARGET_READ_FAILED',
+        code: readResult.error ? readResult.error.code : 'UNKNOWN'
+      });
+      return {
+        retried: false,
+        reason: 'TARGET_READ_FAILED',
+        staleCandidate: true,
+        proposalId: proposal.disruption_proposal_id,
+        error: readResult.error
+      };
+    }
+
+    const candidate = readResult.data;
+    if (!candidate ||
+        candidate.phone !== phone ||
+        candidate.status !== Config.VOCABULARY.STATUS.RESERVED ||
+        !SlotRepository.isOperationallyAvailable(candidate.is_available)) {
+      this._log(this.LOG.NOTIFICATION_FAILED, phone, proposal.disruption_proposal_slot_id, false, {
+        proposalId: proposal.disruption_proposal_id,
+        reason: 'STALE_CANDIDATE',
+        currentStatus: candidate ? candidate.status : null,
+        owner: candidate ? candidate.phone : null
+      });
+      return {
+        retried: false,
+        reason: 'STALE_CANDIDATE',
+        staleCandidate: true,
+        proposalId: proposal.disruption_proposal_id,
+        slotId: proposal.disruption_proposal_slot_id
+      };
+    }
 
     // Same proposal identity: no new reservation, no new proposal.
     const sent = this._notifyProposal(phone, proposal, candidate, sendFn);
@@ -782,7 +821,7 @@ const PatientDisruptionService = {
     // Common revalidation (Contract §6.1): fresh reads of the proposal, the
     // original, the target and the current time. Stale evidence alone never
     // mutates anything.
-    const revalidated = this._revalidate(phone, proposal, now);
+    const revalidated = this._revalidateForConfirmation(phone, proposal, now);
     if (!revalidated.ok) return revalidated;
 
     const current = revalidated.data.proposal;
@@ -956,6 +995,7 @@ const PatientDisruptionService = {
    * new schema field, no loss of ownership evidence.
    */
   _recoverPendingFinalizations: function() {
+    var self = this;
     const rowsResult = ConversationRepository.findConversationsByState(
       Config.VOCABULARY.CONVERSATION_STATE.WAITING_DISRUPTION_CONFIRMATION
     );
@@ -970,92 +1010,183 @@ const PatientDisruptionService = {
       const targetSlotId = row.disruption_proposal_slot_id;
       const originalSlotId = row.disruption_original_slot_id;
       if (!proposalId || !targetSlotId || !originalSlotId || !row.phone) continue;
+      const phone = row.phone;
 
-      const targetResult = SlotRepository.findByIdResult(targetSlotId);
-      if (!targetResult.ok) continue;
-      const target = targetResult.data;
-      // Only a partially-completed confirmation reaches this path.
-      if (!target || target.status !== Config.VOCABULARY.STATUS.CONFIRMED || target.phone !== row.phone) continue;
+      // ── PHASE A — decide under the per-phone lock (fresh reads only) ────
+      // The decision is taken while no concurrent inbound decision for the
+      // same phone can interleave, so a stale sweep can never act on a
+      // snapshot that an inbound confirmation has already moved past.
+      const decision = Lock.runExclusive(
+        'disruption:' + phone,
+        function() { return self._decideRecovery(phone, proposalId, targetSlotId, originalSlotId); },
+        Config.SYSTEM_POLICY.DISRUPTION_LOCK_TIMEOUT_MS
+      );
+      if (!decision.ok) continue;
+      if (decision.data.action === 'SKIP') continue;
 
-      const originalResult = SlotRepository.findByIdResult(originalSlotId);
-      if (!originalResult.ok) continue;
-      const original = originalResult.data;
+      // ── PHASE B — the slot mutation, outside the lock ──────────────────
+      // The Addendum forbids holding the global ScriptLock across a mutation.
+      // The release is ownership-checked by atomicUpdate, so it can only ever
+      // free a slot still RESERVED to this phone.
+      if (decision.data.action === 'RELEASE_AND_CLEAR') {
+        const released = this._releaseProposalTarget(phone, originalSlotId);
+        if (!released.ok) continue; // retry on the next run
+      }
 
-      if (!original || original.phone !== row.phone ||
-          original.status !== Config.VOCABULARY.STATUS.RESERVED) {
-        // Nothing owned to release: the original already returned to its own
-        // lifecycle. Finalize the interaction only.
-        const cleared = this._clearSession(row.phone, Config.VOCABULARY.CONVERSATION_STATE.BOOKED);
-        if (cleared.ok) recovered.push({ phone: row.phone, proposalId: proposalId, outcome: 'CLEARED' });
+      // ── PHASE C — clear guarded by a FRESH identity re-check ───────────
+      // Between phase A and here an inbound confirm/decline may have changed
+      // or replaced the interaction. Re-reading the identity under the lock
+      // is what makes a stale sweep unable to erase a newer decision: if the
+      // pending proposal is no longer the one this sweep read, the sweep
+      // abandons the clear entirely.
+      const finalized = Lock.runExclusive(
+        'disruption:' + phone,
+        function() {
+          const session = ConversationRepository.getDisruptionSession(phone);
+          if (!session.ok) return session;
+          if (!session.data.pending ||
+              session.data.proposal.disruption_proposal_id !== proposalId) {
+            return Result.ok({ cleared: false, reason: 'STALE_SWEEP_ABORTED' });
+          }
+          // Lock already held by this frame: call the repository directly.
+          return ConversationRepository.clearDisruptionSession(
+            phone, Config.VOCABULARY.CONVERSATION_STATE.BOOKED
+          );
+        },
+        Config.SYSTEM_POLICY.DISRUPTION_LOCK_TIMEOUT_MS
+      );
+      if (!finalized.ok) continue;
+
+      if (finalized.data && finalized.data.reason === 'STALE_SWEEP_ABORTED') {
+        // A newer inbound decision owns this interaction now. Never erase it.
+        recovered.push({
+          phone: phone, proposalId: proposalId, outcome: 'STALE_SWEEP_ABORTED',
+          releasedOriginal: decision.data.action === 'RELEASE_AND_CLEAR'
+        });
+        this._log(this.LOG.RECOVERY_STALE_ABORTED, phone, originalSlotId, false, {
+          proposalId: proposalId,
+          releasedOriginal: decision.data.action === 'RELEASE_AND_CLEAR'
+        });
         continue;
       }
 
-      const released = this._releaseProposalTarget(row.phone, originalSlotId);
-      if (!released.ok) continue; // retry on the next run
+      recovered.push({
+        phone: phone,
+        proposalId: proposalId,
+        outcome: decision.data.action === 'RELEASE_AND_CLEAR' ? 'RELEASED_AND_CLEARED' : 'CLEARED',
+        releasedOriginal: decision.data.action === 'RELEASE_AND_CLEAR'
+      });
 
-      const cleared = this._clearSession(row.phone, Config.VOCABULARY.CONVERSATION_STATE.BOOKED);
-      if (!cleared.ok) continue;
-      recovered.push({ phone: row.phone, proposalId: proposalId, outcome: 'RELEASED_AND_CLEARED' });
-
-      this._log(this.LOG.PROPOSAL_CONFIRMED, row.phone, targetSlotId, true, {
-        proposalId: proposalId, kind: 'RESERVED', recovered: true, originalReleased: true
+      this._log(this.LOG.PROPOSAL_CONFIRMED, phone, targetSlotId, true, {
+        proposalId: proposalId, kind: 'RESERVED', recovered: true,
+        originalReleased: decision.data.action === 'RELEASE_AND_CLEAR'
       });
     }
 
     return Result.ok(recovered);
   },
 
+  /**
+   * Phase A of the recovery sweep: read the durable rows and classify the
+   * interrupted confirmation. Executed under the per-phone lock, and it
+   * performs READS ONLY — no mutation, no outbound I/O.
+   *
+   * @returns {Result} ok({ action:'SKIP'|'CLEAR_ONLY'|'RELEASE_AND_CLEAR' })
+   */
+  _decideRecovery: function(phone, proposalId, targetSlotId, originalSlotId) {
+    const session = ConversationRepository.getDisruptionSession(phone);
+    if (!session.ok) return session;
+
+    // The interaction moved on (or was replaced by a newer proposal): this
+    // sweep's snapshot is stale, so it must not decide anything at all.
+    if (!session.data.pending ||
+        session.data.proposal.disruption_proposal_id !== proposalId) {
+      return Result.ok({ action: 'SKIP', reason: 'STALE_SWEEP' });
+    }
+
+    const targetResult = SlotRepository.findByIdResult(targetSlotId);
+    if (!targetResult.ok) return targetResult;
+    const target = targetResult.data;
+    // Only a partially-completed confirmation reaches the sweep at all.
+    if (!target || target.status !== Config.VOCABULARY.STATUS.CONFIRMED || target.phone !== phone) {
+      return Result.ok({ action: 'SKIP', reason: 'NO_PARTIAL_CONFIRMATION' });
+    }
+
+    const originalResult = SlotRepository.findByIdResult(originalSlotId);
+    if (!originalResult.ok) return originalResult;
+    const original = originalResult.data;
+
+    if (!original || original.phone !== phone ||
+        original.status !== Config.VOCABULARY.STATUS.RESERVED) {
+      // Nothing owned to release: the original already returned to its own
+      // lifecycle. Finalize the interaction only.
+      return Result.ok({ action: 'CLEAR_ONLY' });
+    }
+
+    return Result.ok({ action: 'RELEASE_AND_CLEAR' });
+  },
+
   // ═════════════════════════════════════════════════════════════════════
   // FINALIZATION — DECLINE / TIMEOUT (Contract §7 / Addendum §8)
   // ═════════════════════════════════════════════════════════════════════
 
-  _decline: function(phone, proposal, now) {
-    const revalidated = this._revalidate(phone, proposal, now);
+  /**
+   * Patient declined the proposed alternative (Contract §7 / Addendum §8).
+   *
+   * This is CLEANUP of the proposal target, not a move. The original
+   * appointment's continued validity is deliberately NOT a precondition: if
+   * the original reopened, was changed or was cancelled, the patient must
+   * still be able to decline, and the reserved target must still be freed —
+   * otherwise a slot stays reserved for a proposal nobody can ever cancel.
+   * The original is never mutated here (Addendum §8).
+   *
+   * Note the absence of `now`: a decline is not an expiry decision either.
+   * An already-expired proposal is still cleaned up, which is the safe
+   * direction (release, never keep).
+   */
+  _decline: function(phone, proposal) {
+    const revalidated = this._revalidateForCleanup(phone, proposal);
     if (!revalidated.ok) return revalidated;
 
     const current = revalidated.data.proposal;
 
-    const released = this._releaseProposalTarget(phone, current.disruption_proposal_slot_id);
-    if (!released.ok) return released;
+    // Ownership-checked: a target the proposal no longer owns is left alone.
+    const cleanup = this._cleanupProposalTarget(phone, current.disruption_proposal_slot_id);
+    if (!cleanup.ok) return cleanup;
 
     const nextState = this._fallbackState(current.disruption_kind, current.disruption_original_slot_id, phone);
     const cleared = this._clearSession(phone, nextState);
     if (!cleared.ok) return cleared;
 
     this._log(this.LOG.PROPOSAL_DECLINED, phone, current.disruption_proposal_slot_id, true, {
-      proposalId: current.disruption_proposal_id
+      proposalId: current.disruption_proposal_id,
+      released: cleanup.data.released,
+      releaseReason: cleanup.data.reason
     });
 
     return Result.ok({
       reply: 'تم إلغاء الموعد البديل المقترح. لم يتم تغيير موعدك.',
       conversationState: nextState,
-      declined: true
+      declined: true,
+      released: cleanup.data.released,
+      releaseReason: cleanup.data.reason
     });
   },
 
   _expire: function(phone, proposal, now) {
     // Ownership-checked release of the proposal TARGET only. The original
     // appointment keeps its own lifecycle semantics (Addendum §8).
-    const readResult = SlotRepository.findByIdResult(proposal.disruption_proposal_slot_id);
-    if (!readResult.ok) return readResult;
-
-    const target = readResult.data;
-    let released = Result.ok({ released: false, reason: 'TARGET_ABSENT' });
-
-    if (target && target.phone === phone && target.status === Config.VOCABULARY.STATUS.RESERVED) {
-      released = this._releaseProposalTarget(phone, proposal.disruption_proposal_slot_id);
-      if (!released.ok) return released;
-      released = Result.ok({ released: true, reason: 'RELEASED' });
-    } else if (target) {
-      released = Result.ok({ released: false, reason: 'NOT_OWNED_BY_PROPOSAL' });
-    }
+    const released = this._cleanupProposalTarget(phone, proposal.disruption_proposal_slot_id);
+    if (!released.ok) return released;
 
     const nextState = this._fallbackState(proposal.disruption_kind, proposal.disruption_original_slot_id, phone);
     const cleared = this._clearSession(phone, nextState);
     if (!cleared.ok) return cleared;
 
     this._log(this.LOG.PROPOSAL_EXPIRED, phone, proposal.disruption_proposal_slot_id, true, {
-      proposalId: proposal.disruption_proposal_id
+      proposalId: proposal.disruption_proposal_id,
+      released: released.data.released,
+      releaseReason: released.data.reason
     });
 
     return Result.ok({
@@ -1126,10 +1257,24 @@ const PatientDisruptionService = {
   },
 
   /**
-   * Common confirmation-time revalidation (Contract §6.1).
+   * CONFIRMATION-TIME revalidation (Contract §6.1).
+   *
+   * Supervisor review round 2 — the confirmation and the cleanup paths have
+   * DIFFERENT semantics and must never share one guard:
+   *
+   *   confirmation  → the original MUST still exist, still belong to the
+   *                   patient, still hold the status the proposal was built
+   *                   from, AND still be operationally affected
+   *                   (`is_available === false`). Otherwise moving the
+   *                   appointment is unnecessary (Contract §1, §6.4).
+   *   decline/timeout → cleanup of the PROPOSAL TARGET ONLY (Addendum §8).
+   *                   The contract makes the original's continued validity a
+   *                   precondition of *moving*, never of *cancelling the
+   *                   proposal itself*. See _revalidateForCleanup().
+   *
    * @returns {Result} ok({ proposal, original, target }) | fail(...)
    */
-  _revalidate: function(phone, proposal, now) {
+  _revalidateForConfirmation: function(phone, proposal, now) {
     const sessionResult = this._readSession(phone);
     if (!sessionResult.ok) return sessionResult;
 
@@ -1213,6 +1358,70 @@ const PatientDisruptionService = {
     }
 
     return Result.ok({ proposal: current, original: original, target: target });
+  },
+
+  /**
+   * CLEANUP-TIME revalidation (Addendum §8) — used by decline and timeout.
+   *
+   * Deliberately narrower than _revalidateForConfirmation(): it verifies that
+   * the interaction the decision was taken against is still the current one,
+   * and NOTHING about the original appointment. Cross-appointment mutation is
+   * forbidden by the contract, but that forbids *touching* the original — it
+   * does not make the original's validity a precondition for cancelling the
+   * proposal. Making it one is what leaked a reserved slot (round 2, P1).
+   *
+   * Expiry is not a blocker either: cleaning up an already-expired proposal
+   * is the safe direction, and the timeout path relies on exactly that.
+   *
+   * @returns {Result} ok({ proposal }) | fail(M4F_CONFLICTING_ACTION|…)
+   */
+  _revalidateForCleanup: function(phone, proposal) {
+    const sessionResult = this._readSession(phone);
+    if (!sessionResult.ok) return sessionResult;
+
+    if (!sessionResult.data.pending ||
+        sessionResult.data.proposal.disruption_proposal_id !== proposal.disruption_proposal_id) {
+      return Result.fail('M4F_CONFLICTING_ACTION', 'The pending disruption proposal is no longer current', {
+        proposalId: proposal.disruption_proposal_id
+      });
+    }
+
+    const current = sessionResult.data.proposal;
+    if (!current.disruption_proposal_slot_id) {
+      return Result.fail('M4F_INVALID_PROPOSAL_STATE', 'Pending disruption proposal has no target slot', {
+        proposalId: current.disruption_proposal_id
+      });
+    }
+
+    return Result.ok({ proposal: current });
+  },
+
+  /**
+   * Shared ownership-checked cleanup of a slot the proposal holds as RESERVED.
+   *
+   * Used by BOTH decline and timeout: the release itself is one semantic
+   * (never mutate a slot the proposal does not own); only the *revalidation
+   * guard* above it differs. "Not owned" is a classified clean outcome, not a
+   * failure — the interaction must still be cleared so a stale session cannot
+   * outlive its proposal.
+   *
+   * @returns {Result} ok({ released:boolean, reason:string }) | fail(...)
+   */
+  _cleanupProposalTarget: function(phone, slotId) {
+    const readResult = SlotRepository.findByIdResult(slotId);
+    if (!readResult.ok) return readResult;
+
+    const target = readResult.data;
+    if (!target) return Result.ok({ released: false, reason: 'TARGET_ABSENT' });
+
+    if (target.phone !== phone || target.status !== Config.VOCABULARY.STATUS.RESERVED) {
+      return Result.ok({ released: false, reason: 'NOT_OWNED_BY_PROPOSAL' });
+    }
+
+    const released = this._releaseProposalTarget(phone, slotId);
+    if (!released.ok) return released;
+
+    return Result.ok({ released: true, reason: 'RELEASED' });
   },
 
   /**
