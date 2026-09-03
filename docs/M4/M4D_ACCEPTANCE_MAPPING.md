@@ -1,20 +1,21 @@
 # M4-D Acceptance Mapping
 
-**Version**: 2.0  
-**Date**: 2026-09-02  
+**Version**: 2.1 (TD-04 governance reconciliation, 2026-09-03)  
+**Date**: 2026-09-02 (v2.0) — reconciled 2026-09-03  
 **Test Suite**: `tests/HardeningM4D.test.js`  
 **Contract**: HAMZAWE_M4D_FROZEN_CONTRACT_v1  
-**Status**: Pending Supervisor Approval
+**Status**: ACCEPTED & MERGED — PR #21 landed on `main` at `2c04b2d4f2a91bfc1b62c8b29eac20454552c294` (2026-09-02T14:39:03Z). This v2.1 pass corrects internal count/wording drift in this document only; no test, contract, or code was changed to make numbers match (TD-04 rule: actual tests + actual contract + actual evidence → documentation).
 
 ---
 
 ## Executive Summary
 
-This document maps the **53 official acceptance criteria** from the frozen M4-D contract to specific test cases. Additionally, **11 supplementary hardening tests** were added per supervisor review for extra governance assurance:
+This document maps the **53 official acceptance criteria** from the frozen M4-D contract to specific test cases. Additionally, **12 supplementary hardening tests** were added per supervisor review for extra governance assurance:
 
 - **I5**: Explicit partial-day close with slot interval semantics
 - **Q1-Q5**: Source snapshot, gap filling, deduplication, partial failure
 - **PREV-1 to PREV-5**: Preview fail-closed behavior
+- **E6**: ensureHorizon source-level fail-closed on Availability read failure
 
 ```
 Official Frozen Contract:    53 criteria (M4D-01 through M4D-53)
@@ -23,7 +24,7 @@ Additional hardening tests:  12 tests (I5 + Q1-Q5 + PREV-1 to PREV-5 + E6)
 Total M4-D test suite:       63 tests, 63/63 passing
 ```
 
-The I5, Q-series, and PREV-series tests are **additional hardening evidence** and do NOT extend or redefine the frozen contract.
+The I5, Q-series, PREV-series, and E6 tests are **additional hardening evidence** and do NOT extend or redefine the frozen contract.
 
 ---
 
@@ -83,7 +84,27 @@ The I5, Q-series, and PREV-series tests are **additional hardening evidence** an
 | M4D-50 | Concurrency: multiple concurrent reconciliations are serialized | M4D-K1, M4D-K2 | ✅ |
 | M4D-51 | Concurrency: booking race with materialization handled correctly | M4D-K1, M4D-K2 | ✅ |
 | M4D-52 | Lifecycle preservation: patient_name, phone, etc. untouched | M4D-D1, M4D-D2c | ✅ |
-| M4D-53 | All mutations logged via LogRepository | (Implicit in implementation) | ✅ |
+| M4D-53 | All mutations logged via LogRepository | No dedicated automated test — review evidence only: each materialization run emits `GENERATE_AVAILABILITY` START/END entries via `LogRepository` whose summary carries `reconciled`/`generated`/`reconcileErrors` (operation-level, not per-row) | ✅ (review evidence — note below) |
+
+> **M4D-53 evidence note (TD-04 reconciliation, 2026-09-03):** the criterion is
+> satisfied at the *operation* level — every `ensureHorizon` run logs its outcome
+> summary (including failed slots in `reconcileErrors`/`generateFailedDays`) to
+> SYSTEM_LOG via `LogRepository`. There is **no per-mutation row logging and no
+> dedicated automated test** for this criterion. This wording replaces the
+> previous, less precise “(Implicit in implementation)” claim. The frozen
+> contract text itself was **not** modified; if the Supervisor judges criterion
+> #53’s wording to exceed implementation reality, that is a contract-level
+> decision outside this documentation-only correction.
+>
+> **Supervisor adjudication of this observation (2026-09-03, technical-gate
+> review):** after reading the M4-D frozen contract directly, the Supervisor
+> reports that the contract’s M4D-53 is `M4-E remains the appointment-impact
+> discovery boundary` — i.e. it does **not** textually require per-mutation
+> logging. The mapping table row above therefore preserves the doc’s legacy
+> criterion wording as a **known transcription-drift observation**, ruled
+> NON-BLOCKING for the Technical Gate; a contract-aligned rewrite of the
+> M4D-01..53 table (and any consequent count review) is deferred to an explicit
+> Supervisor decision and was NOT performed in this documentation-only pass.
 
 ---
 
@@ -150,42 +171,45 @@ Partial TEMPORARY_CLOSE on 2026-09-03 from 10:00 to 12:00:
 
 ## Test Coverage by Category
 
-### Core Reconciliation (17 tests)
-- **A1-A5**: EffectiveSchedule as source of truth
-- **B1-B4**: FREE slot reconciliation (includes partial-day close)
-- **D1-D3, D2b-D2c**: Status-specific reconciliation and terminal protection
-- **G3**: Reconciliation after schedule changes
-- **N1**: Materialization boundary enforcement
+### Core Reconciliation (15 tests)
+- **A1-A5**: EffectiveSchedule as source of truth (5)
+- **B1-B4**: FREE slot reconciliation (includes partial-day close) (4)
+- **D1-D3, D2b-D2c**: Status-specific reconciliation and terminal protection (5)
+- **N1**: Materialization boundary enforcement (1)
 
 ### Override Handling (4 tests)
-- **I1-I4**: TEMPORARY_CLOSE and EXCEPTIONAL_OPEN scenarios (includes partial close)
+- **I1-I4**: TEMPORARY_CLOSE and EXCEPTIONAL_OPEN scenarios (includes partial close) (4)
 
 ### Idempotency & Convergence (3 tests)
-- **G1-G2**: Retry and convergence guarantees
+- **G1-G2**: Retry and convergence guarantees (2)
+- **G3**: Reconciliation after schedule changes (1)
 
-### Fail-Closed Behavior (5 tests)
-- **E1-E5**: Source failures and malformed data
-- **P1**: No silent defaults
+### Fail-Closed Behavior (6 tests)
+- **E1-E5**: Source failures and malformed data (5)
+- **P1**: No silent defaults (1)
 
 ### Partial Failure Isolation (2 tests)
-- **F1-F2**: Individual slot/day failures
+- **F1-F2**: Individual slot/day failures (2)
 
-### Duration Semantics (4 tests)
-- **H1-H4**: Duration boundary handling
-- **L1-L2**: Interval containment
+### Duration & Interval-Boundary Semantics (6 tests)
+- **H1-H4**: Duration boundary handling (4)
+- **L1-L2**: Interval containment (2)
 
 ### Day-Level Projection (3 tests)
-- **M1-M3**: projectDayEffectiveWindow correctness
+- **M1-M3**: projectDayEffectiveWindow correctness (3)
 
-### Architecture & Layering (6 tests)
-- **J1-J6**: Structural guarantees
-- **K1-K2**: Concurrency safety
+### Architecture & Layering (8 tests)
+- **J1-J6**: Structural guarantees (6)
+- **K1-K2**: Concurrency safety (2)
 
 ### Helper Functions (1 test)
-- **O1**: Utility function correctness
+- **O1**: Utility function correctness (1)
 
 ### Generation (3 tests)
-- **C1-C3**: Missing slot generation
+- **C1-C3**: Missing slot generation (3)
+
+*(Category totals above: 51 core tests + 12 supplementary = 63, matching
+`tests/HardeningM4D.test.js` exactly.)*
 
 ### Supplementary Hardening (12 tests)
 - **I5**: Partial-day close interval-level semantics
@@ -198,10 +222,10 @@ Partial TEMPORARY_CLOSE on 2026-09-03 from 10:00 to 12:00:
 ## Contract Compliance
 
 ✅ **Frozen Contract**: Implementation follows HAMZAWE_M4D_FROZEN_CONTRACT_v1  
-✅ **53/53 Criteria**: All official acceptance criteria covered  
+✅ **53/53 Criteria**: All official acceptance criteria mapped (M4D-53 carries review evidence only — see its note)  
 ✅ **No Scope Creep**: Only M4-D features implemented  
 ✅ **No Contract Redefinition**: Q-tests are hardening evidence, not contract criteria  
-✅ **Backward Compatibility**: 637/638 regression (M1B-X3 is pre-existing)  
+✅ **Backward Compatibility**: 637/638 full-suite at M4-D merge (M1B-X3 pre-existing); post-M4-E debt-gate baseline: 697/698 with M1B-X3 still the only failure  
 ✅ **Layering Preserved**: EffectiveScheduleService remains pure  
 ✅ **Concurrency Model**: No new global locks introduced  
 ✅ **Single Schedule Interpretation**: No duplicate override/precedence logic  
@@ -214,7 +238,10 @@ Partial TEMPORARY_CLOSE on 2026-09-03 from 10:00 to 12:00:
 # Run M4-D tests (63/63 expected)
 node tests/HardeningM4D.test.js
 
-# Run all tests (637/638 expected; M1B-X3 is pre-existing)
+# Run all tests — expected totals track suite growth; the ONE known
+# failure is the pre-existing HardeningM1B / M1B-X3 (clasp evaluation-order
+# independence). 637/638 at M4-D merge; 667/668 at the M4-E baseline;
+# 697/698 after the 2026-09-03 debt-gate TD-01/TD-02 suites were added.
 for f in tests/Hardening*.test.js; do node "$f"; done
 
 # Syntax check
@@ -227,8 +254,10 @@ node --check AvailabilityHorizonMaintainer.js
 ## Summary
 
 ```
-Official Frozen Contract:    53 criteria → 53/53 covered
+Official Frozen Contract:    53 criteria → 53/53 mapped (M4D-53: review evidence)
 Additional hardening tests:  12 tests  → I5 + Q1-Q5 + PREV-1 to PREV-5 + E6 passing
 Total M4-D test suite:       63/63 passing
-Regression suite:            637/638 (M1B-X3 pre-existing)
+Regression suite:            637/638 at M4-D merge (M1B-X3 pre-existing; unchanged
+                             through the 2026-09-03 debt gate, where the full
+                             project suite stands at 697/698)
 ```

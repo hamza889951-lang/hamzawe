@@ -234,7 +234,11 @@ const AvailabilityHorizonMaintainer = {
         }
       } else {
         // No existing slots, reconciliation window = nowMs to (today + targetDays)
-        var today = new Date();
+        // TD-02 (CAS-009, 2026-09-03 audit): the current instant comes from
+        // the operation's already-captured Clock.now() value. A bare
+        // new Date() here read wall-clock time directly, bypassing the
+        // single time source. new Date(nowMs) is a pure conversion.
+        var today = new Date(nowMs);
         today.setHours(0, 0, 0, 0);
         var reconciliationEndDate = new Date(today.getTime());
         reconciliationEndDate.setDate(reconciliationEndDate.getDate() + targetDays);
