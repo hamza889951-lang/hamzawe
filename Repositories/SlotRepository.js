@@ -1,11 +1,35 @@
 const SlotRepository = {
 
   findById: function(slotId) {
+    // Legacy best-effort read contract: a storage failure collapses to null
+    // exactly like an absent row. Callers that must tell the two apart use
+    // findByIdResult() (TD-01) — never inside an atomic mutation boundary.
     try {
       var result = GoogleSheets.findRowByColumn(Config.VOCABULARY.SHEETS.AVAILABILITY, 'slot_id', slotId);
       return result ? result : null;
     } catch (e) {
       return null;
+    }
+  },
+
+  /**
+   * TD-01 (2026-09-03 debt remediation) — Result-based single-row read.
+   * Unlike findById(), this keeps absence and failure distinct:
+   *   read succeeded, row absent → Result.ok(null)
+   *   storage/read failure       → Result.fail('SLOT_READ_FAILED', ...)
+   * A storage error must never masquerade as SLOT_NOT_FOUND for callers
+   * that revalidate state before a safe mutation (fresh-read semantics).
+   */
+  findByIdResult: function(slotId) {
+    try {
+      var row = GoogleSheets.findRowByColumn(Config.VOCABULARY.SHEETS.AVAILABILITY, 'slot_id', slotId);
+      return Result.ok(row || null);
+    } catch (e) {
+      return Result.fail(
+        'SLOT_READ_FAILED',
+        'Failed to read slot ' + slotId + ' (storage failure, not absence)',
+        { slotId: slotId, message: e.message }
+      );
     }
   },
 
@@ -66,7 +90,16 @@ const SlotRepository = {
 
   atomicUpdate: function(slotId, decisionFn) {
     return Lock.runExclusive('slot:' + slotId, function() {
-      var slot = SlotRepository.findById(slotId);
+      // TD-01: fresh read must distinguish "read succeeded, row absent"
+      // (→ SLOT_NOT_FOUND) from "storage read failed" (→ Result.fail).
+      // The legacy findById() swallowed storage exceptions into null and
+      // let a failure surface as SLOT_NOT_FOUND — unacceptable for the
+      // fresh-re-read / stale-evidence-rejection path M4-F depends on.
+      var readResult = SlotRepository.findByIdResult(slotId);
+      if (!readResult.ok) {
+        return readResult;
+      }
+      var slot = readResult.data;
       if (!slot) {
         return Result.fail('SLOT_NOT_FOUND', 'Slot ' + slotId + ' does not exist');
       }
