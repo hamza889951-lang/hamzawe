@@ -1,6 +1,10 @@
 /**
- * Scheduler.js — v3 + Liveness + Archive
- * الترتيب: Archive → Maintenance → Horizon → Reminders → HealthCheck
+ * Scheduler.js — v3 + Liveness + Archive + M4-F Disruption
+ * الترتيب: Archive → Maintenance → Horizon → Patient Disruption → Reminders → HealthCheck
+ *
+ * M4-F (Contract §9): the disruption stage runs after availability/horizon
+ * materialization and before reminders, inside this single orchestrator.
+ * No second trigger is introduced.
  */
 const Scheduler = {
 
@@ -31,34 +35,39 @@ const Scheduler = {
 
     try {
       var startedAt = Clock.now();
-      var S = { archive: { status: 'NOT_RUN', error: null }, maintenance: { status: 'NOT_RUN', error: null }, horizon: { status: 'NOT_RUN', error: null }, reminders: { status: 'NOT_RUN', error: null }, healthCheck: { status: 'NOT_RUN', error: null } };
+      var S = { archive: { status: 'NOT_RUN', error: null }, maintenance: { status: 'NOT_RUN', error: null }, horizon: { status: 'NOT_RUN', error: null }, disruption: { status: 'NOT_RUN', error: null }, reminders: { status: 'NOT_RUN', error: null }, healthCheck: { status: 'NOT_RUN', error: null } };
 
       try { var aResult = ArchiveService.run(); if (aResult && aResult.ok) { S.archive.status = 'OK'; } else { S.archive.status = 'FAILED'; S.archive.error = aResult ? JSON.stringify(aResult.error) : 'null result'; LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_STAGE_FAILED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: JSON.stringify({ stage: 'archive', error: S.archive.error }) }); } } catch (e) { S.archive.status = 'FAILED'; S.archive.error = e.message || 'Exception'; LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_STAGE_FAILED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: JSON.stringify({ stage: 'archive', error: e.message }) }); }
 
       try { var mResult = MaintenanceService.run(); if (mResult && mResult.ok) { S.maintenance.status = 'OK'; } else { S.maintenance.status = 'FAILED'; S.maintenance.error = mResult ? JSON.stringify(mResult.error) : 'null result'; LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_STAGE_FAILED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: JSON.stringify({ stage: 'maintenance', error: S.maintenance.error }) }); } } catch (e) { S.maintenance.status = 'FAILED'; S.maintenance.error = e.message || 'Exception'; LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_STAGE_FAILED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: JSON.stringify({ stage: 'maintenance', error: e.message }) }); }
 
       try { var hResult = AvailabilityHorizonMaintainer.ensureHorizon(); if (hResult && hResult.ok) { S.horizon.status = 'OK'; } else { S.horizon.status = 'FAILED'; S.horizon.error = hResult ? JSON.stringify(hResult.error) : 'null result'; LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_STAGE_FAILED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: JSON.stringify({ stage: 'horizon', error: S.horizon.error }) }); } } catch (e) { S.horizon.status = 'FAILED'; S.horizon.error = e.message || 'Exception'; LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_STAGE_FAILED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: JSON.stringify({ stage: 'horizon', error: e.message }) }); }
+      // M4-F — Patient Disruption Processing (Contract §9): runs after the
+      // availability/horizon materialization stage and before reminders, inside
+      // the existing single Scheduler. No second trigger. The stage never holds
+      // the orchestration lock across work that re-enters per-resource locks.
+      try { var dResult = PatientDisruptionService.processDisruptions({ sendFn: function(phone, message) { return WhatsAppAdapter.sendMessage(phone, message); } }); if (dResult && dResult.ok) { S.disruption.status = 'OK'; } else { S.disruption.status = 'FAILED'; S.disruption.error = dResult ? JSON.stringify(dResult.error) : 'null result'; LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_STAGE_FAILED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: JSON.stringify({ stage: 'disruption', error: S.disruption.error }) }); } } catch (e) { S.disruption.status = 'FAILED'; S.disruption.error = e.message || 'Exception'; LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_STAGE_FAILED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: JSON.stringify({ stage: 'disruption', error: e.message }) }); }
 
       try { var rResult = ReminderService.processPendingReminders(function(phone, message) { return WhatsAppAdapter.sendMessage(phone, message); }); if (rResult && rResult.ok) { S.reminders.status = 'OK'; } else { S.reminders.status = 'FAILED'; S.reminders.error = rResult ? JSON.stringify(rResult.error) : 'null result'; LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_STAGE_FAILED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: JSON.stringify({ stage: 'reminders', error: S.reminders.error }) }); } } catch (e) { S.reminders.status = 'FAILED'; S.reminders.error = e.message || 'Exception'; LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_STAGE_FAILED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: JSON.stringify({ stage: 'reminders', error: e.message }) }); }
 
       try { var hcResult = HealthCheckService.run(); if (hcResult && hcResult.ok && hcResult.data && hcResult.data.healthy) { S.healthCheck.status = 'OK'; } else { S.healthCheck.status = 'FAILED'; S.healthCheck.error = (hcResult && hcResult.data) ? JSON.stringify(hcResult.data) : 'null result'; LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_STAGE_FAILED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: JSON.stringify({ stage: 'healthCheck', error: S.healthCheck.error }) }); } } catch (e) { S.healthCheck.status = 'FAILED'; S.healthCheck.error = e.message || 'Exception'; LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_STAGE_FAILED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: JSON.stringify({ stage: 'healthCheck', error: e.message }) }); }
 
-      var operationalOk = S.maintenance.status === 'OK' && S.horizon.status === 'OK' && S.reminders.status === 'OK' && S.healthCheck.status === 'OK';
+      var operationalOk = S.maintenance.status === 'OK' && S.horizon.status === 'OK' && S.disruption.status === 'OK' && S.reminders.status === 'OK' && S.healthCheck.status === 'OK';
       var allOk = operationalOk && S.archive.status === 'OK';
       var finishedAt = Clock.now();
       var durationMs = finishedAt.getTime() - startedAt.getTime();
-      var summary = { archive: S.archive.status === 'OK' ? 'OK' : S.archive.error, maintenance: S.maintenance.status === 'OK' ? 'OK' : S.maintenance.error, horizon: S.horizon.status === 'OK' ? 'OK' : S.horizon.error, reminders: S.reminders.status === 'OK' ? 'OK' : S.reminders.error, healthCheck: S.healthCheck.status === 'OK' ? 'OK' : S.healthCheck.error };
+      var summary = { archive: S.archive.status === 'OK' ? 'OK' : S.archive.error, maintenance: S.maintenance.status === 'OK' ? 'OK' : S.maintenance.error, horizon: S.horizon.status === 'OK' ? 'OK' : S.horizon.error, disruption: S.disruption.status === 'OK' ? 'OK' : S.disruption.error, reminders: S.reminders.status === 'OK' ? 'OK' : S.reminders.error, healthCheck: S.healthCheck.status === 'OK' ? 'OK' : S.healthCheck.error };
 
       LogRepository.write({ timestamp: finishedAt, command: 'SCHEDULER_RUN', phone: '', slotId: '', stage: 'END', success: allOk, durationMs: durationMs, error: JSON.stringify(summary) });
 
       if (operationalOk) {
         try { PropertiesService.getScriptProperties().setProperty('LAST_SCHEDULER_SUCCESS_MS', String(finishedAt.getTime())); } catch (e) { /* best effort */ }
         if (allOk) {
-          return Result.ok({ stages: { archive: 'OK', maintenance: 'OK', horizon: 'OK', reminders: 'OK', healthCheck: 'OK' }, durationMs: durationMs });
+          return Result.ok({ stages: { archive: 'OK', maintenance: 'OK', horizon: 'OK', disruption: 'OK', reminders: 'OK', healthCheck: 'OK' }, durationMs: durationMs });
         }
-        return Result.ok({ stages: { archive: 'FAILED', maintenance: 'OK', horizon: 'OK', reminders: 'OK', healthCheck: 'OK' }, archiveWarning: summary.archive, durationMs: durationMs });
+        return Result.ok({ stages: { archive: 'FAILED', maintenance: 'OK', horizon: 'OK', disruption: 'OK', reminders: 'OK', healthCheck: 'OK' }, archiveWarning: summary.archive, durationMs: durationMs });
       }
-      return Result.fail('SCHEDULER_PARTIAL_FAILURE', 'One or more Scheduler stages failed', { stages: { archive: S.archive.status, maintenance: S.maintenance.status, horizon: S.horizon.status, reminders: S.reminders.status, healthCheck: S.healthCheck.status }, details: summary, durationMs: durationMs });
+      return Result.fail('SCHEDULER_PARTIAL_FAILURE', 'One or more Scheduler stages failed', { stages: { archive: S.archive.status, maintenance: S.maintenance.status, horizon: S.horizon.status, disruption: S.disruption.status, reminders: S.reminders.status, healthCheck: S.healthCheck.status }, details: summary, durationMs: durationMs });
 
     } finally {
       if (hasLock) { try { schedulerLock.releaseLock(); } catch (e) { /* best effort */ } }

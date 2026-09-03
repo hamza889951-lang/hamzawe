@@ -140,6 +140,11 @@ function defaultHorizonRun() {
   return stageResults.horizon;
 }
 
+function defaultDisruptionRun() {
+  stageCalls.push('disruption');
+  return stageResults.disruption;
+}
+
 function defaultRemindersRun() {
   stageCalls.push('reminders');
   return stageResults.reminders;
@@ -153,6 +158,7 @@ function defaultHealthCheckRun() {
 sandbox.ArchiveService = { run: defaultArchiveRun };
 sandbox.MaintenanceService = { run: defaultMaintenanceRun };
 sandbox.AvailabilityHorizonMaintainer = { ensureHorizon: defaultHorizonRun };
+sandbox.PatientDisruptionService = { processDisruptions: defaultDisruptionRun };
 sandbox.ReminderService = { processPendingReminders: defaultRemindersRun };
 sandbox.HealthCheckService = { run: defaultHealthCheckRun };
 
@@ -171,12 +177,14 @@ function resetState() {
     archive: sandbox.Result.ok({ archived: 0 }),
     maintenance: sandbox.Result.ok({ cleaned: 0, expired: 0 }),
     horizon: sandbox.Result.ok({ generated: 0 }),
+    disruption: sandbox.Result.ok({ created: [], expired: [], failures: [] }),
     reminders: sandbox.Result.ok({ sent: 0, total: 0 }),
     healthCheck: sandbox.Result.ok({ healthy: true, issues: [], warnings: [] })
   };
   sandbox.ArchiveService.run = defaultArchiveRun;
   sandbox.MaintenanceService.run = defaultMaintenanceRun;
   sandbox.AvailabilityHorizonMaintainer.ensureHorizon = defaultHorizonRun;
+  sandbox.PatientDisruptionService.processDisruptions = defaultDisruptionRun;
   sandbox.ReminderService.processPendingReminders = defaultRemindersRun;
   sandbox.HealthCheckService.run = defaultHealthCheckRun;
 }
@@ -194,8 +202,8 @@ test('A — full run: UserLock acquired, stages in order, lock released, livenes
 
   assert.strictEqual(result.ok, true);
   assert.deepStrictEqual(stageCalls,
-    ['archive', 'maintenance', 'horizon', 'reminders', 'healthCheck'],
-    'stage order must remain Archive → Maintenance → Horizon → Reminders → HealthCheck');
+    ['archive', 'maintenance', 'horizon', 'disruption', 'reminders', 'healthCheck'],
+    'stage order must remain Archive → Maintenance → Horizon → Disruption → Reminders → HealthCheck');
   assert.strictEqual(userLockHeld, false, 'Scheduler must release its lock after the run');
   assert.strictEqual(scriptLockHeld, false, 'repository ScriptLock must be released too');
 
@@ -249,7 +257,7 @@ test('A3 — deterministic interleave: nested Scheduler during a stage returns S
   assert.strictEqual(nestedResult.ok, true);
   assert.strictEqual(nestedResult.data.status, 'SKIPPED');
   assert.deepStrictEqual(stageCalls,
-    ['archive', 'maintenance', 'horizon', 'reminders', 'healthCheck'],
+    ['archive', 'maintenance', 'horizon', 'disruption', 'reminders', 'healthCheck'],
     'only the outer run executes stages — the nested run must not');
   assert.strictEqual(userLockHeld, false, 'outer run releases the lock at the end');
 });
@@ -360,7 +368,7 @@ test('D — scheduler lock released even when a stage fails; failure semantics u
 
   // Stage order contract still holds even on failure
   assert.deepStrictEqual(stageCalls,
-    ['archive', 'maintenance', 'horizon', 'reminders', 'healthCheck']);
+    ['archive', 'maintenance', 'horizon', 'disruption', 'reminders', 'healthCheck']);
 });
 
 // ═══════════════════════════════════════
