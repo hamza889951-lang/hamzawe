@@ -18,5 +18,12 @@ const IdGenerator = {
   },
   generateScheduleCommandId() {
     return 'SCMD_' + ULID.generate();
+  },
+  /**
+   * M4-F — durable disruption proposal identity. Immutable for the whole
+   * lifecycle of one proposal and never reused for a later disruption.
+   */
+  generateDisruptionProposalId() {
+    return 'DSP_' + ULID.generate();
   }
 };

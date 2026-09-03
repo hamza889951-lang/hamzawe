@@ -218,7 +218,17 @@ const ChangeService = {
    * remains in AppointmentRepository for inventory/migration only; this runtime path
    * uses the shared B6 lifecycle fence also required by CancelService.
    */
-  changeConfirmedAppointment(rawPhone) {
+  /**
+   * @param {string} rawPhone
+   * @param {Object} [options] — M4-F extension:
+   *        { targetSlotId } finalizes the ALREADY-RESERVED disruption proposal
+   *        slot instead of running generic nearest-slot selection. This
+   *        preserves every other semantic of this boundary unchanged (B6
+   *        fence, Calendar correlation, patient-retention-first, partial
+   *        failure). Omitting options keeps the pre-M4-F behaviour exactly.
+   */
+  changeConfirmedAppointment(rawPhone, options) {
+    const targetSlotId = (options && options.targetSlotId) ? options.targetSlotId : null;
     const normalizedPhone = PhoneUtils.normalize(rawPhone);
     const phoneCheck = Validators.validatePhone(normalizedPhone);
     if (!phoneCheck.ok) return phoneCheck;
@@ -289,7 +299,8 @@ const ChangeService = {
           phone,
           oldSlot.patient_name,
           reservedUntil,
-          oldSlot.slot_id
+          oldSlot.slot_id,
+          targetSlotId
         );
         if (!reserveResult.ok) {
           if (reserveResult.error && reserveResult.error.code === 'NO_SLOT_AVAILABLE') {
@@ -556,6 +567,11 @@ const ChangeService = {
         if (!completion.ok) return completion;
 
         return Result.ok({
+          // M4-F: explicit outcome marker. Additive only — the Router reads
+          // `reply` / `conversationState` and is unaffected. A caller that must
+          // know whether the appointment really changed (M4-F CONFIRMED
+          // finalization) must not have to parse reply text.
+          status: 'CHANGED',
           slotId: newSlot.slot_id,
           date: newSlot.date,
           time: newSlot.time,
@@ -566,7 +582,12 @@ const ChangeService = {
       }
     );
 
-    if (!commandResult.ok) return ChangeService._b6FailureReply();
+    if (!commandResult.ok) {
+      // M4-F: mark the failure outcome explicitly while preserving the exact
+      // patient-facing reply the Router already expects.
+      const failureReply = ChangeService._b6FailureReply();
+      return Result.ok(Object.assign({ status: 'FAILED' }, failureReply.data));
+    }
 
     const confirmedDisplay = 'بتاريخ ' + DateUtils.formatDateDisplay(commandResult.data.date) +
       '\n' + (commandResult.data.busNumber !== null
@@ -574,6 +595,7 @@ const ChangeService = {
         : 'الساعة ' + DateUtils.formatTimeDisplay(commandResult.data.time));
 
     return Result.ok({
+      status: 'CHANGED',
       reply: 'تم تغيير موعدك بنجاح.\n' + confirmedDisplay +
         '\nيرجى الحضور ضمن وقت دوام العيادة.',
       conversationState: Config.VOCABULARY.CONVERSATION_STATE.BOOKED
@@ -603,7 +625,42 @@ const ChangeService = {
    * always excluded, and each race-lost candidate is excluded for this
    * operation only. One loop iteration is one reservation attempt.
    */
-  _reserveAlternativeSlot(phone, patientName, reservedUntil, oldSlotId) {
+  _reserveAlternativeSlot(phone, patientName, reservedUntil, oldSlotId, targetSlotId) {
+    // ── M4-F: reuse the already-reserved disruption proposal slot ──
+    // The disruption flow reserved this candidate durably BEFORE notifying the
+    // patient, so it is already RESERVED for this phone. Re-validating and
+    // reusing it is mandatory: re-running generic selection here would discard
+    // the slot the patient was actually offered and silently substitute a
+    // different one (Contract §3.9 / Closure Addendum §6).
+    if (targetSlotId) {
+      const readResult = SlotRepository.findByIdResult(targetSlotId);
+      if (!readResult.ok) return readResult;
+
+      const target = readResult.data;
+      if (!target) {
+        return Result.fail('M4F_STALE_CANDIDATE', 'Disruption proposal slot no longer exists', { slotId: targetSlotId });
+      }
+      if (target.phone !== phone) {
+        return Result.fail('M4F_STALE_CANDIDATE', 'Disruption proposal slot no longer belongs to this phone', {
+          slotId: targetSlotId,
+          owner: target.phone,
+          phone: phone
+        });
+      }
+      if (target.status !== Config.VOCABULARY.STATUS.RESERVED) {
+        return Result.fail('M4F_STALE_CANDIDATE', 'Disruption proposal slot is no longer held as a reservation', {
+          slotId: targetSlotId,
+          currentStatus: target.status
+        });
+      }
+      if (!SlotRepository.isOperationallyAvailable(target.is_available)) {
+        return Result.fail('SLOT_UNAVAILABLE', 'Disruption proposal slot is no longer operationally available', {
+          slotId: targetSlotId
+        });
+      }
+      return Result.ok({ slot: target, reused: true });
+    }
+
     const excludedSlotIds = oldSlotId ? [oldSlotId] : [];
 
     for (let attempt = 0; attempt < 3; attempt++) {

@@ -131,6 +131,20 @@ const Router = {
     // 4. التوجيه حسب جدول الحالات
     // ─────────────────────────────
 
+    // --- M4-F: WAITING_DISRUPTION_CONFIRMATION → PatientDisruptionService ---
+    // Routing-only hand-off. The Router does not inspect expiry, does not
+    // parse the response, does not mutate Slots/Calendar/B6, and does not
+    // send WhatsApp. PatientDisruptionService owns the interaction semantics.
+    // Reached only by patient rows: the M4-A doctor gate returns earlier, and
+    // doctor states are disjoint from this one.
+    if (currentState === Config.VOCABULARY.CONVERSATION_STATE.WAITING_DISRUPTION_CONFIRMATION) {
+      if (typeof PatientDisruptionService !== 'undefined') {
+        return PatientDisruptionService.handleIncomingMessage(phone, message);
+      }
+      // Boundary absent (partial/older bundle) — fail closed to the ordinary
+      // patient flow rather than throwing on the webhook entry point.
+    }
+
     // --- WAITING_CONFIRMATION + "2" → تغيير قبل التأكيد ---
     if (currentState === Config.VOCABULARY.CONVERSATION_STATE.WAITING_CONFIRMATION
         && normalizedMessage === '2') {

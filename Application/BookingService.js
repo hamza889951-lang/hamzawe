@@ -240,7 +240,51 @@ const BookingService = {
     }
 
     // ── ADR-014: تنفيذ Command مباشر هنا، مؤقتًا، بموافقة المشرف ──
-    const commandResult = CommandExecutor.execute(
+    // M4-F: the confirmation body is shared through confirmReservedSlot() so the
+    // RESERVED disruption finalization reuses the EXISTING final-appointment
+    // semantics instead of duplicating Calendar handling (CAS-005).
+    const commandResult = BookingService.confirmReservedSlot(phone, slotId);
+
+    if (!commandResult.ok) {
+      return Result.ok({
+        reply: 'تعذّر تأكيد الحجز حاليًا. الرجاء المحاولة مرة أخرى.',
+        conversationState: Config.VOCABULARY.CONVERSATION_STATE.WAITING_CONFIRMATION
+      });
+    }
+
+    ConversationRepository.moveToBooked(phone);
+
+    const confirmedDisplay = 'بتاريخ ' + DateUtils.formatDateDisplay(commandResult.data.date) +
+      '\n' + (commandResult.data.busNumber !== null
+        ? 'رقم الباص: ' + commandResult.data.busNumber
+        : 'الساعة ' + DateUtils.formatTimeDisplay(commandResult.data.time));
+
+    return Result.ok({
+      reply: 'تم تأكيد حجزك بنجاح.\n' + confirmedDisplay +
+        '\nيرجى الحضور ضمن وقت دوام العيادة.',
+      conversationState: Config.VOCABULARY.CONVERSATION_STATE.BOOKED
+    });
+  },
+
+  /**
+   * M4-F seam — the EXISTING appointment-finalization semantics for a
+   * RESERVED slot: the StateMachine-owned ConfirmReservation transition,
+   * Calendar event creation, and calendar_event_id persistence, with the
+   * ADR-006 partial-failure policy preserved (a Calendar event that cannot
+   * be created or stored fails the command).
+   *
+   * Extracted verbatim from _handleWaitingConfirmation so the M4-F RESERVED
+   * disruption finalization can reuse this logic instead of duplicating
+   * Calendar handling (CAS-005 / ADR-015). The ordinary booking flow is
+   * behaviourally unchanged: it now simply calls this seam.
+   *
+   * @param {string} phone
+   * @param {string} slotId
+   * @returns {Result} ok({ slotId, calendarEventId, date, time, busNumber })
+   */
+  confirmReservedSlot(phone, slotId) {
+    // ── ADR-014: تنفيذ Command مباشر هنا، مؤقتًا، بموافقة المشرف ──
+    return CommandExecutor.execute(
       Config.VOCABULARY.COMMANDS.CONFIRM_RESERVATION,
       { phone: phone, slotId: slotId },
       function() {
@@ -319,26 +363,6 @@ const BookingService = {
         });
       }
     );
-
-    if (!commandResult.ok) {
-      return Result.ok({
-        reply: 'تعذّر تأكيد الحجز حاليًا. الرجاء المحاولة مرة أخرى.',
-        conversationState: Config.VOCABULARY.CONVERSATION_STATE.WAITING_CONFIRMATION
-      });
-    }
-
-    ConversationRepository.moveToBooked(phone);
-
-    const confirmedDisplay = 'بتاريخ ' + DateUtils.formatDateDisplay(commandResult.data.date) +
-      '\n' + (commandResult.data.busNumber !== null
-        ? 'رقم الباص: ' + commandResult.data.busNumber
-        : 'الساعة ' + DateUtils.formatTimeDisplay(commandResult.data.time));
-
-    return Result.ok({
-      reply: 'تم تأكيد حجزك بنجاح.\n' + confirmedDisplay +
-        '\nيرجى الحضور ضمن وقت دوام العيادة.',
-      conversationState: Config.VOCABULARY.CONVERSATION_STATE.BOOKED
-    });
   },
 
   _handleBooked() {

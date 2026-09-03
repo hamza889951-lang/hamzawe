@@ -53,7 +53,11 @@ const Config = {
       // the M4-A gate diverts the authorized doctor before patient flows.
       DOCTOR_MENU: 'DOCTOR_MENU',
       DOCTOR_AWAITING_INPUT: 'DOCTOR_AWAITING_INPUT',
-      DOCTOR_AWAITING_CONFIRMATION: 'DOCTOR_AWAITING_CONFIRMATION'
+      DOCTOR_AWAITING_CONFIRMATION: 'DOCTOR_AWAITING_CONFIRMATION',
+      // M4-F — Patient Disruption / Recovery. Additive patient state; reached
+      // only through the bounded Router branch and owned semantically by
+      // PatientDisruptionService. Doctor rows remain unreachable by it.
+      WAITING_DISRUPTION_CONFIRMATION: 'WAITING_DISRUPTION_CONFIRMATION'
     }
   },
 
@@ -66,7 +70,21 @@ const Config = {
     RESERVATION_TIMEOUT_MINUTES: 5,
     MIN_BOOKING_LEAD_MINUTES: 60,
     // نافذة تذكير واحدة فقط في v1: 4 ساعات قبل الموعد.
-    REMINDER_LEAD_MINUTES: 240
+    REMINDER_LEAD_MINUTES: 240,
+
+    // ── M4-F — Patient Disruption / Recovery (additive policy) ──
+    // Expiry of a durable disruption proposal, measured from the durable
+    // proposal creation instant. Deliberately distinct from the ordinary
+    // 5-minute reservation timeout (RESERVATION_TIMEOUT_MINUTES): the
+    // proposal must survive long enough for a human to reply.
+    DISRUPTION_PROPOSAL_TIMEOUT_MINUTES: 30,
+    // Alternative-search horizon: the next N clinic calendar days including
+    // the day containing the evaluation instant, end-exclusive.
+    DISRUPTION_CANDIDATE_HORIZON_DAYS: 3,
+    // Window handed to M4-E discovery for the disruption stage.
+    DISRUPTION_DISCOVERY_WINDOW_DAYS: 3,
+    // Bounded wait for the per-phone disruption serialization lock.
+    DISRUPTION_LOCK_TIMEOUT_MS: 5000
   },
   /**
    * قيم افتراضية عامة — محجوزة للنمو المستقبلي، فارغة حاليًا عمدًا.
