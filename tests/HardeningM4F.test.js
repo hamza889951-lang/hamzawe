@@ -64,8 +64,7 @@ function createSandbox() {
     lockTimeouts: 0,
     nowIso: EVAL_ISO,
     seq: 0,
-    interleaveHook: null,
-    interleaveFired: false,
+    writeHook: null,
     changeShouldFail: false,
     changeNotChanged: false,
     confirmShouldFail: false,
@@ -129,15 +128,10 @@ function createSandbox() {
       for (let i = 0; i < rows.length; i++) {
         if (String(rows[i][column]) === String(value)) {
           Object.keys(fields).forEach(function(k) { rows[i][k] = fields[k]; });
-          // M4F-59: model the reservation→persistence window. Fire once,
-          // immediately AFTER the candidate reservation has been committed.
-          if (state.interleaveHook && !state.interleaveFired &&
-              name === 'Availability' && fields.status === 'RESERVED') {
-            state.interleaveFired = true;
-            const hook = state.interleaveHook;
-            state.interleaveHook = null;
-            hook(rows[i]);
-          }
+          // Generic write hook: invoked immediately AFTER the write is
+          // committed, so a test can inject an interleaving or a failure at
+          // the exact point between two M4-F steps (findings #1 and #2).
+          if (state.writeHook) state.writeHook(name, rows[i], fields);
           return true;
         }
       }
@@ -270,8 +264,7 @@ function resetAll() {
   state.lockTimeouts = 0;
   state.nowIso = EVAL_ISO;
   state.seq = 0;
-  state.interleaveHook = null;
-  state.interleaveFired = false;
+  state.writeHook = null;
   state.changeShouldFail = false;
   state.changeNotChanged = false;
   state.confirmShouldFail = false;
@@ -1230,9 +1223,13 @@ test('M4F-56 — reservation + persistence failure triggers cleanup and explicit
   resetAll();
   const ctx = happyPath('CONFIRMED');
 
-  // Let the candidate reservation succeed, then fail the Conversation write …
-  state.interleaveHook = function(row) {
-    if (row.slot_id === ctx.candidate.slot_id) state.failWrite = true;
+  // Let the candidate reservation commit, then fail every later write …
+  state.writeHook = function(name, row, fields) {
+    if (name === 'Availability' && row.slot_id === ctx.candidate.slot_id &&
+        fields.status === 'RESERVED') {
+      state.writeHook = null;
+      state.failWrite = true;
+    }
   };
 
   const result = runStage();
@@ -1283,8 +1280,12 @@ test('M4F-59 — an inbound response cannot cross the reservation→persistence 
 
   // Simulate an inbound patient message arriving immediately AFTER the
   // candidate was reserved but BEFORE the proposal was persisted.
-  state.interleaveHook = function() {
-    respond(ctx.phone, '1');
+  state.writeHook = function(name, row, fields) {
+    if (name === 'Availability' && row.slot_id === ctx.candidate.slot_id &&
+        fields.status === 'RESERVED') {
+      state.writeHook = null;
+      respond(ctx.phone, '1');
+    }
   };
 
   const result = runStage();
@@ -1373,7 +1374,6 @@ test('M4F-64 — uncertain notification bookkeeping is retry uncertainty, not a 
   const ctx = happyPath('CONFIRMED');
 
   // Simulate a crash between persistence and status bookkeeping.
-  state.interleaveHook = null;
   runStage();
   conversationOf(ctx.phone).disruption_notification_status = 'PENDING';
   const proposalId = conversationOf(ctx.phone).disruption_proposal_id;
@@ -1387,6 +1387,769 @@ test('M4F-64 — uncertain notification bookkeeping is retry uncertainty, not a 
   assert.strictEqual(second.data.skipped[0].notification.proposalId, proposalId);
   assert.strictEqual(reservedCountFor(ctx.phone), 1, 'still exactly one reservation');
 });
+
+// ═════════════════════════════════════════════════════════════════════════
+// SUPERVISOR REVIEW (PR #24) — proof tests for findings #1..#15
+// ═════════════════════════════════════════════════════════════════════════
+
+/** Fail every write that happens after the confirmation seam has finished. */
+function failAfterConfirmation(candidateSlotId) {
+  state.writeHook = function(name, row, fields) {
+    if (name === 'Availability' && row.slot_id === candidateSlotId && fields.calendar_event_id) {
+      state.writeHook = null;
+      state.failWrite = true;
+    }
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Finding #1 — RESERVED confirmation: original release failure
+// ─────────────────────────────────────────────────────────────────────────
+
+test('M4F-65 — [F1] original release failure ⇒ M4F_RECOVERY_REQUIRED, never a clean success', function() {
+  resetAll();
+  const ctx = happyPath('RESERVED');
+  runStage();
+
+  failAfterConfirmation(ctx.candidate.slot_id);
+  const reply = respond(ctx.phone, '1');
+
+  assert.strictEqual(reply.data.recoveryRequired, true, 'recovery is surfaced, not hidden');
+  const conv = conversationOf(ctx.phone);
+  assert.strictEqual(conv.state, 'WAITING_DISRUPTION_CONFIRMATION',
+    'pending interaction is NOT cleared — the unresolved original stays visible');
+  assert.strictEqual(conv.disruption_proposal_id !== '', true, 'ownership evidence preserved');
+  assert.strictEqual(slotById(ctx.candidate.slot_id).status, 'CONFIRMED', 'target is confirmed');
+  assert.strictEqual(slotById(ctx.original.slot_id).status, 'RESERVED', 'original is still held');
+  assert.strictEqual(confirmedCountFor(ctx.phone), 1);
+  assert.strictEqual(reservedCountFor(ctx.phone), 1, 'two active bookings — must be classified');
+});
+
+test('M4F-66 — [F1] the recovery sweep completes the release on a later run', function() {
+  resetAll();
+  const ctx = happyPath('RESERVED');
+  runStage();
+  failAfterConfirmation(ctx.candidate.slot_id);
+  respond(ctx.phone, '1');
+  state.failWrite = false;
+
+  const result = runStage();
+
+  assert.strictEqual(result.data.recovered.length, 1);
+  assert.strictEqual(result.data.recovered[0].outcome, 'RELEASED_AND_CLEARED');
+  assert.strictEqual(slotById(ctx.original.slot_id).status, 'FREE', 'original released');
+  assert.strictEqual(conversationOf(ctx.phone).state, 'BOOKED');
+  assert.strictEqual(confirmedCountFor(ctx.phone), 1, 'exactly one active appointment');
+  assert.strictEqual(reservedCountFor(ctx.phone), 0, 'no leftover hold');
+});
+
+test('M4F-67 — [F1] an original released between revalidation and release is not a failure', function() {
+  resetAll();
+  const ctx = happyPath('RESERVED');
+  runStage();
+
+  // A genuine race: the original hold expires and Maintenance frees it after
+  // revalidation but before M4-F attempts the release. Nothing is owned by
+  // the proposal any more, so this is a clean outcome, not a failure.
+  state.writeHook = function(name, row, fields) {
+    if (name === 'Availability' && row.slot_id === ctx.candidate.slot_id &&
+        fields.status === 'CONFIRMED') {
+      state.writeHook = null;
+      const original = slotById(ctx.original.slot_id);
+      original.status = 'FREE';
+      original.phone = '';
+    }
+  };
+
+  const reply = respond(ctx.phone, '1');
+
+  assert.strictEqual(reply.data.confirmed, true);
+  assert.strictEqual(reply.data.originalReleased, false);
+  assert.strictEqual(slotById(ctx.candidate.slot_id).status, 'CONFIRMED');
+  assert.strictEqual(conversationOf(ctx.phone).state, 'BOOKED');
+  assert.strictEqual(confirmedCountFor(ctx.phone), 1);
+});
+
+test('M4F-68 — [F1] the patient is never told "success" while the case is unresolved', function() {
+  resetAll();
+  const ctx = happyPath('RESERVED');
+  runStage();
+  failAfterConfirmation(ctx.candidate.slot_id);
+
+  const reply = respond(ctx.phone, '1');
+
+  assert.ok(reply.data.reply.indexOf('بحاجة إلى معالجة') !== -1,
+    'reply states the unresolved item: ' + reply.data.reply);
+  assert.strictEqual(reply.data.confirmed, undefined, 'confirmed is not claimed');
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Finding #2 — M4F-59: real interleaving at the reserve→persist window
+// ─────────────────────────────────────────────────────────────────────────
+
+/** Run the stage with an inbound message injected exactly at the window. */
+function runWithInterleave(ctx, message) {
+  state.writeHook = function(name, row, fields) {
+    if (name === 'Availability' && row.slot_id === ctx.candidate.slot_id &&
+        fields.status === 'RESERVED') {
+      state.writeHook = null;
+      state.interleaved = respond(ctx.phone, message);
+    }
+  };
+  const result = runStage();
+  return { result: result, interleaved: state.interleaved };
+}
+
+test('M4F-69 — [F2] inbound CONFIRMATION inside the window cannot finalize a non-durable proposal', function() {
+  resetAll();
+  const ctx = happyPath('CONFIRMED');
+  const out = runWithInterleave(ctx, '1');
+
+  assert.strictEqual(state.changeCalls.length, 0, 'no finalization of a proposal that was not yet durable');
+  assert.strictEqual(reservedCountFor(ctx.phone) <= 1, true, 'at most one reservation');
+  assert.strictEqual(slotById(ctx.original.slot_id).status, 'CONFIRMED', 'original never mutated');
+  const conv = conversationOf(ctx.phone);
+  if (conv.state === 'WAITING_DISRUPTION_CONFIRMATION') {
+    assert.strictEqual(reservedCountFor(ctx.phone), 1, 'a persisted proposal is backed by its reservation');
+    assert.ok(conv.disruption_proposal_id);
+  } else {
+    assert.strictEqual(reservedCountFor(ctx.phone), 0, 'a refused proposal leaves no orphan');
+  }
+  assert.strictEqual(out.result.ok, true);
+});
+
+test('M4F-70 — [F2] inbound DECLINE inside the window cannot release a proposal that is not yet durable', function() {
+  resetAll();
+  const ctx = happyPath('CONFIRMED');
+  runWithInterleave(ctx, '2');
+
+  const conv = conversationOf(ctx.phone);
+  assert.strictEqual(conv.state, 'WAITING_DISRUPTION_CONFIRMATION',
+    'the proposal still persists — the interleaved decline did not corrupt it');
+  assert.strictEqual(slotById(ctx.candidate.slot_id).status, 'RESERVED', 'candidate still owned by the proposal');
+  assert.strictEqual(slotById(ctx.candidate.slot_id).phone, ctx.phone);
+  assert.strictEqual(slotById(ctx.original.slot_id).status, 'CONFIRMED');
+});
+
+test('M4F-71 — [F2] an arbitrary inbound message inside the window performs no mutation', function() {
+  resetAll();
+  const ctx = happyPath('CONFIRMED');
+  const before = Object.assign({}, slotById(ctx.original.slot_id));
+  runWithInterleave(ctx, 'مرحبا');
+
+  assert.strictEqual(slotById(ctx.original.slot_id).status, before.status);
+  assert.strictEqual(slotById(ctx.original.slot_id).phone, before.phone);
+  assert.strictEqual(state.changeCalls.length, 0);
+  assert.strictEqual(conversationOf(ctx.phone).state, 'WAITING_DISRUPTION_CONFIRMATION');
+});
+
+test('M4F-72 — [F2] a legitimate change to the original inside the window makes Phase 3 refuse', function() {
+  resetAll();
+  const ctx = happyPath('CONFIRMED');
+  // Another process legitimately cancelled the original at the exact window.
+  state.writeHook = function(name, row, fields) {
+    if (name === 'Availability' && row.slot_id === ctx.candidate.slot_id &&
+        fields.status === 'RESERVED') {
+      state.writeHook = null;
+      const original = slotById(ctx.original.slot_id);
+      original.status = 'FREE';
+      original.phone = '';
+    }
+  };
+
+  const result = runStage();
+
+  assert.strictEqual(result.data.created.length, 0, 'Phase 3 does not persist over a legitimate change');
+  const codes = result.data.failures.map(function(f) { return f.code; });
+  assert.ok(codes.indexOf('M4F_STALE_ORIGINAL') !== -1, 'refusal is explicit: ' + JSON.stringify(codes));
+  assert.strictEqual(conversationOf(ctx.phone).state, 'BOOKED', 'no proposal was persisted');
+});
+
+test('M4F-73 — [F2] the candidate is never left orphaned when the Phase-3 guard refuses', function() {
+  resetAll();
+  const ctx = happyPath('CONFIRMED');
+  state.writeHook = function(name, row, fields) {
+    if (name === 'Availability' && row.slot_id === ctx.candidate.slot_id &&
+        fields.status === 'RESERVED') {
+      state.writeHook = null;
+      slotById(ctx.original.slot_id).status = 'FREE';
+      slotById(ctx.original.slot_id).phone = '';
+    }
+  };
+
+  runStage();
+
+  assert.strictEqual(slotById(ctx.candidate.slot_id).status, 'FREE', 'candidate released');
+  assert.strictEqual(slotById(ctx.candidate.slot_id).phone, '', 'candidate has no orphaned owner');
+  assert.strictEqual(reservedCountFor(ctx.phone), 0, 'no orphaned reservation');
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Finding #3 — full final-confirmation semantics (real BookingService)
+// ─────────────────────────────────────────────────────────────────────────
+
+function createBookingSandbox() {
+  const sb = vm.createContext({ console: console });
+  const st = { sheets: {}, logs: [], calendar: 0, lockHeld: false, nowIso: EVAL_ISO };
+
+  function sheet(n) { if (!st.sheets[n]) st.sheets[n] = { headers: [], rows: [] }; return st.sheets[n]; }
+  sb.Session = { getScriptTimeZone: function() { return 'Asia/Baghdad'; } };
+  sb.Utilities = {
+    formatDate: function(d, tz, fmt) {
+      if (d instanceof Date) return fmt === 'yyyy-MM-dd' ? d.toISOString().slice(0, 10) : String(d);
+      // Sheets returns Date cells; string seeds are a harness artefact.
+      const x = new Date(String(d).replace(/\//g, '-'));
+      return fmt === 'yyyy-MM-dd' ? x.toISOString().slice(0, 10) : String(d);
+    }
+  };
+  sb.GoogleSheets = {
+    getAllRows: function(n) { return sheet(n).rows.map(function(r) { return Object.assign({}, r); }); },
+    queryRows: function(n, p) { return sb.GoogleSheets.getAllRows(n).filter(p); },
+    getHeaders: function(n) { return sheet(n).headers.slice(); },
+    findRowByColumn: function(n, c, v) {
+      const r = sheet(n).rows.find(function(x) { return String(x[c]) === String(v); });
+      return r ? Object.assign({}, r) : null;
+    },
+    appendRow: function(n, rec) {
+      const s = sheet(n); const row = {};
+      s.headers.forEach(function(h) { row[h] = rec[h] === undefined ? '' : rec[h]; });
+      s.rows.push(row); return true;
+    },
+    updateRowByColumn: function(n, c, v, f) {
+      const row = sheet(n).rows.find(function(x) { return String(x[c]) === String(v); });
+      if (!row) return false;
+      Object.keys(f).forEach(function(k) { row[k] = f[k]; });
+      return true;
+    }
+  };
+  sb.GoogleCalendar = { createEvent: function() { st.calendar += 1; return 'EVT_' + st.calendar; } };
+  sb.LockService = {
+    getScriptLock: function() {
+      return { waitLock: function() { if (st.lockHeld) throw new Error('LOCK'); st.lockHeld = true; },
+               releaseLock: function() { st.lockHeld = false; } };
+    },
+    getUserLock: function() { return sb.LockService.getScriptLock(); }
+  };
+  sb.PropertiesService = { getScriptProperties: function() { return { getProperty: function() { return null; }, setProperty: function() {} }; } };
+  sb.SettingsRepository = { getSlotDurationMinutes: function() { return 30; } };
+  sb.BusNumberCalculator = { fromSlot: function() { return { ok: true, data: { busNumber: 3 } }; } };
+  sb.LogRepository = { write: function(e) { st.logs.push(e); return true; } };
+
+  function load(rel, name) {
+    const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    vm.runInContext(src + '\nthis.' + name + ' = ' + name + ';', sb, { filename: rel });
+  }
+  ['Result.js:Result', 'Config.js:Config', 'Clock.js:Clock', 'Utils/ULID.js:ULID',
+   'Utils/IdGenerator.js:IdGenerator', 'Utils/DateUtils.js:DateUtils',
+   'Utils/LegacySlotTimeParser.js:LegacySlotTimeParser', 'Utils/PhoneUtils.js:PhoneUtils',
+   'StateMachine.js:StateMachine', 'Domain/Validators.js:Validators',
+   'Infrastructure/Lock.js:Lock', 'Repositories/SlotRepository.js:SlotRepository',
+   'Repositories/CalendarRepository.js:CalendarRepository',
+   'ConversationRepository.js:ConversationRepository',
+   'Application/CommandExecutor.js:CommandExecutor',
+   'Application/BookingService.js:BookingService'
+  ].forEach(function(p) { const parts = p.split(':'); load(parts[0], parts[1]); });
+  sb.Clock.now = function() { return new Date(st.nowIso); };
+  return { sb: sb, st: st };
+}
+
+test('M4F-74 — [F3] ordinary booking confirmation is behaviourally unchanged by the extraction', function() {
+  const env = createBookingSandbox();
+  const sb = env.sb, st = env.st;
+  sb.sheets = st.sheets;
+  st.sheets.Availability = { headers: AVAILABILITY_HEADERS.slice(), rows: [] };
+  st.sheets.Conversations = { headers: CONVERSATION_HEADERS.slice(), rows: [] };
+  st.sheets.Availability.rows.push({
+    slot_id: 'SLT_ORD', date: '2026/09/05', time: '11:00', sort_key: '202609051100',
+    status: 'RESERVED', is_available: true, patient_name: 'مريض عادي', phone: '9647800001111',
+    calendar_event_id: '', reserved_until: '', reserved_until_unix: String(EVAL_MS + 5 * 60000)
+  });
+  st.sheets.Conversations.rows.push({
+    conversation_id: 'CONV_ORD', phone: '9647800001111', state: 'WAITING_CONFIRMATION',
+    temp_name: 'مريض عادي', slot_id: 'SLT_ORD', updated_at: ''
+  });
+
+  const reply = sb.BookingService.handleIncomingMessage('9647800001111', '1');
+  const slot = st.sheets.Availability.rows[0];
+
+  assert.strictEqual(reply.ok, true);
+  assert.strictEqual(slot.status, 'CONFIRMED', 'RESERVED → CONFIRMED');
+  assert.strictEqual(slot.calendar_event_id, 'EVT_1', 'Calendar event created and persisted');
+  assert.strictEqual(st.calendar, 1);
+  assert.strictEqual(st.sheets.Conversations.rows[0].state, 'BOOKED');
+  assert.ok(/تم تأكيد حجزك بنجاح/.test(reply.data.reply), 'reply text unchanged');
+  assert.ok(/رقم الباص: 3/.test(reply.data.reply), 'bus number presentation unchanged');
+});
+
+test('M4F-75 — [F3] ordinary booking: a non-confirmation message is unchanged', function() {
+  const env = createBookingSandbox();
+  const sb = env.sb, st = env.st;
+  st.sheets.Availability = { headers: AVAILABILITY_HEADERS.slice(), rows: [] };
+  st.sheets.Conversations = { headers: CONVERSATION_HEADERS.slice(), rows: [] };
+  st.sheets.Availability.rows.push({
+    slot_id: 'SLT_ORD2', date: '2026/09/05', time: '11:00', sort_key: '202609051100',
+    status: 'RESERVED', is_available: true, patient_name: 'مريض', phone: '9647800002222',
+    calendar_event_id: '', reserved_until: '', reserved_until_unix: String(EVAL_MS + 5 * 60000)
+  });
+  st.sheets.Conversations.rows.push({
+    conversation_id: 'CONV_2', phone: '9647800002222', state: 'WAITING_CONFIRMATION',
+    temp_name: 'مريض', slot_id: 'SLT_ORD2', updated_at: ''
+  });
+  sb.sheets = st.sheets;
+
+  const reply = sb.BookingService.handleIncomingMessage('9647800002222', 'مرحبا');
+
+  assert.strictEqual(reply.data.conversationState, 'WAITING_CONFIRMATION');
+  assert.strictEqual(st.sheets.Availability.rows[0].status, 'RESERVED', 'no mutation');
+  assert.strictEqual(st.calendar, 0);
+});
+
+test('M4F-76 — [F3] M4-F RESERVED confirmation orders the seam before the original release', function() {
+  resetAll();
+  const ctx = happyPath('RESERVED');
+  runStage();
+
+  const order = [];
+  state.writeHook = function(name, row, fields) {
+    if (name === 'Availability') {
+      if (fields.status === 'CONFIRMED') order.push('target-confirmed');
+      if (fields.status === 'FREE' && row.slot_id === ctx.original.slot_id) order.push('original-released');
+    }
+  };
+
+  const reply = respond(ctx.phone, '1');
+
+  assert.deepStrictEqual(order, ['target-confirmed', 'original-released'],
+    'the target is secured before the original is released (Addendum §7)');
+  assert.strictEqual(reply.data.confirmed, true);
+  assert.strictEqual(confirmedCountFor(ctx.phone), 1);
+  assert.strictEqual(conversationOf(ctx.phone).state, 'BOOKED');
+});
+
+test('M4F-77 — [F3] failure injection at target confirmation leaves the original untouched', function() {
+  resetAll();
+  const ctx = happyPath('RESERVED');
+  runStage();
+  const originalBefore = Object.assign({}, slotById(ctx.original.slot_id));
+  state.confirmShouldFail = true;
+
+  const reply = respond(ctx.phone, '1');
+
+  assert.strictEqual(reply.data.failureCode, 'M4F_LIFECYCLE_MUTATION_FAILED');
+  assert.strictEqual(slotById(ctx.original.slot_id).status, originalBefore.status);
+  assert.strictEqual(slotById(ctx.original.slot_id).phone, originalBefore.phone);
+  assert.strictEqual(slotById(ctx.candidate.slot_id).status, 'RESERVED', 'target hold retained');
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Finding #4 — original is_available at final confirmation
+// ─────────────────────────────────────────────────────────────────────────
+
+test('M4F-78 — [F4] RESOLUTION: original is_available IS re-checked freshly at confirmation', function() {
+  resetAll();
+  const ctx = happyPath('CONFIRMED');
+  runStage();
+  // The clinic session reopened while the patient was deciding.
+  slotById(ctx.original.slot_id).is_available = true;
+
+  const reply = respond(ctx.phone, '1');
+
+  assert.strictEqual(reply.data.failureCode, 'M4F_STALE_ORIGINAL',
+    'the disruption no longer exists — no silent, unnecessary move (Contract §1/§6.4)');
+  assert.strictEqual(state.changeCalls.length, 0);
+  assert.strictEqual(slotById(ctx.candidate.slot_id).status, 'RESERVED', 'proposal kept, not orphaned');
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Finding #5 — no-alternative notification semantics
+// ─────────────────────────────────────────────────────────────────────────
+
+test('M4F-79 — [F5] no-alternative creates no reservation, no proposal and no appointment mutation', function() {
+  resetAll();
+  const ctx = happyPath('CONFIRMED');
+  slotById('SLT_M4F_002').is_available = false;
+  slotById('SLT_M4F_003').sort_key = '202609201000';
+  const originalBefore = Object.assign({}, slotById(ctx.original.slot_id));
+
+  const first = runStage();
+  const second = runStage();
+
+  assert.strictEqual(first.data.noAlternative.length, 1);
+  assert.strictEqual(second.data.noAlternative.length, 1, 're-notified on a later run (v1 accepted)');
+  assert.strictEqual(first.data.created.length, 0);
+  assert.strictEqual(second.data.created.length, 0, 'never a duplicate proposal');
+  assert.strictEqual(reservedCountFor(ctx.phone), 0, 'no reservation');
+  assert.strictEqual(conversationOf(ctx.phone).state, 'BOOKED', 'interaction unchanged');
+  const after = slotById(ctx.original.slot_id);
+  assert.strictEqual(after.status, originalBefore.status, 'no appointment mutation');
+  assert.strictEqual(after.calendar_event_id, originalBefore.calendar_event_id);
+  assert.strictEqual(state.changeCalls.length, 0);
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Finding #6 — proposal expiry inside the same Scheduler run
+// ─────────────────────────────────────────────────────────────────────────
+
+test('M4F-80 — [F6] an expired proposal is not re-offered in the same run', function() {
+  resetAll();
+  const ctx = happyPath('CONFIRMED');
+  runStage();
+  const firstId = conversationOf(ctx.phone).disruption_proposal_id;
+
+  state.nowIso = new Date(EVAL_MS + 31 * 60000).toISOString();
+  const result = runStage();
+
+  assert.strictEqual(result.data.expired.length, 1);
+  assert.strictEqual(result.data.created.length, 0, 'no immediate re-offer in the same run');
+  const skipReasons = result.data.skipped.map(function(s) { return s.reason; });
+  assert.ok(skipReasons.indexOf('PROPOSAL_EXPIRED_THIS_RUN') !== -1, JSON.stringify(skipReasons));
+  assert.notStrictEqual(conversationOf(ctx.phone).disruption_proposal_id, firstId);
+});
+
+test('M4F-81 — [F6] the next run creates a NEW proposal identity, never reusing the old one', function() {
+  resetAll();
+  const ctx = happyPath('CONFIRMED');
+  runStage();
+  const firstId = conversationOf(ctx.phone).disruption_proposal_id;
+
+  state.nowIso = new Date(EVAL_MS + 31 * 60000).toISOString();
+  runStage(); // expires + clears
+
+  state.nowIso = new Date(EVAL_MS + 62 * 60000).toISOString();
+  const result = runStage();
+
+  assert.strictEqual(result.data.created.length, 1, 'a later run may propose again (Contract §8)');
+  const newId = result.data.created[0].proposalId;
+  assert.notStrictEqual(newId, firstId, 'the proposal identity is never reused');
+  assert.ok(/^DSP_/.test(newId));
+  assert.strictEqual(reservedCountFor(ctx.phone), 1);
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Finding #7 — ChangeService status extension
+// ─────────────────────────────────────────────────────────────────────────
+
+test('M4F-82 — [F7] the status extension is additive and preserves existing consumers', function() {
+  const change = strippedSourceOf('Changeservice.js');
+  const router = strippedSourceOf('Core/Router.js');
+
+  assert.ok(change.indexOf("status: 'CHANGED'") !== -1, 'typed success status');
+  assert.ok(change.indexOf("status: 'FAILED'") !== -1, 'typed failure status');
+  // Existing consumers read reply / conversationState only.
+  assert.strictEqual(/\.status\b/.test(router.replace(/conversationState/g, '')), false,
+    'the Router does not consume a change result status');
+  // The failure path keeps its reply semantics.
+  assert.ok(change.indexOf('تعذّر تغيير موعدك حاليًا') !== -1, 'patient reply text unchanged');
+  // M4-F consumes the typed status, never reply text.
+  const svc = strippedSourceOf('Application/PatientDisruptionService.js');
+  assert.ok(svc.indexOf("change.data.status !== 'CHANGED'") !== -1, 'M4-F uses the structured status');
+  assert.strictEqual(/Result\.ok\(\{\s*success:/.test(svc), false, 'no Result.ok({success:false}) anti-pattern');
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Finding #8 — BookingService extraction must remain surgical
+// ─────────────────────────────────────────────────────────────────────────
+
+test('M4F-83 — [F8] the extraction added no duplicated or new business semantics', function() {
+  const src = strippedSourceOf('Application/BookingService.js');
+
+  // Calendar creation exists exactly once — no duplication between the
+  // ordinary path and the extracted seam.
+  const occurrences = src.split('CalendarRepository.createAppointmentEvent').length - 1;
+  assert.strictEqual(occurrences, 1, 'Calendar creation is not duplicated');
+
+  // The seam keeps the original command boundary and transition.
+  assert.ok(src.indexOf('confirmReservedSlot(phone, slotId)') !== -1, 'the seam exists');
+  assert.ok(src.indexOf('BookingService.confirmReservedSlot(phone, slotId)') !== -1,
+    'the ordinary path delegates to the seam');
+  assert.ok(src.indexOf('Config.VOCABULARY.COMMANDS.CONFIRM_RESERVATION') !== -1,
+    'the command boundary is preserved');
+
+  // The confirmation body is no longer inlined in the handler.
+  const handler = src.slice(src.indexOf('_handleWaitingConfirmation('), src.indexOf('_handleBooked()'));
+  assert.strictEqual(handler.indexOf('CalendarRepository'), -1,
+    'the handler no longer duplicates the Calendar logic');
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Finding #9 — Scheduler stage failure semantics
+// ─────────────────────────────────────────────────────────────────────────
+
+function createSchedulerSandbox() {
+  const sb = vm.createContext({ console: console });
+  const st = { lockCalls: [], lockHeld: false, logEntries: [], props: {}, stageCalls: [], stageResults: {} };
+
+  sb.Session = { getScriptTimeZone: function() { return 'Asia/Baghdad'; } };
+  sb.Utilities = { formatDate: function() { return ''; } };
+  sb.LockService = {
+    getUserLock: function() {
+      st.lockCalls.push('user');
+      return {
+        waitLock: function() { st.lockHeld = true; },
+        releaseLock: function() { st.lockHeld = false; }
+      };
+    },
+    getScriptLock: function() {
+      return { waitLock: function() {}, releaseLock: function() {} };
+    }
+  };
+  sb.PropertiesService = {
+    getScriptProperties: function() {
+      return {
+        getProperty: function(k) { return st.props[k] || null; },
+        setProperty: function(k, v) { st.props[k] = v; }
+      };
+    }
+  };
+  sb.LogRepository = { write: function(e) { st.logEntries.push(e); return true; } };
+
+  function load(rel, name) {
+    const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    vm.runInContext(src + '\nthis.' + name + ' = ' + name + ';', sb, { filename: rel });
+  }
+  load('Result.js', 'Result');
+  load('Config.js', 'Config');
+  load('Clock.js', 'Clock');
+  load('Infrastructure/Lock.js', 'Lock');
+  load('Scheduler.js', 'Scheduler');
+
+  st.stageResults = {
+    archive: sb.Result.ok({ archived: 0 }),
+    maintenance: sb.Result.ok({ cleaned: 0 }),
+    horizon: sb.Result.ok({ generated: 0 }),
+    disruption: sb.Result.ok({ created: [] }),
+    reminders: sb.Result.ok({ sent: 0 }),
+    healthCheck: sb.Result.ok({ healthy: true, issues: [], warnings: [] })
+  };
+  sb.ArchiveService = { run: function() { st.stageCalls.push('archive'); return st.stageResults.archive; } };
+  sb.MaintenanceService = { run: function() { st.stageCalls.push('maintenance'); return st.stageResults.maintenance; } };
+  sb.AvailabilityHorizonMaintainer = { ensureHorizon: function() { st.stageCalls.push('horizon'); return st.stageResults.horizon; } };
+  sb.PatientDisruptionService = { processDisruptions: function() { st.stageCalls.push('disruption'); return st.stageResults.disruption; } };
+  sb.ReminderService = { processPendingReminders: function() { st.stageCalls.push('reminders'); return st.stageResults.reminders; } };
+  sb.HealthCheckService = { run: function() { st.stageCalls.push('healthCheck'); return st.stageResults.healthCheck; } };
+  sb.WhatsAppAdapter = { sendMessage: function() { return sb.Result.ok({}); } };
+
+  return { sb: sb, st: st };
+}
+
+test('M4F-84 — [F9] a disruption stage failure is reported, never fabricated as success', function() {
+  const env = createSchedulerSandbox();
+  env.st.stageResults.disruption = env.sb.Result.fail('M4F_SCHEMA_MISSING', 'schema not provisioned');
+
+  const result = env.sb.Scheduler.main();
+
+  assert.strictEqual(result.ok, false, 'the run does not claim success');
+  assert.strictEqual(result.error.code, 'SCHEDULER_PARTIAL_FAILURE');
+  assert.strictEqual(result.error.details.stages.disruption, 'FAILED', 'the stage is reported accurately');
+  assert.deepStrictEqual(env.st.stageCalls,
+    ['archive', 'maintenance', 'horizon', 'disruption', 'reminders', 'healthCheck'],
+    'later stages still run per the existing partial-failure pattern');
+  assert.strictEqual(env.st.props.LAST_SCHEDULER_SUCCESS_MS, undefined,
+    'liveness is not updated on a failed operational run');
+  const logged = env.st.logEntries.filter(function(e) { return e.command === 'SCHEDULER_STAGE_FAILED'; });
+  assert.strictEqual(logged.length, 1, 'the failure is observable');
+  assert.ok(logged[0].error.indexOf('disruption') !== -1);
+});
+
+test('M4F-85 — [F9] a healthy disruption stage keeps the run green and updates liveness', function() {
+  const env = createSchedulerSandbox();
+  const result = env.sb.Scheduler.main();
+
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.data.stages.disruption, 'OK');
+  assert.ok(env.st.props.LAST_SCHEDULER_SUCCESS_MS, 'liveness updated');
+  assert.strictEqual(env.st.lockHeld, false, 'the orchestration lock is released');
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Finding #10 — schema prerequisite
+// ─────────────────────────────────────────────────────────────────────────
+
+test('M4F-86 — [F10] schema absence is typed, blocks partial proposals and never migrates', function() {
+  resetAll();
+  happyPath('CONFIRMED');
+  const headers = state.sheets.Conversations.headers.slice();
+  state.sheets.Conversations.headers = headers.filter(function(h) {
+    return h !== 'disruption_expires_at_ms';
+  });
+
+  const session = sandbox.ConversationRepository.getDisruptionSession('9647800000000');
+  assert.strictEqual(session.ok, false);
+  assert.strictEqual(session.error.code, 'M4F_SCHEMA_MISSING', 'typed schema failure');
+  assert.ok(session.error.message.indexOf('disruption_expires_at_ms') !== -1, 'the missing column is named');
+
+  const before = state.sheets.Conversations.rows.length;
+  const stage = runStage();
+
+  assert.strictEqual(stage.ok, false, 'the Scheduler is not told "no affected appointments"');
+  assert.strictEqual(stage.error.code, 'M4F_SCHEMA_MISSING');
+  assert.strictEqual(state.sheets.Conversations.rows.length, before, 'no partial proposal written');
+  assert.strictEqual(state.sheets.Conversations.headers.length, headers.length - 1,
+    'no automatic migration — the sheet was not altered');
+  assert.strictEqual(reservedCountFor('9647800000000'), 0, 'no reservation left behind');
+  assert.strictEqual(state.sends.length, 0);
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Finding #11 — fresh reads / stale evidence audit
+// ─────────────────────────────────────────────────────────────────────────
+
+test('M4F-87 — [F11] every final mutation re-reads proposal, original, target and Clock', function() {
+  resetAll();
+  const ctx = happyPath('CONFIRMED');
+  runStage();
+
+  // Stale target: the proposal would otherwise confirm a slot it no longer owns.
+  slotById(ctx.candidate.slot_id).status = 'RESERVED';
+  slotById(ctx.candidate.slot_id).phone = '9647809999999';
+  let reply = respond(ctx.phone, '1');
+  assert.strictEqual(reply.data.failureCode, 'M4F_STALE_CANDIDATE', 'fresh target read');
+
+  // Stale proposal identity: the durable proposal current at mutation time no
+  // longer matches the proposal this decision was taken against.
+  resetAll();
+  const ctx2 = happyPath('CONFIRMED');
+  runStage();
+  const current = Object.assign({}, conversationOf(ctx2.phone));
+  const proposal = {
+    disruption_proposal_id: 'DSP_SUPERSEDED',
+    disruption_original_slot_id: current.disruption_original_slot_id,
+    disruption_proposal_slot_id: current.disruption_proposal_slot_id,
+    disruption_kind: current.disruption_kind,
+    disruption_expires_at_ms: current.disruption_expires_at_ms
+  };
+  const stale = SVC._revalidate(ctx2.phone, proposal, sandbox.Clock.now());
+  assert.strictEqual(stale.ok, false);
+  assert.strictEqual(stale.error.code, 'M4F_CONFLICTING_ACTION', 'fresh proposal read');
+
+  // Clock: expiry is evaluated from the current instant, not creation time.
+  resetAll();
+  const ctx3 = happyPath('CONFIRMED');
+  runStage();
+  state.nowIso = new Date(EVAL_MS + 31 * 60000).toISOString();
+  reply = respond(ctx3.phone, '1');
+  assert.strictEqual(reply.data.expired, true, 'fresh Clock.now() read');
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Finding #12 — ownership checks on every cleanup path
+// ─────────────────────────────────────────────────────────────────────────
+
+test('M4F-88 — [F12] decline does not modify a slot that is no longer owned by the proposal', function() {
+  resetAll();
+  const ctx = happyPath('CONFIRMED');
+  runStage();
+  slotById(ctx.candidate.slot_id).phone = '9647809999999';
+  const before = Object.assign({}, slotById(ctx.candidate.slot_id));
+
+  const reply = respond(ctx.phone, '2');
+
+  assert.strictEqual(reply.data.failureCode, 'M4F_STALE_CANDIDATE', 'classified, not a silent success');
+  const after = slotById(ctx.candidate.slot_id);
+  assert.strictEqual(after.status, before.status, 'unrelated slot untouched');
+  assert.strictEqual(after.phone, '9647809999999', 'foreign ownership preserved');
+  assert.strictEqual(conversationOf(ctx.phone).state, 'WAITING_DISRUPTION_CONFIRMATION');
+});
+
+test('M4F-89 — [F12] timeout does not modify a slot that is no longer owned by the proposal', function() {
+  resetAll();
+  const ctx = happyPath('CONFIRMED');
+  runStage();
+  slotById(ctx.candidate.slot_id).phone = '9647809999999';
+  const before = Object.assign({}, slotById(ctx.candidate.slot_id));
+
+  state.nowIso = new Date(EVAL_MS + 31 * 60000).toISOString();
+  const result = runStage();
+
+  const after = slotById(ctx.candidate.slot_id);
+  assert.strictEqual(after.status, before.status, 'unrelated slot untouched on timeout');
+  assert.strictEqual(after.phone, '9647809999999');
+  assert.strictEqual(result.data.expired.length, 1, 'the interaction is still cleared');
+  assert.strictEqual(conversationOf(ctx.phone).disruption_proposal_id, '');
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Finding #13 — logs are diagnostics only
+// ─────────────────────────────────────────────────────────────────────────
+
+test('M4F-90 — [F13] logs are write-only diagnostics and never a state source', function() {
+  const src = strippedSourceOf('Application/PatientDisruptionService.js');
+  const usages = src.match(/LogRepository\.\w+/g) || [];
+  assert.ok(usages.length > 0, 'the service emits diagnostics');
+  usages.forEach(function(u) {
+    assert.strictEqual(u, 'LogRepository.write', 'log usage must be write-only: ' + u);
+  });
+  assert.strictEqual(/LogRepository\.read|getAllRows\('SYSTEM_LOG'\)|queryRows\('SYSTEM_LOG'/.test(src), false,
+    'no decision may be rebuilt from the log');
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Finding #14 — PII boundary
+// ─────────────────────────────────────────────────────────────────────────
+
+test('M4F-91 — [F14] the durable proposal carries no PII, transcript or Calendar identifier', function() {
+  resetAll();
+  const ctx = happyPath('CONFIRMED');
+  runStage();
+  const conv = conversationOf(ctx.phone);
+  const fields = sandbox.ConversationRepository.DISRUPTION_FIELDS;
+
+  // Compared as a sorted string: the array is created in the vm realm, so
+  // deepStrictEqual against a host-realm literal is unreliable.
+  assert.strictEqual(Array.prototype.slice.call(fields).sort().join(','), [
+    'disruption_created_at_ms', 'disruption_expires_at_ms', 'disruption_kind',
+    'disruption_notification_status', 'disruption_original_slot_id',
+    'disruption_proposal_id', 'disruption_proposal_slot_id'
+  ].join(','), 'the schema is exactly the bounded seven');
+
+  fields.forEach(function(f) {
+    assert.strictEqual(/phone|name|transcript|calendar/i.test(f), false, 'no PII field: ' + f);
+    const value = String(conv[f]);
+    assert.strictEqual(value.indexOf('مريض'), -1, 'no patient name stored in ' + f);
+  });
+
+  // Diagnostic payloads must not carry patient names either.
+  const payloads = JSON.stringify(state.logs.map(function(l) { return l.error; }));
+  assert.strictEqual(payloads.indexOf('مريض'), -1, 'no patient name in diagnostics');
+
+  // M4-E evidence stays PII-free.
+  const item = sandbox.AffectedAppointmentDiscoveryService.discoverAffected({
+    from: EVAL_MS, to: EVAL_MS + 3 * 86400000
+  }).data.affected[0];
+  ['phone', 'patient_name', 'calendar_event_id'].forEach(function(k) {
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(item, k), false, 'M4-E DTO has no ' + k);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Finding #15 — cohesion / no duplicated ownership
+// ─────────────────────────────────────────────────────────────────────────
+
+test('M4F-92 — [F15] the service owns no duplicated boundary (ownership, not line count)', function() {
+  const src = strippedSourceOf('Application/PatientDisruptionService.js');
+  const forbidden = [
+    ['Calendar semantics', 'CalendarRepository'],
+    ['Calendar semantics', 'GoogleCalendar'],
+    ['persistence', 'GoogleSheets'],
+    ['lifecycle', 'StateMachine.transitions'],
+    ['lifecycle', 'insertBatch'],
+    ['selector', 'function findEarliest'],
+    ['schedule truth', 'EffectiveScheduleService'],
+    ['schedule intent', 'ScheduleChangeRepository'],
+    ['conversation engine', 'startNew('],
+    ['scheduler', 'ScriptApp.newTrigger']
+  ];
+  forbidden.forEach(function(pair) {
+    assert.strictEqual(src.indexOf(pair[1]), -1, 'M4-F must not own ' + pair[0] + ' (' + pair[1] + ')');
+  });
+  // …and it must delegate to the real owners.
+  ['SlotSelection.findEarliestWithinHorizon', 'SlotRepository.atomicUpdate',
+   'ConversationRepository.', 'ChangeService.changeConfirmedAppointment',
+   'BookingService.confirmReservedSlot'].forEach(function(token) {
+    assert.ok(src.indexOf(token) !== -1, 'must reuse the existing boundary: ' + token);
+  });
+});
+
 
 // ═════════════════════════════════════════════════════════════════════════
 

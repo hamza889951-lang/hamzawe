@@ -170,7 +170,22 @@ const PatientDisruptionService = {
       failures: []
     };
 
-    // ── 1. Timeout sweep ────────────────────────────────────────────────
+    // ── 1a. Recovery sweep ───────────────────────────────────────────────
+    // Complete confirmations that were interrupted before the original
+    // reservation could be released (finding #1). Runs before the timeout
+    // sweep so a recovered proposal is never expired underneath.
+    const recoverySweep = this._recoverPendingFinalizations();
+    if (!recoverySweep.ok) {
+      summary.failures.push({
+        scope: 'RECOVERY_SWEEP',
+        code: recoverySweep.error ? recoverySweep.error.code : 'UNKNOWN',
+        message: recoverySweep.error ? recoverySweep.error.message : 'Recovery sweep failed'
+      });
+    } else {
+      summary.recovered = recoverySweep.data;
+    }
+
+    // ── 1b. Timeout sweep ────────────────────────────────────────────────
     const expirySweep = this._expirePendingProposals(now);
     const expiredPhones = {};
     if (!expirySweep.ok) {
@@ -847,20 +862,56 @@ const PatientDisruptionService = {
     }
 
     // Release the original hold only after the new appointment is secured, so
-    // the patient can never end with zero appointments because of M4-F.
-    const released = this._releaseProposalTarget(phone, proposal.disruption_original_slot_id);
+    // the patient can never end with zero appointments because of M4-F
+    // (Closure Addendum §7).
+    const originalSlotId = proposal.disruption_original_slot_id;
+    const released = this._releaseOriginalReservation(phone, originalSlotId);
+
+    if (!released.ok) {
+      // ⚠️ Supervisor review finding #1 — the outcome is NOT a success.
+      // The target is CONFIRMED but the original is still held, i.e. the
+      // patient would end with two active bookings. The pending interaction
+      // is deliberately NOT cleared: clearing it would hide the unresolved
+      // original and destroy the ownership evidence recovery depends on. A
+      // later Scheduler run retries the release via
+      // _recoverPendingFinalizations().
+      this._log(this.LOG.RECOVERY_REQUIRED, phone, originalSlotId, false, {
+        proposalId: proposal.disruption_proposal_id,
+        stage: 'ORIGINAL_RESERVATION_RELEASE',
+        targetSlotId: proposal.disruption_proposal_slot_id,
+        cause: released.error
+      });
+      return Result.fail(
+        'M4F_RECOVERY_REQUIRED',
+        'The replacement appointment is confirmed but the original reservation could not be released; recovery required',
+        {
+          proposalId: proposal.disruption_proposal_id,
+          originalSlotId: originalSlotId,
+          targetSlotId: proposal.disruption_proposal_slot_id,
+          cause: released.error
+        }
+      );
+    }
 
     const cleared = this._clearSession(phone, Config.VOCABULARY.CONVERSATION_STATE.BOOKED);
-    if (!cleared.ok) return cleared;
-
-    this._log(this.LOG.PROPOSAL_CONFIRMED, phone, proposal.disruption_proposal_slot_id, true, {
-      proposalId: proposal.disruption_proposal_id, kind: 'RESERVED', originalReleased: released.ok
-    });
-    if (!released.ok) {
-      this._log(this.LOG.RECOVERY_REQUIRED, phone, proposal.disruption_original_slot_id, false, {
-        stage: 'ORIGINAL_RESERVATION_RELEASE', cause: released.error
+    if (!cleared.ok) {
+      // The appointment outcome is durable, but the interaction state is not:
+      // keep the case visible instead of reporting a clean success.
+      this._log(this.LOG.RECOVERY_REQUIRED, phone, proposal.disruption_proposal_slot_id, false, {
+        proposalId: proposal.disruption_proposal_id,
+        stage: 'SESSION_CLEAR',
+        cause: cleared.error
+      });
+      return Result.fail('M4F_RECOVERY_REQUIRED', 'Confirmed disruption could not finalize the interaction state; recovery required', {
+        proposalId: proposal.disruption_proposal_id,
+        stage: 'SESSION_CLEAR',
+        cause: cleared.error
       });
     }
+
+    this._log(this.LOG.PROPOSAL_CONFIRMED, phone, proposal.disruption_proposal_slot_id, true, {
+      proposalId: proposal.disruption_proposal_id, kind: 'RESERVED', originalReleased: released.data.released === true
+    });
 
     const confirmedDisplay = this._slotDisplay(target);
     return Result.ok({
@@ -869,9 +920,89 @@ const PatientDisruptionService = {
         '\nيرجى الحضور ضمن وقت دوام العيادة.',
       conversationState: Config.VOCABULARY.CONVERSATION_STATE.BOOKED,
       confirmed: true,
-      originalReleased: released.ok,
-      originalReleaseError: released.ok ? null : released.error
+      originalReleased: released.data.released === true
     });
+  },
+
+  /**
+   * Ownership-checked release of the ORIGINAL appointment hold.
+   *
+   * "Not owned by this proposal" is NOT a failure: the original may have been
+   * released or expired through its own ordinary lifecycle, and mutating an
+   * unrelated slot is forbidden (Contract §7). Only a genuine, still-owned
+   * release failure escalates to M4F_RECOVERY_REQUIRED.
+   */
+  _releaseOriginalReservation: function(phone, slotId) {
+    const readResult = SlotRepository.findByIdResult(slotId);
+    if (!readResult.ok) return readResult;
+
+    const slot = readResult.data;
+    if (!slot || slot.phone !== phone || slot.status !== Config.VOCABULARY.STATUS.RESERVED) {
+      return Result.ok({ released: false, reason: 'NOT_OWNED_BY_PROPOSAL' });
+    }
+
+    const released = this._releaseProposalTarget(phone, slotId);
+    if (!released.ok) return released;
+    return Result.ok({ released: true, reason: 'RELEASED' });
+  },
+
+  /**
+   * Supervisor review finding #1 — bounded recovery sweep.
+   *
+   * Completes a confirmation that was interrupted between "target confirmed"
+   * and "original released / session cleared": those rows are still in
+   * WAITING_DISRUPTION_CONFIRMATION with a CONFIRMED proposal target. The
+   * release is retried from the durable slot rows alone — no new journal, no
+   * new schema field, no loss of ownership evidence.
+   */
+  _recoverPendingFinalizations: function() {
+    const rowsResult = ConversationRepository.findConversationsByState(
+      Config.VOCABULARY.CONVERSATION_STATE.WAITING_DISRUPTION_CONFIRMATION
+    );
+    if (!rowsResult.ok) return rowsResult;
+
+    const recovered = [];
+    const rows = rowsResult.data;
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const proposalId = row.disruption_proposal_id;
+      const targetSlotId = row.disruption_proposal_slot_id;
+      const originalSlotId = row.disruption_original_slot_id;
+      if (!proposalId || !targetSlotId || !originalSlotId || !row.phone) continue;
+
+      const targetResult = SlotRepository.findByIdResult(targetSlotId);
+      if (!targetResult.ok) continue;
+      const target = targetResult.data;
+      // Only a partially-completed confirmation reaches this path.
+      if (!target || target.status !== Config.VOCABULARY.STATUS.CONFIRMED || target.phone !== row.phone) continue;
+
+      const originalResult = SlotRepository.findByIdResult(originalSlotId);
+      if (!originalResult.ok) continue;
+      const original = originalResult.data;
+
+      if (!original || original.phone !== row.phone ||
+          original.status !== Config.VOCABULARY.STATUS.RESERVED) {
+        // Nothing owned to release: the original already returned to its own
+        // lifecycle. Finalize the interaction only.
+        const cleared = this._clearSession(row.phone, Config.VOCABULARY.CONVERSATION_STATE.BOOKED);
+        if (cleared.ok) recovered.push({ phone: row.phone, proposalId: proposalId, outcome: 'CLEARED' });
+        continue;
+      }
+
+      const released = this._releaseProposalTarget(row.phone, originalSlotId);
+      if (!released.ok) continue; // retry on the next run
+
+      const cleared = this._clearSession(row.phone, Config.VOCABULARY.CONVERSATION_STATE.BOOKED);
+      if (!cleared.ok) continue;
+      recovered.push({ phone: row.phone, proposalId: proposalId, outcome: 'RELEASED_AND_CLEARED' });
+
+      this._log(this.LOG.PROPOSAL_CONFIRMED, row.phone, targetSlotId, true, {
+        proposalId: proposalId, kind: 'RESERVED', recovered: true, originalReleased: true
+      });
+    }
+
+    return Result.ok(recovered);
   },
 
   // ═════════════════════════════════════════════════════════════════════
@@ -1043,6 +1174,19 @@ const PatientDisruptionService = {
         currentStatus: original.status
       });
     }
+    // Supervisor review finding #4 — RESOLUTION: IMPLEMENTATION FIX APPLIED.
+    // `Slot.is_available` is the operational availability gate and, per
+    // Contract §3.5, the projection M4-F consumes as affectedness truth. If
+    // the original became operationally available again, the disruption that
+    // justified the proposal no longer exists: finalizing the move would be a
+    // silent, no-longer-necessary appointment move (Contract §1, §6.4
+    // "otherwise no longer matches the proposal's expected original slot").
+    // The check is a FRESH read, never the Phase-1 snapshot.
+    if (SlotRepository.isOperationallyAvailable(original.is_available)) {
+      return Result.fail('M4F_STALE_ORIGINAL', 'Original appointment is no longer affected (is_available became true)', {
+        slotId: original.slot_id
+      });
+    }
 
     const targetResult = SlotRepository.findByIdResult(current.disruption_proposal_slot_id);
     if (!targetResult.ok) return targetResult;
@@ -1145,6 +1289,18 @@ const PatientDisruptionService = {
         reply: 'انتهت صلاحية الموعد البديل المقترح. لم يتم تغيير موعدك.',
         conversationState: disruptionState,
         expired: true
+      });
+    }
+
+    // Finding #1 — a partially completed confirmation is NEVER reported to the
+    // patient as a plain success, and the pending interaction is left intact
+    // so the recovery sweep can complete it.
+    if (code === 'M4F_RECOVERY_REQUIRED') {
+      return Result.ok({
+        reply: 'تم تأكيد الموعد البديل، لكن بقي حجز سابق بحاجة إلى معالجة من العيادة. ' +
+               'سيتم إكمال المعالجة تلقائيًا، أو يرجى التواصل مع العيادة.',
+        conversationState: disruptionState,
+        recoveryRequired: true
       });
     }
 
