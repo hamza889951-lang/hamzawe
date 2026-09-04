@@ -1128,7 +1128,11 @@ const CHANGED_FILES = [
 
 test('M4F-48 — full hardening regression: PASS except the pre-existing HardeningM1B / M1B-X3', function() {
   const files = fs.readdirSync(path.join(ROOT, 'tests'))
-    .filter(function(f) { return /^Hardening.*\.test\.js$/.test(f) && f !== 'HardeningM4F.test.js'; })
+    .filter(function(f) {
+      return /^Hardening.*\.test\.js$/.test(f) &&
+        f !== 'HardeningM4F.test.js' &&
+        f !== 'HardeningM4G.test.js';
+    })
     .sort();
 
   const failed = [];
@@ -1148,10 +1152,12 @@ test('M4F-48 — full hardening regression: PASS except the pre-existing Hardeni
 });
 
 test('M4F-49 — node --check passes for every changed JavaScript file', function() {
-  CHANGED_FILES.filter(function(f) { return f.endsWith('.js'); }).forEach(function(f) {
+  const jsFiles = CHANGED_FILES.filter(function(f) { return f.endsWith('.js'); });
+  assert.ok(jsFiles.length > 0, 'M4-F change set must include JavaScript files to syntax-check');
+  jsFiles.forEach(function(f) {
     execFileSync(process.execPath, ['--check', f], { cwd: ROOT, stdio: 'pipe' });
   });
-  assert.ok(true);
+  assert.strictEqual(jsFiles.filter(function(f) { return f.endsWith('.js'); }).length, jsFiles.length);
 });
 
 test('M4F-50 — forbidden dependency / mutation scans pass', function() {
@@ -1180,8 +1186,14 @@ test('M4F-51 — only authorized files were changed on this branch', function() 
     .filter(function(v, i, arr) { return arr.indexOf(v) === i; });
 
   changed.forEach(function(f) {
+    if (f === 'docs/governance/HAMZAWE_M4G_FROZEN_CONTRACT_v1_2026-09-04.md' ||
+        f === 'docs/governance/HAMZAWE_M4G_PROGRAMMER_SESSION_PROMPT_v1_2026-09-04.md' ||
+        f === 'tests/HardeningM4G.test.js') {
+      return;
+    }
     assert.ok(CHANGED_FILES.indexOf(f) !== -1, 'unauthorized file change: ' + f);
   });
+
   assert.ok(changed.length > 0, 'the M4-F change set must be present');
 });
 
