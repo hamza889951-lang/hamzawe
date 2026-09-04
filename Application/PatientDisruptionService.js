@@ -1151,7 +1151,9 @@ const PatientDisruptionService = {
     const current = revalidated.data.proposal;
 
     // Ownership-checked: a target the proposal no longer owns is left alone.
-    const cleanup = this._cleanupProposalTarget(phone, current.disruption_proposal_slot_id);
+    const cleanup = this._cleanupProposalTarget(
+      phone, current.disruption_proposal_slot_id, current.disruption_original_slot_id, current.disruption_proposal_id
+    );
     if (!cleanup.ok) return cleanup;
 
     const nextState = this._fallbackState(current.disruption_kind, current.disruption_original_slot_id, phone);
@@ -1176,7 +1178,9 @@ const PatientDisruptionService = {
   _expire: function(phone, proposal, now) {
     // Ownership-checked release of the proposal TARGET only. The original
     // appointment keeps its own lifecycle semantics (Addendum §8).
-    const released = this._cleanupProposalTarget(phone, proposal.disruption_proposal_slot_id);
+    const released = this._cleanupProposalTarget(
+      phone, proposal.disruption_proposal_slot_id, proposal.disruption_original_slot_id, proposal.disruption_proposal_id
+    );
     if (!released.ok) return released;
 
     const nextState = this._fallbackState(proposal.disruption_kind, proposal.disruption_original_slot_id, phone);
@@ -1407,12 +1411,42 @@ const PatientDisruptionService = {
    *
    * @returns {Result} ok({ released:boolean, reason:string }) | fail(...)
    */
-  _cleanupProposalTarget: function(phone, slotId) {
+  _cleanupProposalTarget: function(phone, slotId, originalSlotId, proposalId) {
     const readResult = SlotRepository.findByIdResult(slotId);
     if (!readResult.ok) return readResult;
 
     const target = readResult.data;
     if (!target) return Result.ok({ released: false, reason: 'TARGET_ABSENT' });
+
+    // A confirmed target plus an original still RESERVED to the same patient
+    // is the durable signature of the interrupted finalization path from
+    // _confirmForReservedOriginal(). Decline/timeout must NOT interpret the
+    // confirmed target as "not owned" and clear the interaction: doing so
+    // would erase the only recovery evidence while leaving two active
+    // appointments. Recovery must retain the pending interaction until the
+    // Scheduler can release the original and converge the case (M4F-64).
+    if (target.phone === phone && target.status === Config.VOCABULARY.STATUS.CONFIRMED &&
+        originalSlotId) {
+      const originalResult = SlotRepository.findByIdResult(originalSlotId);
+      if (!originalResult.ok) return Result.fail('M4F_RECOVERY_REQUIRED',
+        'Cannot classify interrupted disruption finalization because the original appointment could not be read', {
+          proposalId: proposalId || null,
+          originalSlotId: originalSlotId,
+          targetSlotId: slotId,
+          cause: originalResult.error
+        });
+
+      const original = originalResult.data;
+      if (original && original.phone === phone &&
+          original.status === Config.VOCABULARY.STATUS.RESERVED) {
+        return Result.fail('M4F_RECOVERY_REQUIRED',
+          'Disruption finalization is incomplete; the original reservation must be recovered before cleanup', {
+            proposalId: proposalId || null,
+            originalSlotId: originalSlotId,
+            targetSlotId: slotId
+          });
+      }
+    }
 
     if (target.phone !== phone || target.status !== Config.VOCABULARY.STATUS.RESERVED) {
       return Result.ok({ released: false, reason: 'NOT_OWNED_BY_PROPOSAL' });
