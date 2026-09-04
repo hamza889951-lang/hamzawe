@@ -1,12 +1,17 @@
 {
   "timeZone": "Asia/Baghdad",
-  "dependencies": {},
   "exceptionLogging": "STACKDRIVER",
   "runtimeVersion": "V8",
+
+  "urlFetchWhitelist": [
+    "https://api.ultramsg.com/"
+  ],
+
   "webapp": {
     "executeAs": "USER_DEPLOYING",
     "access": "ANYONE_ANONYMOUS"
   },
+
   "oauthScopes": [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/calendar",
@@ -16,6 +21,7 @@
     "https://www.googleapis.com/auth/calendar.addons.execute",
     "https://www.googleapis.com/auth/calendar.addons.current.event.read"
   ],
+
   "addOns": {
     "common": {
       "name": "HAMZAWE Attendance",
