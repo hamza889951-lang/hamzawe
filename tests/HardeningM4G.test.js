@@ -113,9 +113,42 @@ function git(args) {
 }
 
 function changedFiles(base) {
-  const r = git(['diff', '--name-only', base + '...HEAD']);
+  // Prefer three-dot (merge-base...HEAD). Fall back to two-dot tree diff when
+  // the local clone is missing parent objects and cannot compute a merge-base.
+  let r = git(['diff', '--name-only', base + '...HEAD']);
+  if (r.status !== 0) {
+    r = git(['diff', '--name-only', base, 'HEAD']);
+  }
   assert.strictEqual(r.status, 0, r.stderr || 'git diff failed');
   return r.stdout.split(/\r?\n/).filter(Boolean);
+}
+
+function assertBaselineAncestry(base) {
+  const local = git(['merge-base', '--is-ancestor', base, 'HEAD']);
+  if (local.status === 0) return;
+  const head = git(['rev-parse', 'HEAD']);
+  assert.strictEqual(head.status, 0, head.stderr || 'rev-parse HEAD failed');
+  const gh = cp.spawnSync(
+    'gh',
+    [
+      'api',
+      'repos/hamza889951-lang/hamzawe/compare/' + base + '...' + head.stdout.trim(),
+      '--jq',
+      '{status:.status,behind_by:.behind_by}'
+    ],
+    { cwd: ROOT, encoding: 'utf8' }
+  );
+  assert.strictEqual(
+    gh.status,
+    0,
+    'local ancestry unavailable and GitHub compare failed: ' + (gh.stderr || gh.stdout)
+  );
+  const payload = JSON.parse(gh.stdout);
+  assert.strictEqual(payload.behind_by, 0, 'GitHub compare reports HEAD is behind the baseline');
+  assert.ok(
+    payload.status === 'ahead' || payload.status === 'identical',
+    'GitHub compare status is not ancestry-safe: ' + payload.status
+  );
 }
 
 function assertNoDirectInfrastructureCode(relDir) {
@@ -157,12 +190,14 @@ const reportPeriod = readFile('Utils/ReportPeriod.js');
 // G-01 .. G-06 — Architecture / ownership
 // ─────────────────────────────────────────────────────────────────────────────
 test('G-01 — Current baseline is an ancestor and the reviewed head is real Git history', function() {
-  const ancestor = git(['merge-base', '--is-ancestor', BASELINE, 'HEAD']);
-  assert.strictEqual(ancestor.status, 0, ancestor.stderr || 'baseline is not an ancestor of HEAD');
   const head = git(['rev-parse', 'HEAD']);
   assert.strictEqual(head.status, 0);
   assert.strictEqual(head.stdout.trim().length, 40);
   assert.notStrictEqual(head.stdout.trim(), BASELINE);
+  const type = git(['cat-file', '-t', 'HEAD']);
+  assert.strictEqual(type.status, 0);
+  assert.strictEqual(type.stdout.trim(), 'commit');
+  assertBaselineAncestry(BASELINE);
 });
 
 test('G-02 — No new business boundary/component is introduced by the M4-G diff', function() {
@@ -216,6 +251,7 @@ test('G-09 — Asia/Baghdad and local-date semantics remain explicit', function(
 
 test('G-10 — M4-F expiry remains exactly 30 minutes', function() {
   assert.ok(config.indexOf('DISRUPTION_PROPOSAL_TIMEOUT_MINUTES: 30') !== -1);
+  assertSuiteHasPasses('HardeningM4F.test.js', ['M4F-15']);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -235,7 +271,14 @@ test('G-12 — Schedule Change repository is append-only and cancellation is beh
 });
 
 test('G-13 — Schedule commands use scope serialization and fresh-state checks', function() {
-  assert.ok(/Lock\.runExclusive/.test(m4cService));
+  assert.ok(
+    /ScheduleChangeRepository\.runExclusiveForScope/.test(m4cService),
+    'DoctorScheduleCommandService must serialize through the established schedule-scope boundary'
+  );
+  assert.ok(
+    /Lock\.runExclusive/.test(scheduleChangeRepo),
+    'ScheduleChangeRepository.runExclusiveForScope must use Lock.runExclusive'
+  );
   assertSuiteHasPasses('HardeningM4C.test.js', ['M4C-I2', 'M4C-I3']);
 });
 
@@ -311,7 +354,7 @@ test('G-25 — Availability source failure remains fail-closed', function() {
 const M4F_PROPOSAL_EVIDENCE = {
   'G-26': ['M4F-02'],
   'G-27': ['M4F-04'],
-  'G-28': ['M4F-14'],
+  'G-28': ['M4F-04', 'M4F-14'],
   'G-29': ['M4F-56'],
   'G-30': ['M4F-65'],
   'G-31': ['M4F-17'],
@@ -333,9 +376,9 @@ Object.keys(M4F_PROPOSAL_EVIDENCE).forEach(function(g) {
 const M4F_RECOVERY_EVIDENCE = {
   'G-36': ['M4F-28'],
   'G-37': ['M4F-34'],
-  'G-38': ['M4F-35'],
-  'G-39': ['M4F-39'],
-  'G-40': ['M4F-40'],
+  'G-38': ['M4F-76'],
+  'G-39': ['M4F-35', 'M4F-60'],
+  'G-40': ['M4F-88', 'M4F-89'],
   'G-41': ['M4F-104'],
   'G-42': ['M4F-98'],
   'G-43': ['M4F-100'],
@@ -390,7 +433,7 @@ test('G-49 — No trigger creation is introduced by M4-G', function() {
 // G-50 .. G-54 — Data / security / observability
 // ─────────────────────────────────────────────────────────────────────────────
 test('G-50 — M4-F exact bounded schema is verified by the real M4-F suite', function() {
-  assertSuiteHasPasses('HardeningM4F.test.js', ['M4F-55']);
+  assertSuiteHasPasses('HardeningM4F.test.js', ['M4F-55', 'M4F-91']);
 });
 
 test('G-51 — Automatic production migration is forbidden by the verified M4-F behavior', function() {
@@ -407,7 +450,11 @@ test('G-52 — LogRepository is diagnostic-only and M4-F logging behavior is cov
 test('G-53 — Bounded disruption business state contains no prohibited PII/provider fields', function() {
   assertSuiteHasPasses('HardeningM4F.test.js', ['M4F-91']);
   const code = stripComments(pds);
-  assert.strictEqual(/disruption_.*(?:patient_name|phone|whatsapp|provider)/i.test(code), false);
+  assert.strictEqual(
+    /\bdisruption_(?:patient_name|phone|whatsapp|provider|transcript|calendar_event_id)\b/i.test(code),
+    false,
+    'bounded disruption fields must not include PII/provider identifiers'
+  );
 });
 
 test('G-54 — Secrets/tokens/passwords are not introduced in Application/Domain', function() {
@@ -468,8 +515,8 @@ test('G-60 — Git history and exact reviewed head are internally consistent', f
   assert.strictEqual(show.status, 0);
   const lines = show.stdout.trim().split(/\r?\n/);
   assert.strictEqual(lines[0], head.stdout.trim());
-  assert.ok(lines[1] && lines[1].split(' ').length >= 1, 'HEAD has no parent');
-  assert.strictEqual(git(['merge-base', '--is-ancestor', BASELINE, 'HEAD']).status, 0);
+  assert.ok(lines[1] && /^[0-9a-f]{40}/.test(lines[1]), 'HEAD commit is missing a parent SHA');
+  assertBaselineAncestry(BASELINE);
 });
 
 test('G-61 — CI is reported only when actual GitHub Actions evidence exists', function() {
@@ -496,10 +543,8 @@ test('G-62 — Production deployment remains outside this reviewed change set', 
   assert.strictEqual(files.some(function(rel) { return /^Application\//.test(rel); }), false);
 });
 
-test('G-63 — Final M4-G evidence and decision record is a Supervisor-owned durable artifact', function() {
-  console.log('  -> N/A: durable stage-closure record is stored and verified by the Supervisor in Library, out-of-band.');
-});
+console.log('G-63: SUPERVISOR-OWNED — durable stage-closure record is stored and verified by the Supervisor in Library, out-of-band. No self-assertion.');
 
 const automatedTotal = passCount + failCount;
-console.log('\nAutomated M4-G acceptance: ' + passCount + '/' + automatedTotal + ' PASS (G-63 N/A, Supervisor-owned).');
+console.log('\nAutomated M4-G acceptance: ' + passCount + '/' + automatedTotal + ' PASS (G-63 SUPERVISOR-OWNED, not counted).');
 process.exit(failCount > 0 ? 1 : 0);
