@@ -6,7 +6,7 @@
  * Contract: HAMZAWE_M4F_FROZEN_CONTRACT_v1_2026-09-03.md
  *           + HAMZAWE_M4F_CONTRACT_CLOSURE_ADDENDUM_v1.1_2026-09-03.md
  *
- * Acceptance mapping — M4F-01..103 (including Round 2 and post-merge hardening).
+ * Acceptance mapping — M4F-01..105 (including Round 2 and post-merge hardening).
  *
  * TEST BOUNDARY NOTE (deliberate): ChangeService and BookingService are
  * stubbed with recording fakes. M4-F is responsible for *delegating* to
