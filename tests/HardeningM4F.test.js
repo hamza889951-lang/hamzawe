@@ -1180,7 +1180,11 @@ test('M4F-51 — only authorized files were changed on this branch', function() 
     .filter(function(v, i, arr) { return arr.indexOf(v) === i; });
 
   changed.forEach(function(f) {
-    if (f.indexOf('M4G') !== -1 || f.indexOf('HardeningM4G') !== -1) return;
+    if (f === 'docs/governance/HAMZAWE_M4G_FROZEN_CONTRACT_v1_2026-09-04.md' ||
+        f === 'docs/governance/HAMZAWE_M4G_PROGRAMMER_SESSION_PROMPT_v1_2026-09-04.md' ||
+        f === 'tests/HardeningM4G.test.js') {
+      return;
+    }
     assert.ok(CHANGED_FILES.indexOf(f) !== -1, 'unauthorized file change: ' + f);
   });
 
