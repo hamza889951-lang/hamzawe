@@ -463,7 +463,11 @@ test('TD01-E4 — structural: atomicUpdate keeps Lock.runExclusive and drops leg
   // Legacy read contract preserved untouched (backward compatibility).
   const repoSrc = src;
   assert.ok(repoSrc.indexOf("findById: function(slotId)") !== -1);
-  assert.ok(repoSrc.indexOf('catch (e) {\n      return null;\n    }') !== -1);
+  assert.match(
+    repoSrc,
+    /catch\s*\(e\)\s*\{\s*return\s+null;\s*\}/,
+    'Legacy findById must preserve its null-on-read-failure compatibility contract'
+  );
 });
 
 // ══════════════════════════════════════════════════════════

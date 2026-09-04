@@ -6,7 +6,7 @@
  * Contract: HAMZAWE_M4F_FROZEN_CONTRACT_v1_2026-09-03.md
  *           + HAMZAWE_M4F_CONTRACT_CLOSURE_ADDENDUM_v1.1_2026-09-03.md
  *
- * Acceptance mapping — M4F-01..64.
+ * Acceptance mapping — M4F-01..105 (including Round 2 and post-merge hardening).
  *
  * TEST BOUNDARY NOTE (deliberate): ChangeService and BookingService are
  * stubbed with recording fakes. M4-F is responsible for *delegating* to
@@ -1117,6 +1117,9 @@ const CHANGED_FILES = [
   'Utils/IdGenerator.js',
   'tests/HardeningB5.test.js',
   'tests/HardeningM4F.test.js',
+  // Post-merge test-hygiene fix: keep TD01-E4 structural assertion compatible
+  // with equivalent safe formatting of the legacy catch block.
+  'tests/HardeningTD01.test.js',
   // Governance reconciliation files authorized by Contract §14
   // ("governance documentation files for TD-02 through TD-06").
   'PROJECT_CONTEXT.md',
@@ -1435,6 +1438,57 @@ test('M4F-65 — [F1] original release failure ⇒ M4F_RECOVERY_REQUIRED, never 
   assert.strictEqual(slotById(ctx.original.slot_id).status, 'RESERVED', 'original is still held');
   assert.strictEqual(confirmedCountFor(ctx.phone), 1);
   assert.strictEqual(reservedCountFor(ctx.phone), 1, 'two active bookings — must be classified');
+});
+
+test('M4F-104 — [Post-merge P1] decline cannot erase recovery evidence after target confirmation', function() {
+  resetAll();
+  const ctx = happyPath('RESERVED');
+  runStage();
+
+  failAfterConfirmation(ctx.candidate.slot_id);
+  const confirm = respond(ctx.phone, '1');
+  assert.strictEqual(confirm.data.recoveryRequired, true);
+  state.failWrite = false;
+
+  // The patient may send a decline before the next Scheduler recovery sweep.
+  // The target is already CONFIRMED while the original is still RESERVED.
+  const decline = respond(ctx.phone, '2');
+
+  assert.strictEqual(decline.ok, true, 'the inbound boundary converts recovery-required into a safe patient reply');
+  assert.strictEqual(decline.data.recoveryRequired, true, 'cleanup must not hide an interrupted finalization');
+  assert.strictEqual(slotById(ctx.candidate.slot_id).status, 'CONFIRMED');
+  assert.strictEqual(slotById(ctx.original.slot_id).status, 'RESERVED');
+  assert.strictEqual(conversationOf(ctx.phone).state, 'WAITING_DISRUPTION_CONFIRMATION');
+  assert.strictEqual(conversationOf(ctx.phone).disruption_proposal_id !== '', true,
+    'recovery evidence remains durable');
+});
+
+test('M4F-105 — [Post-merge P1] timeout cannot erase recovery evidence after target confirmation', function() {
+  resetAll();
+  const ctx = happyPath('RESERVED');
+  runStage();
+
+  failAfterConfirmation(ctx.candidate.slot_id);
+  respond(ctx.phone, '1');
+  state.failWrite = false;
+
+  const proposal = conversationOf(ctx.phone);
+  state.nowIso = new Date(Number(proposal.disruption_expires_at_ms) + 60000).toISOString();
+
+  const expired = SVC._expire(ctx.phone, {
+    disruption_proposal_id: proposal.disruption_proposal_id,
+    disruption_original_slot_id: proposal.disruption_original_slot_id,
+    disruption_proposal_slot_id: proposal.disruption_proposal_slot_id,
+    disruption_kind: proposal.disruption_kind,
+    disruption_expires_at_ms: proposal.disruption_expires_at_ms
+  }, new Date(state.nowIso));
+
+  assert.strictEqual(expired.ok, false);
+  assert.strictEqual(expired.error.code, 'M4F_RECOVERY_REQUIRED');
+  assert.strictEqual(slotById(ctx.candidate.slot_id).status, 'CONFIRMED');
+  assert.strictEqual(slotById(ctx.original.slot_id).status, 'RESERVED');
+  assert.strictEqual(conversationOf(ctx.phone).state, 'WAITING_DISRUPTION_CONFIRMATION');
+  assert.strictEqual(conversationOf(ctx.phone).disruption_proposal_id !== '', true);
 });
 
 test('M4F-66 — [F1] the recovery sweep completes the release on a later run', function() {
