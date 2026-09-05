@@ -63,9 +63,8 @@
  *   Patient-retention-first).
  *   ⚠️ إن فشل حذف حدث التقويم القديم تحديدًا (الخطوة 7)، لا تُنفَّذ
  *   الخطوة 8 (تحرير الفتحة): تحرير الفتحة سيمسح calendar_event_id
- *   المخزَّن، فيفقد أي مراجع لاحق القدرة على تتبع الحدث اليتيم في
- *   Google Calendar لحذفه يدويًا. تبقى الفتحة القديمة CONFIRMED عمدًا
- *   لحفظ هذا المرجع حتى المراجعة اليدوية.
+ *   المخزَّن، فيفقد أي مراجع لاحق القدرة على تتبع الحدث اليتيم لحذفه يدويًا.
+ *   تبقى الفتحة القديمة CONFIRMED عمدًا لحفظ هذا المرجع حتى المراجعة اليدوية.
  *
  * ═══════════════════════════════════════
  * فحص هوية المالك (قرار مشرف مُلزم — إصلاح ثغرة اتساق)
@@ -82,29 +81,15 @@
  *   تحت نفس اسم الأمر، لا Command جديد).
  * - اختيار الفتحة البديلة عبر SlotSelection.findEarliestBookable() فقط.
  * - مدة الفتحة عبر SettingsRepository.getSlotDurationMinutes() فقط.
- * - إصلاح عرض (بعد مراجعة الشيت الفعلي): date/time المستخدَمان في نص
- *   الرد يمران الآن عبر DateUtils.formatDateDisplay()/formatTimeDisplay()
- *   بدل دمج كائن Date الخام مباشرة (نفس الإصلاح في BookingService).
- * - أمر تنفيذ معماري (Separation of Internal Time Model and Patient
- *   Presentation): كلا الردين (قبل/بعد التأكيد) يعرضان الآن "رقم
- *   الباص" عبر Utils/BusNumberCalculator.gs بدل التاريخ/الوقت، مع
- *   تراجع احتياطي للتاريخ/الوقت إن تعذّر الحساب. عنوان/وصف حدث
- *   Google Calendar في changeConfirmedAppointment يعرضان رقم الباص
- *   أيضًا (Projection بحت — startTime/endTime لم يتغيّرا).
+ * - إصلاح عرض التاريخ عبر DateUtils.formatDateDisplay().
+ * - Separation of Internal Time Model and Patient Presentation: الردود
+ *   للمريض تعرض رقم الباص + تاريخ الموعد + وقت بدء دوام العيادة، ولا تعرض
+ *   وقت الفتحة مطلقًا ولا تستخدمه كـ fallback عند فشل رقم الباص.
+ * - عنوان/وصف حدث Google Calendar في changeConfirmedAppointment يحتفظان
+ *   بالوقت الحقيقي للحدث لأن ذلك عرض داخلي للعيادة وليس رسالة للمريض.
  */
 const ChangeService = {
 
-  // ─────────────────────────────────────
-  // المسار الأول: تغيير قبل التأكيد
-  // ─────────────────────────────────────
-
-  /**
-   * يغيّر فتحة محجوزة (RESERVED) غير مؤكَّدة بعد إلى فتحة أخرى.
-   * لا علاقة له بـ Google Calendar إطلاقًا.
-   *
-   * @param {string} rawPhone
-   * @returns {Result} data: { reply: string, conversationState: string|null }
-   */
   changeReservation(rawPhone) {
     const normalizedPhone = PhoneUtils.normalize(rawPhone);
     const phoneCheck = Validators.validatePhone(normalizedPhone);
@@ -130,7 +115,6 @@ const ChangeService = {
           Config.SYSTEM_POLICY.RESERVATION_TIMEOUT_MINUTES
         );
 
-        // ── حجز الجديدة أولاً — القديمة تبقى سليمة إن فشلت هذه ──
         const reserveResult = ChangeService._reserveAlternativeSlot(
           phone,
           oldSlot.patient_name,
@@ -141,7 +125,6 @@ const ChangeService = {
 
         const newSlot = reserveResult.data.slot;
 
-        // ── تحرير القديمة — فقط بعد تأمين الجديدة ──
         const freeResult = SlotRepository.atomicUpdate(oldSlot.slot_id, function(freshOld) {
           if (freshOld.phone !== phone) {
             return Result.fail(
@@ -165,14 +148,17 @@ const ChangeService = {
         });
         if (!freeResult.ok) return freeResult;
 
-        // ── أمر تنفيذ معماري: رقم الباص قيمة عرض مشتقة، تُحسب هنا فقط ──
         const busResult = BusNumberCalculator.fromSlot(newSlot);
+        if (!busResult.ok) return busResult;
+        const workStartResult = ChangeService._getClinicWorkStartDisplay();
+        if (!workStartResult.ok) return workStartResult;
 
         return Result.ok({
           slotId: newSlot.slot_id,
           date: newSlot.date,
           time: newSlot.time,
-          busNumber: busResult.ok ? busResult.data.busNumber : null
+          busNumber: busResult.data.busNumber,
+          clinicWorkStartDisplay: workStartResult.data
         });
       }
     );
@@ -188,11 +174,9 @@ const ChangeService = {
       phone, oldSlot.patient_name, commandResult.data.slotId
     );
 
-    // ── قرار مالك المشروع: التاريخ يبقى ظاهرًا دائمًا مع رقم الباص ──
     const preConfirmDisplay = 'بتاريخ ' + DateUtils.formatDateDisplay(commandResult.data.date) +
-      ' — ' + (commandResult.data.busNumber !== null
-        ? 'الباص رقم: ' + commandResult.data.busNumber
-        : 'الساعة ' + DateUtils.formatTimeDisplay(commandResult.data.time));
+      ' — الباص رقم: ' + commandResult.data.busNumber +
+      '\nيبدأ دوام العيادة الساعة ' + commandResult.data.clinicWorkStartDisplay;
 
     return Result.ok({
       reply: 'تم تغيير موعدك المؤقت ' + preConfirmDisplay +
@@ -201,32 +185,6 @@ const ChangeService = {
     });
   },
 
-  // ─────────────────────────────────────
-  // المسار الثاني: تغيير بعد التأكيد
-  // ─────────────────────────────────────
-
-  /**
-   * يغيّر موعدًا مؤكَّدًا فعليًا (CONFIRMED) إلى فتحة أخرى.
-   * نجاح العملية للمستخدم يُحدَّد بالكامل عبر الخطوات 1-6 (Core
-   * Success). الخطوتان 7-8 تنظيف ما بعد الالتزام — راجع رأس الملف.
-   *
-   * @param {string} rawPhone
-   * @returns {Result} data: { reply: string, conversationState: string|null }
-   */
-  /**
-   * B6 confirmed-appointment Change. B4's legacy acquireChangeClaim/releaseChangeClaim
-   * remains in AppointmentRepository for inventory/migration only; this runtime path
-   * uses the shared B6 lifecycle fence also required by CancelService.
-   */
-  /**
-   * @param {string} rawPhone
-   * @param {Object} [options] — M4-F extension:
-   *        { targetSlotId } finalizes the ALREADY-RESERVED disruption proposal
-   *        slot instead of running generic nearest-slot selection. This
-   *        preserves every other semantic of this boundary unchanged (B6
-   *        fence, Calendar correlation, patient-retention-first, partial
-   *        failure). Omitting options keeps the pre-M4-F behaviour exactly.
-   */
   changeConfirmedAppointment(rawPhone, options) {
     const targetSlotId = (options && options.targetSlotId) ? options.targetSlotId : null;
     const normalizedPhone = PhoneUtils.normalize(rawPhone);
@@ -333,6 +291,15 @@ const ChangeService = {
           return B6LifecycleService.enterUnresolved(ctx, 'CHECKPOINT_PERSISTENCE_UNKNOWN', checkpointResult.error);
         }
 
+        const busResult = BusNumberCalculator.fromSlot(newSlot);
+        if (!busResult.ok) {
+          return B6LifecycleService.enterUnresolved(ctx, 'PATIENT_PRESENTATION_UNAVAILABLE', busResult.error);
+        }
+        const workStartResult = ChangeService._getClinicWorkStartDisplay();
+        if (!workStartResult.ok) {
+          return B6LifecycleService.enterUnresolved(ctx, 'PATIENT_PRESENTATION_UNAVAILABLE', workStartResult.error);
+        }
+
         const confirmResult = SlotRepository.atomicUpdate(newSlot.slot_id, function(freshNew) {
           if (freshNew.phone !== phone) {
             return Result.fail(
@@ -380,10 +347,7 @@ const ChangeService = {
           );
         }
 
-        const busResult = BusNumberCalculator.fromSlot(newSlot);
-        const eventTitle = busResult.ok
-          ? '#' + busResult.data.busNumber + ' | ' + (oldSlot.patient_name || phone)
-          : (oldSlot.patient_name || phone);
+        const eventTitle = '#' + busResult.data.busNumber + ' | ' + (oldSlot.patient_name || phone);
         const eventDescription = 'رقم الهاتف: ' + phone +
           '\nالوقت الحقيقي: ' + DateUtils.formatTimeDisplay(startTime) +
           '\nslot_id: ' + newSlot.slot_id +
@@ -567,32 +531,26 @@ const ChangeService = {
         if (!completion.ok) return completion;
 
         return Result.ok({
-          // M4-F: explicit outcome marker. Additive only — the Router reads
-          // `reply` / `conversationState` and is unaffected. A caller that must
-          // know whether the appointment really changed (M4-F CONFIRMED
-          // finalization) must not have to parse reply text.
           status: 'CHANGED',
           slotId: newSlot.slot_id,
           date: newSlot.date,
           time: newSlot.time,
           calendarEventId: ctx.calendarEventId,
-          busNumber: busResult.ok ? busResult.data.busNumber : null,
+          busNumber: busResult.data.busNumber,
+          clinicWorkStartDisplay: workStartResult.data,
           releasePending: completion.data.releasePending === true
         });
       }
     );
 
     if (!commandResult.ok) {
-      // M4-F: mark the failure outcome explicitly while preserving the exact
-      // patient-facing reply the Router already expects.
       const failureReply = ChangeService._b6FailureReply();
       return Result.ok(Object.assign({ status: 'FAILED' }, failureReply.data));
     }
 
     const confirmedDisplay = 'بتاريخ ' + DateUtils.formatDateDisplay(commandResult.data.date) +
-      '\n' + (commandResult.data.busNumber !== null
-        ? 'رقم الباص الجديد: ' + commandResult.data.busNumber
-        : 'الساعة ' + DateUtils.formatTimeDisplay(commandResult.data.time));
+      '\nرقم الباص الجديد: ' + commandResult.data.busNumber +
+      '\nيبدأ دوام العيادة الساعة ' + commandResult.data.clinicWorkStartDisplay;
 
     return Result.ok({
       status: 'CHANGED',
@@ -616,22 +574,43 @@ const ChangeService = {
     });
   },
 
-  // ─────────────────────────────────────
-  // أدوات داخلية (Internal helpers)
-  // ─────────────────────────────────────
+  _getClinicWorkStartDisplay() {
+    try {
+      const settings = SettingsRepository.getAll();
+      const parsed = ChangeService._parseHourMinuteText(settings.work_start);
+      if (!parsed) {
+        return Result.fail('PATIENT_PRESENTATION_UNAVAILABLE', 'Invalid work_start in Settings');
+      }
+      return Result.ok(ChangeService._formatArabicClinicTime(parsed.hour, parsed.minute));
+    } catch (e) {
+      return Result.fail(
+        'PATIENT_PRESENTATION_UNAVAILABLE',
+        e.message || 'Unable to read clinic work_start for patient presentation'
+      );
+    }
+  },
 
-  /**
-   * Selects and atomically reserves an alternative slot. The old slot is
-   * always excluded, and each race-lost candidate is excluded for this
-   * operation only. One loop iteration is one reservation attempt.
-   */
+  _parseHourMinuteText(text) {
+    if (typeof text !== 'string') return null;
+    const match = text.trim().match(/^(\d{1,2}):(\d{2})$/);
+    if (!match) return null;
+    const hour = parseInt(match[1], 10);
+    const minute = parseInt(match[2], 10);
+    if (isNaN(hour) || isNaN(minute)) return null;
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+    return { hour: hour, minute: minute };
+  },
+
+  _formatArabicClinicTime(hour, minute) {
+    const suffix = hour < 12 ? 'صباحًا' : 'مساءً';
+    let displayHour = hour % 12;
+    if (displayHour === 0) displayHour = 12;
+    const hh = displayHour < 10 ? '0' + displayHour : String(displayHour);
+    const mm = minute < 10 ? '0' + minute : String(minute);
+    return hh + ':' + mm + ' ' + suffix;
+  },
+
   _reserveAlternativeSlot(phone, patientName, reservedUntil, oldSlotId, targetSlotId) {
-    // ── M4-F: reuse the already-reserved disruption proposal slot ──
-    // The disruption flow reserved this candidate durably BEFORE notifying the
-    // patient, so it is already RESERVED for this phone. Re-validating and
-    // reusing it is mandatory: re-running generic selection here would discard
-    // the slot the patient was actually offered and silently substitute a
-    // different one (Contract §3.9 / Closure Addendum §6).
     if (targetSlotId) {
       const readResult = SlotRepository.findByIdResult(targetSlotId);
       if (!readResult.ok) return readResult;
@@ -675,11 +654,6 @@ const ChangeService = {
         );
         if (!check.ok) return check;
 
-        // M4-C Continuation §12: fresh re-verification inside the per-slot
-        // atomic boundary — a stale optimistic candidate must not be
-        // reserved after is_available became false. Covers BOTH callers:
-        // changeReservation (pre-confirm) and changeConfirmedAppointment
-        // (post-confirm replacement reservation).
         if (!SlotRepository.isOperationallyAvailable(freshSlot.is_available)) {
           return Result.fail(
             'SLOT_UNAVAILABLE',
@@ -712,22 +686,10 @@ const ChangeService = {
     return Result.fail('NO_SLOT_AVAILABLE', 'No bookable slot found');
   },
 
-  /**
-   * تنظيف ما بعد الالتزام (الخطوتان 7-8) لموعد قديم بعد نجاح تأمين
-   * الموعد الجديد بالكامل. لا تُرجع Result، ولا يجوز لمستدعيها تحويل
-   * فشلها إلى فشل معروض للمستخدم — راجع سياسة Patient-retention-first
-   * في رأس الملف. كل فشل هنا يُسجَّل مباشرة في LOG_SYSTEM عبر
-   * LogRepository (وليس عبر CommandExecutor، لأن هذا ليس Command
-   * مستقلاً بل استمرار داخلي لأمر CHANGE_APPOINTMENT الذي نجح فعلاً).
-   *
-   * @param {string} phone
-   * @param {Object} oldSlot - الفتحة القديمة كما قُرئت قبل بدء العملية
-   */
   _cleanupOldConfirmedAppointment(phone, oldSlot) {
     const startedAt = Clock.now();
 
     try {
-      // الخطوة 7: حذف Calendar Event القديم
       if (oldSlot.calendar_event_id) {
         const deleteResult = CalendarRepository.deleteAppointmentEvent(
           oldSlot.calendar_event_id
@@ -743,14 +705,10 @@ const ChangeService = {
             durationMs: Clock.now().getTime() - startedAt.getTime(),
             error: 'OLD_CALENDAR_EVENT_DELETE_FAILED: ' + JSON.stringify(deleteResult.error)
           });
-          // ⚠️ نتوقف عمدًا هنا ولا ننفذ الخطوة 8: تحرير الفتحة سيمسح
-          // calendar_event_id، فتُفقد القدرة على تتبع الحدث اليتيم
-          // لحذفه يدويًا لاحقًا. تبقى الفتحة القديمة CONFIRMED عمدًا.
           return;
         }
       }
 
-      // الخطوة 8: تحرير الفتحة القديمة إلى FREE (مع فحص الملكية)
       const freeResult = SlotRepository.atomicUpdate(oldSlot.slot_id, function(freshOld) {
         if (freshOld.phone !== phone) {
           return Result.fail(
@@ -787,8 +745,6 @@ const ChangeService = {
         });
       }
     } catch (e) {
-      // شبكة أمان: أي استثناء غير متوقع أثناء التنظيف يُسجَّل، ولا
-      // يُسمح له بالتسرب ليؤثر على النتيجة التي استُلمها المستخدم بالفعل.
       LogRepository.write({
         timestamp: Clock.now(),
         command: Config.VOCABULARY.COMMANDS.CHANGE_APPOINTMENT,
