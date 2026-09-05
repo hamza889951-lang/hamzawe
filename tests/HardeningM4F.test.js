@@ -1709,7 +1709,10 @@ function createBookingSandbox() {
     getUserLock: function() { return sb.LockService.getScriptLock(); }
   };
   sb.PropertiesService = { getScriptProperties: function() { return { getProperty: function() { return null; }, setProperty: function() {} }; } };
-  sb.SettingsRepository = { getSlotDurationMinutes: function() { return 30; } };
+  sb.SettingsRepository = {
+    getAll: function() { return { work_start: '16:00', 'Slot Duration (min)': '30' }; },
+    getSlotDurationMinutes: function() { return 30; }
+  };
   sb.BusNumberCalculator = { fromSlot: function() { return { ok: true, data: { busNumber: 3 } }; } };
   sb.LogRepository = { write: function(e) { st.logs.push(e); return true; } };
 
