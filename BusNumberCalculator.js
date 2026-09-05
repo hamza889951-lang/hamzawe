@@ -64,14 +64,24 @@ const BusNumberCalculator = {
         return Result.fail('BUS_CALC_ERROR', 'Missing work_start or slot duration in Settings');
       }
 
-      // تحليل work_start (مثال: "16:00")
-      var startParts = workStart.split(':');
-      var startMinutes = parseInt(startParts[0], 10) * 60 + parseInt(startParts[1], 10);
+      // تحليل work_start (مثال: "16:00") — هذا هو مصدر الحقيقة
+      // التشغيلي لبداية دوام العيادة من Settings.
+      var startParts = this._parseHourMinuteText(workStart);
+      if (!startParts) {
+        return Result.fail('BUS_CALC_ERROR', 'Invalid work_start in Settings');
+      }
+      var startMinutes = startParts.hour * 60 + startParts.minute;
 
-      // استخراج الساعة والدقيقة من كائن Date
-      var slotHour = timeValue.getHours();
-      var slotMinute = timeValue.getMinutes();
-      var slotMinutes = slotHour * 60 + slotMinute;
+      // استخراج الساعة والدقيقة صراحةً وفق المنطقة الزمنية المضبوطة
+      // للمشروع (appsscript.json / Session.getScriptTimeZone()). لا نعتمد
+      // على Date.getHours()/getMinutes() لأنهما يتبعان المنطقة الزمنية
+      // المحلية لبيئة التنفيذ وقد يخرجان وقتًا مضللًا عند التعامل مع
+      // كائنات Date القادمة من Google Sheets.
+      var slotParts = this._extractClinicHourMinute(timeValue);
+      if (!slotParts) {
+        return Result.fail('BUS_CALC_ERROR', 'Invalid slot time value');
+      }
+      var slotMinutes = slotParts.hour * 60 + slotParts.minute;
 
       var busNumber = Math.floor((slotMinutes - startMinutes) / slotDuration) + 1;
 
@@ -83,5 +93,46 @@ const BusNumberCalculator = {
     } catch (e) {
       return Result.fail('BUS_CALC_ERROR', e.message || 'Unknown error calculating bus number');
     }
+  },
+
+  /**
+   * يستخرج وقت العيادة المحلي من قيمة وقت قادمة من Sheets.
+   * Date تُقرأ عبر Utilities.formatDate مع Session.getScriptTimeZone()
+   * لضمان Asia/Baghdad المعلنة في إعداد المشروع، لا منطقة المضيف.
+   * النص "HH:mm" مدعوم فقط كتمثيل ورقة/اختبار مباشر لنفس وقت العيادة.
+   * @param {*} timeValue
+   * @returns {{hour:number, minute:number}|null}
+   */
+  _extractClinicHourMinute(timeValue) {
+    if (timeValue instanceof Date || Object.prototype.toString.call(timeValue) === '[object Date]') {
+      if (isNaN(timeValue.getTime())) return null;
+      var rendered = Utilities.formatDate(
+        timeValue,
+        Session.getScriptTimeZone(),
+        'HH:mm'
+      );
+      return this._parseHourMinuteText(rendered);
+    }
+
+    if (typeof timeValue === 'string') {
+      return this._parseHourMinuteText(timeValue);
+    }
+
+    return null;
+  },
+
+  /**
+   * @param {*} text
+   * @returns {{hour:number, minute:number}|null}
+   */
+  _parseHourMinuteText(text) {
+    if (typeof text !== 'string') return null;
+    var match = text.trim().match(/^(\d{1,2}):(\d{2})$/);
+    if (!match) return null;
+    var hour = parseInt(match[1], 10);
+    var minute = parseInt(match[2], 10);
+    if (isNaN(hour) || isNaN(minute)) return null;
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+    return { hour: hour, minute: minute };
   }
 };

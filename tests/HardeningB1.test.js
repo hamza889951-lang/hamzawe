@@ -118,6 +118,9 @@ function runPublicBookingWorkflow() {
   sandbox.BusNumberCalculator = {
     fromSlot: function() { return sandbox.Result.ok({ busNumber: 1 }); }
   };
+  sandbox.SettingsRepository = {
+    getAll: function() { return { work_start: '16:00' }; }
+  };
   sandbox.ConversationRepository = {
     findByPhone: function() {
       return { state: sandbox.Config.VOCABULARY.CONVERSATION_STATE.WAITING_NAME };

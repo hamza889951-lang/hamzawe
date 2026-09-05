@@ -50,10 +50,10 @@
  * - أمر تنفيذ معماري (Separation of Internal Time Model and Patient
  *   Presentation): رسائل الرد للمريض تعرض الآن رقم "الباص" (قيمة
  *   عرض مشتقة عبر Utils/BusNumberCalculator.gs، لا تُخزَّن في أي
- *   مكان) بدل الوقت/التاريخ مباشرة، مع تراجع احتياطي للوقت/التاريخ
- *   إن تعذّر الحساب. وصف/عنوان حدث Google Calendar أيضًا يعرضان رقم
- *   الباص الآن (Projection بحت — startTime/endTime الحقيقيان لم
- *   يتغيّرا إطلاقًا.
+ *   مكان) وبداية دوام العيادة من Settings.work_start. لا يوجد تراجع
+ *   احتياطي يعرض slot.time للمريض إذا تعذّر حساب رقم الباص. وصف/عنوان
+ *   حدث Google Calendar أيضًا يعرضان رقم الباص الآن (Projection بحت —
+ *   startTime/endTime الحقيقيان لم يتغيّرا إطلاقًا.
  *
  * ═══════════════════════════════════════
  * ديون معمارية موثّقة (لا تُصلح الآن بقرار المشرف)
@@ -179,12 +179,17 @@ const BookingService = {
 
         // ── أمر تنفيذ معماري: رقم الباص قيمة عرض مشتقة، تُحسب هنا فقط ──
         const busResult = BusNumberCalculator.fromSlot(slot);
+        if (!busResult.ok) return busResult;
+
+        const workStartResult = BookingService._getClinicWorkStartDisplay();
+        if (!workStartResult.ok) return workStartResult;
 
         return Result.ok({
           slotId: slot.slot_id,
           date: slot.date,
           time: slot.time,
-          busNumber: busResult.ok ? busResult.data.busNumber : null
+          busNumber: busResult.data.busNumber,
+          clinicWorkStartDisplay: workStartResult.data
         });
       }
     );
@@ -206,9 +211,8 @@ const BookingService = {
     // ── قرار مالك المشروع: التاريخ يبقى ظاهرًا دائمًا مع رقم الباص ──
     // (رقم الباص وحده لا يخبر المريض بأي يوم هو الموعد)
     const preConfirmDisplay = 'بتاريخ ' + DateUtils.formatDateDisplay(commandResult.data.date) +
-      ' — ' + (commandResult.data.busNumber !== null
-        ? 'رقم الباص: ' + commandResult.data.busNumber
-        : 'الساعة ' + DateUtils.formatTimeDisplay(commandResult.data.time));
+      ' — رقم الباص: ' + commandResult.data.busNumber +
+      ' — يبدأ دوام العيادة الساعة ' + commandResult.data.clinicWorkStartDisplay;
 
     return Result.ok({
       reply: 'تم إيجاد موعد ' + preConfirmDisplay + '.\n' +
@@ -255,9 +259,8 @@ const BookingService = {
     ConversationRepository.moveToBooked(phone);
 
     const confirmedDisplay = 'بتاريخ ' + DateUtils.formatDateDisplay(commandResult.data.date) +
-      '\n' + (commandResult.data.busNumber !== null
-        ? 'رقم الباص: ' + commandResult.data.busNumber
-        : 'الساعة ' + DateUtils.formatTimeDisplay(commandResult.data.time));
+      '\nرقم الباص: ' + commandResult.data.busNumber +
+      '\nيبدأ دوام العيادة الساعة ' + commandResult.data.clinicWorkStartDisplay + '.';
 
     return Result.ok({
       reply: 'تم تأكيد حجزك بنجاح.\n' + confirmedDisplay +
@@ -288,6 +291,9 @@ const BookingService = {
       Config.VOCABULARY.COMMANDS.CONFIRM_RESERVATION,
       { phone: phone, slotId: slotId },
       function() {
+        var confirmedBusNumber = null;
+        var clinicWorkStartDisplay = null;
+
         const updateResult = SlotRepository.atomicUpdate(slotId, function(freshSlot) {
           if (freshSlot.phone !== phone) {
             return Result.fail(
@@ -301,6 +307,15 @@ const BookingService = {
             Config.VOCABULARY.COMMANDS.CONFIRM_RESERVATION
           );
           if (!check.ok) return check;
+
+          const busResult = BusNumberCalculator.fromSlot(freshSlot);
+          if (!busResult.ok) return busResult;
+          const workStartResult = BookingService._getClinicWorkStartDisplay();
+          if (!workStartResult.ok) return workStartResult;
+
+          confirmedBusNumber = busResult.data.busNumber;
+          clinicWorkStartDisplay = workStartResult.data;
+
           return Result.ok({ status: Config.VOCABULARY.STATUS.CONFIRMED });
         });
 
@@ -325,10 +340,7 @@ const BookingService = {
         // ── أمر تنفيذ معماري: عرض رقم الباص للعيادة في التقويم ──
         // Presentation فقط — startTime/endTime الحقيقيان لم يتغيّرا،
         // لا تخزين لرقم الباص في أي Repository (يُحسب هنا فقط للعرض)
-        const busResult = BusNumberCalculator.fromSlot(slot);
-        const eventTitle = busResult.ok
-          ? '#' + busResult.data.busNumber + ' | ' + (slot.patient_name || phone)
-          : (slot.patient_name || phone);
+        const eventTitle = '#' + confirmedBusNumber + ' | ' + (slot.patient_name || phone);
         const eventDescription = 'رقم الهاتف: ' + phone +
           '\nالوقت الحقيقي: ' + DateUtils.formatTimeDisplay(startTime) +
           '\nslot_id: ' + slot.slot_id;
@@ -359,7 +371,8 @@ const BookingService = {
           calendarEventId: eventResult.data.eventId,
           date: slot.date,
           time: slot.time,
-          busNumber: busResult.ok ? busResult.data.busNumber : null
+          busNumber: confirmedBusNumber,
+          clinicWorkStartDisplay: clinicWorkStartDisplay
         });
       }
     );
@@ -386,6 +399,42 @@ const BookingService = {
   // ─────────────────────────────────────
   // أدوات داخلية (Internal helpers)
   // ─────────────────────────────────────
+
+  _getClinicWorkStartDisplay() {
+    try {
+      const settings = SettingsRepository.getAll();
+      const parsed = BookingService._parseHourMinuteText(settings.work_start);
+      if (!parsed) {
+        return Result.fail('BOOKING_PRESENTATION_ERROR', 'Invalid work_start in Settings');
+      }
+      return Result.ok(BookingService._formatArabicClinicTime(parsed.hour, parsed.minute));
+    } catch (e) {
+      return Result.fail(
+        'BOOKING_PRESENTATION_ERROR',
+        e.message || 'Unable to read clinic work_start for booking presentation'
+      );
+    }
+  },
+
+  _parseHourMinuteText(text) {
+    if (typeof text !== 'string') return null;
+    const match = text.trim().match(/^(\d{1,2}):(\d{2})$/);
+    if (!match) return null;
+    const hour = parseInt(match[1], 10);
+    const minute = parseInt(match[2], 10);
+    if (isNaN(hour) || isNaN(minute)) return null;
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+    return { hour: hour, minute: minute };
+  },
+
+  _formatArabicClinicTime(hour, minute) {
+    const suffix = hour < 12 ? 'صباحًا' : 'مساءً';
+    let displayHour = hour % 12;
+    if (displayHour === 0) displayHour = 12;
+    const hh = displayHour < 10 ? '0' + displayHour : String(displayHour);
+    const mm = minute < 10 ? '0' + minute : String(minute);
+    return hh + ':' + mm + ' ' + suffix;
+  },
 
   _isConfirmationKeyword(message) {
     if (!message || typeof message !== 'string') return false;
