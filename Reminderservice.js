@@ -1,6 +1,11 @@
 /**
  * ReminderService.gs — كامل
  * أُضيفت: processPendingReminders(sendFn)
+ *
+ * Patient presentation rule:
+ * - show appointment date + derived bus number + clinic work-start
+ * - never expose the exact appointment slot time to the patient
+ * - if presentation data cannot be derived reliably, do not substitute slot.time
  */
 const ReminderService = {
 
@@ -64,11 +69,53 @@ const ReminderService = {
 
   _buildReminderMessage: function(slot) {
     var busResult = BusNumberCalculator.fromSlot(slot);
-    var appointmentDisplay = 'بتاريخ ' + DateUtils.formatDateDisplay(slot.date) +
-      ' — ' + (busResult.ok
-        ? 'رقم الباص: ' + busResult.data.busNumber
-        : 'الساعة ' + DateUtils.formatTimeDisplay(slot.time));
-    return 'تذكير: موعدك اقترب ' + appointmentDisplay +
-      '. يرجى الحضور ضمن وقت دوام العيادة.';
+    var workStartResult = ReminderService._getClinicWorkStartDisplay();
+    var dateDisplay = DateUtils.formatDateDisplay(slot.date);
+
+    if (busResult.ok && workStartResult.ok) {
+      return 'تذكير: موعدك اقترب بتاريخ ' + dateDisplay +
+        ' — رقم الباص: ' + busResult.data.busNumber +
+        '\nيبدأ دوام العيادة الساعة ' + workStartResult.data +
+        '. يرجى الحضور ضمن وقت دوام العيادة.';
+    }
+
+    // Fail closed for patient presentation: never reveal slot.time as a
+    // fallback. Keep the reminder useful without exposing the exact slot.
+    return 'تذكير: موعدك اقترب بتاريخ ' + dateDisplay +
+      '. تعذّر تحديد رقم الباص حاليًا؛ يرجى التواصل مع العيادة.';
+  },
+
+  _getClinicWorkStartDisplay: function() {
+    try {
+      var settings = SettingsRepository.getAll();
+      var parsed = ReminderService._parseHourMinuteText(settings.work_start);
+      if (!parsed) return Result.fail('PATIENT_PRESENTATION_UNAVAILABLE', 'Invalid work_start in Settings');
+      return Result.ok(ReminderService._formatArabicClinicTime(parsed.hour, parsed.minute));
+    } catch (e) {
+      return Result.fail(
+        'PATIENT_PRESENTATION_UNAVAILABLE',
+        e.message || 'Unable to read clinic work_start for patient presentation'
+      );
+    }
+  },
+
+  _parseHourMinuteText: function(text) {
+    if (typeof text !== 'string') return null;
+    var match = text.trim().match(/^(\d{1,2}):(\d{2})$/);
+    if (!match) return null;
+    var hour = parseInt(match[1], 10);
+    var minute = parseInt(match[2], 10);
+    if (isNaN(hour) || isNaN(minute)) return null;
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+    return { hour: hour, minute: minute };
+  },
+
+  _formatArabicClinicTime: function(hour, minute) {
+    var suffix = hour < 12 ? 'صباحًا' : 'مساءً';
+    var displayHour = hour % 12;
+    if (displayHour === 0) displayHour = 12;
+    var hh = displayHour < 10 ? '0' + displayHour : String(displayHour);
+    var mm = minute < 10 ? '0' + minute : String(minute);
+    return hh + ':' + mm + ' ' + suffix;
   }
 };
