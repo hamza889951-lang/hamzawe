@@ -14,55 +14,35 @@ let getCalendarCalls = 0;
 let getEventCalls = 0;
 let sleepCalls = [];
 
-function buildEvent(operationId) {
+const operationId = 'B6_TEST_OPERATION';
+
+const event = {
+  getId: function() { return 'OLD_EVENT'; },
+  getTag: function(key) { return key === 'operation_id' ? operationId : ''; },
+  deleteEvent: function() { eventPresent = false; }
+};
+
+function calendarContext(calendarId) {
+  getCalendarCalls += 1;
   return {
-    getId: function() { return 'OLD_EVENT'; },
-    getTag: function(key) { return key === 'operation_id' ? operationId : ''; },
-    deleteEvent: function() {
-      eventPresent = false;
-      staleReadsAfterDelete = 0;
+    getId: function() { return calendarId; },
+    getEventById: function() {
+      getEventCalls += 1;
+      if (!eventPresent) {
+        if (staleReadsAfterDelete > 0) {
+          staleReadsAfterDelete -= 1;
+          return event;
+        }
+        return null;
+      }
+      return event;
     }
   };
 }
 
-const operationId = 'B6_TEST_OPERATION';
-const event = buildEvent(operationId);
-
 sandbox.CalendarApp = {
-  getDefaultCalendar: function() {
-    getCalendarCalls += 1;
-    return {
-      getId: function() { return 'CAL_DEFAULT'; },
-      getEventById: function() {
-        getEventCalls += 1;
-        if (!eventPresent) {
-          if (staleReadsAfterDelete > 0) {
-            staleReadsAfterDelete -= 1;
-            return event;
-          }
-          return null;
-        }
-        return event;
-      }
-    };
-  },
-  getCalendarById: function(calendarId) {
-    getCalendarCalls += 1;
-    return {
-      getId: function() { return calendarId; },
-      getEventById: function() {
-        getEventCalls += 1;
-        if (!eventPresent) {
-          if (staleReadsAfterDelete > 0) {
-            staleReadsAfterDelete -= 1;
-            return event;
-          }
-          return null;
-        }
-        return event;
-      }
-    };
-  }
+  getDefaultCalendar: function() { return calendarContext('CAL_DEFAULT'); },
+  getCalendarById: function(calendarId) { return calendarContext(calendarId); }
 };
 
 sandbox.Utilities = {
