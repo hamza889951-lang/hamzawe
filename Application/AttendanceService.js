@@ -34,10 +34,13 @@
  *     support is a future Doctor Dashboard milestone. Calendar access
  *     alone is NOT business authorization; anonymous operations and
  *     untrusted identities are rejected before any storage read.
- *   - Event → appointment correlation uses a stable identifier only:
- *     the slot row's calendar_event_id must match the supplied eventId
- *     exactly once. Patient name, event title, and time are never
- *     correlation keys.
+ *   - Event correlation accepts the Calendar Add-on's API event.id only as
+ *     an external identity. The existing Availability.calendar_event_id
+ *     remains the canonical iCalUID identity used by HAMZAWE's Calendar
+ *     creation path. The Calendar boundary resolves (calendarId, eventId)
+ *     through the Advanced Calendar API to obtain iCalUID before any slot
+ *     correlation. Patient name, event title, and time are never identity
+ *     fallbacks.
  *   - Idempotency: if the slot is already in the decision's target state,
  *     the operation is a deterministic no-op — Result.ok with
  *     { applied: false, alreadyApplied: true }, no cell write, no second
@@ -70,29 +73,9 @@ const AttendanceService = {
     MARK_NO_SHOW: 'MARK_NO_SHOW'
   },
 
-  /**
-   * The authority label DERIVED (not claimed) when the operator identity
-   * is validated against the deployment trust policy.
-   */
   OPERATOR_AUTHORITY: 'DOCTOR',
 
-  /**
-   * Mapping from attendance decision → existing StateMachine command and
-   * existing vocabulary target status. No new command or status is
-   * introduced; Config.VOCABULARY is untouched.
-   *
-   * RESOLVED LAZILY (at call time, inside functions) — deliberately NOT as
-   * top-level object-initializer values. The Apps Script V8 runtime
-   * evaluates project files in the project's file order; in clasp-pushed
-   * projects that order is alphabetical, which places
-   * Application/AttendanceService.js BEFORE Config.js. A top-level
-   * reference to `Config` would then hit a not-yet-evaluated binding
-   * (ReferenceError at add-on runtime). Resolving inside functions means
-   * every file has been evaluated before any attendance call executes, so
-   * the service is independent of project file order.
-   */
   _decisionCommand: function(decision) {
-    // Closed set: only the two explicit decisions map to commands.
     if (decision === AttendanceService.DECISIONS.MARK_COMPLETED) {
       return Config.VOCABULARY.COMMANDS.COMPLETE_APPOINTMENT;
     }
@@ -103,7 +86,6 @@ const AttendanceService = {
   },
 
   _decisionTarget: function(decision) {
-    // Closed set: only the two explicit decisions map to target statuses.
     if (decision === AttendanceService.DECISIONS.MARK_COMPLETED) {
       return Config.VOCABULARY.STATUS.COMPLETED;
     }
@@ -120,34 +102,22 @@ const AttendanceService = {
     REJECTED_CORRELATION_LOST: 'REJECTED_CORRELATION_LOST'
   },
 
-  /**
-   * MARK_COMPLETED — CONFIRMED → COMPLETED.
-   * @param {{operator: {operatorId: string},
-   *          deployment: {trustedOperatorEmail: string},
-   *          calendarEvent: {eventId: string, calendarId?: string}}} context
-   * @returns {Result}
-   */
   markCompleted: function(context) {
     return this._applyAttendance(this.DECISIONS.MARK_COMPLETED, context);
   },
 
-  /**
-   * MARK_NO_SHOW — CONFIRMED → NO_SHOW.
-   * @returns {Result}
-   */
   markNoShow: function(context) {
     return this._applyAttendance(this.DECISIONS.MARK_NO_SHOW, context);
   },
 
   /**
    * Single decision pipeline (shared by both public entry points):
-   *   validate operator → validate event identity → correlate slot
-   *   → atomic decision under ScriptLock → audit → Result
+   *   validate operator → validate event identity → resolve Calendar identity
+   *   → correlate canonical iCalUID → atomic decision under ScriptLock → audit
    */
   _applyAttendance: function(decision, context) {
     var logCommand = 'ATTENDANCE_' + decision;
 
-    // 1) Explicit decision only — no free-form status accepted.
     var command = this._decisionCommand(decision);
     var target = this._decisionTarget(decision);
     if (!command || !target) {
@@ -158,9 +128,6 @@ const AttendanceService = {
       );
     }
 
-    // 2) Operator trust boundary — before ANY storage access.
-    //    Identity (who) + deployment policy (who is trusted) are separate
-    //    inputs; the authority is DERIVED here, never claimed by a caller.
     var operatorCheck = this._validateOperator(context);
     if (!operatorCheck.ok) {
       this._diagnostic(logCommand, '', operatorCheck, null, null);
@@ -168,7 +135,6 @@ const AttendanceService = {
     }
     var operator = operatorCheck.data;
 
-    // 3) Calendar event identity (stable identifier only).
     var eventCheck = this._validateEventContext(context);
     if (!eventCheck.ok) {
       this._diagnostic(logCommand, '', eventCheck, operator, null);
@@ -176,45 +142,80 @@ const AttendanceService = {
     }
     var event = eventCheck.data;
 
-    // 4) Correlation: exactly one slot row carries this calendar event id.
+    // Translate the external Calendar API event.id into the canonical
+    // iCalUID used by existing Availability.calendar_event_id values.
+    var identityResult = CalendarRepository.resolveAppointmentEventIdentity(
+      event.eventId,
+      event.calendarId
+    );
+    if (!identityResult.ok) {
+      this._diagnostic(logCommand, '', identityResult, operator, event, {
+        identityResolutionError: identityResult.error
+      });
+      return Result.fail(
+        'ATTENDANCE_EVENT_IDENTITY_RESOLUTION_FAILED',
+        'Unable to resolve Calendar event identity for attendance correlation',
+        {
+          decision: decision,
+          operatorId: operator.operatorId,
+          calendarEventId: event.eventId,
+          calendarId: event.calendarId,
+          error: identityResult.error
+        }
+      );
+    }
+    var canonicalIdentity = identityResult.data;
+
     var correlation = SlotRepository.queryResult(function(row) {
-      return row.calendar_event_id === event.eventId;
+      return row.calendar_event_id === canonicalIdentity.iCalUID;
     });
     if (!correlation.ok) {
-      this._diagnostic(logCommand, '', correlation, operator, event);
+      this._diagnostic(logCommand, '', correlation, operator, event, {
+        canonicalCalendarEventId: canonicalIdentity.iCalUID
+      });
       return Result.fail(
         'ATTENDANCE_CORRELATION_READ_FAILED',
         'Failed to read authoritative availability for event correlation',
         {
           decision: decision,
           operatorId: operator.operatorId,
-          calendarEventId: event.eventId,
+          calendarEventId: canonicalIdentity.iCalUID,
+          sourceEventId: event.eventId,
+          calendarId: canonicalIdentity.calendarId,
           error: correlation.error
         }
       );
     }
     if (correlation.data.length === 0) {
-      this._diagnostic(logCommand, '', correlation, operator, event);
+      this._diagnostic(logCommand, '', correlation, operator, event, {
+        canonicalCalendarEventId: canonicalIdentity.iCalUID
+      });
       return Result.fail(
         'ATTENDANCE_EVENT_NOT_CORRELATED',
         'Calendar event is not correlated with any HAMZAWE appointment',
         {
           decision: decision,
           operatorId: operator.operatorId,
-          calendarEventId: event.eventId,
+          calendarEventId: canonicalIdentity.iCalUID,
+          sourceEventId: event.eventId,
+          calendarId: canonicalIdentity.calendarId,
           matchCount: 0
         }
       );
     }
     if (correlation.data.length > 1) {
-      this._diagnostic(logCommand, '', correlation, operator, event);
+      this._diagnostic(logCommand, '', correlation, operator, event, {
+        canonicalCalendarEventId: canonicalIdentity.iCalUID
+      });
       return Result.fail(
         'ATTENDANCE_EVENT_AMBIGUOUS',
         'Calendar event is correlated with more than one slot row',
         {
           decision: decision,
           operatorId: operator.operatorId,
-          calendarEventId: event.eventId,
+          calendarEventId: canonicalIdentity.iCalUID,
+          sourceEventId: event.eventId,
+          calendarId: canonicalIdentity.calendarId,
           matchCount: correlation.data.length
         }
       );
@@ -222,33 +223,30 @@ const AttendanceService = {
 
     var slotId = correlation.data[0].slot_id;
 
-    // 5) Atomic decision: ScriptLock → fresh re-read → identity re-check →
-    //    StateMachine transition → single write. Closure variables capture
-    //    the under-lock observation for the audit trail and the Result.
     var outcome = null;
     var freshStatus = null;
     var updateResult = SlotRepository.atomicUpdate(slotId, function(freshSlot) {
       freshStatus = freshSlot.status;
 
-      // Identity re-verification under the lock (TOCTOU guard): the fresh
-      // row must still carry exactly this calendar event.
-      if (freshSlot.calendar_event_id !== event.eventId) {
+      // TOCTOU guard: the fresh row must still carry the canonical iCalUID.
+      if (freshSlot.calendar_event_id !== canonicalIdentity.iCalUID) {
         return Result.fail(
           'ATTENDANCE_EVENT_CORRELATION_LOST',
-          'Slot no longer carries the supplied calendar event identity',
-          { slotId: slotId, calendarEventId: event.eventId, freshStatus: freshSlot.status }
+          'Slot no longer carries the resolved canonical calendar event identity',
+          {
+            slotId: slotId,
+            calendarEventId: canonicalIdentity.iCalUID,
+            sourceEventId: event.eventId,
+            freshStatus: freshSlot.status
+          }
         );
       }
 
-      // Idempotency: already in the decision's target state → verified
-      // no-op. An empty patch writes zero cells (see
-      // GoogleSheets.updateRowByColumn); nothing is duplicated.
       if (freshSlot.status === target) {
         outcome = AttendanceService._AUDIT_OUTCOMES.ALREADY_APPLIED;
         return Result.ok({});
       }
 
-      // The only source of truth for the transition (CAS-004).
       var transition = Validators.validateTransition(freshSlot.status, command);
       if (!transition.ok) return transition;
 
@@ -256,20 +254,15 @@ const AttendanceService = {
       return Result.ok({ status: target });
     });
 
-    // 6) Rejected decision — explicit failure, never converted to success.
     if (!updateResult.ok) {
       var code = updateResult.error ? updateResult.error.code : 'UNEXPECTED_ERROR';
-
-      // Audit only the rejections observed on the fresh row under the lock.
-      // Failures outside the verified state (SLOT_NOT_FOUND, UPDATE_FAILED,
-      // LOCK_TIMEOUT, UNEXPECTED_ERROR) produce a diagnostic log only.
       var auditRecorded = false;
       var auditFailure = null;
       if (code === 'INVALID_TRANSITION' || code === 'ATTENDANCE_EVENT_CORRELATION_LOST') {
         var auditResult = AttendanceAuditRepository.append({
           operator_id: operator.operatorId,
-          calendar_event_id: event.eventId,
-          calendar_id: event.calendarId,
+          calendar_event_id: canonicalIdentity.iCalUID,
+          calendar_id: canonicalIdentity.calendarId,
           slot_id: slotId,
           decision: decision,
           from_status: freshStatus || '',
@@ -280,10 +273,7 @@ const AttendanceService = {
           error_code: code
         });
         auditRecorded = auditResult.ok;
-        if (!auditResult.ok) {
-          // Evidence write failed; the rejection itself still stands.
-          auditFailure = auditResult.error;
-        }
+        if (!auditResult.ok) auditFailure = auditResult.error;
       }
 
       var failure = Result.fail(
@@ -292,24 +282,25 @@ const AttendanceService = {
         {
           decision: decision,
           operatorId: operator.operatorId,
-          calendarEventId: event.eventId,
+          calendarEventId: canonicalIdentity.iCalUID,
+          sourceEventId: event.eventId,
+          calendarId: canonicalIdentity.calendarId,
           slotId: slotId,
           fromStatus: freshStatus || null,
           auditRecorded: auditRecorded
         }
       );
       AttendanceService._diagnostic(logCommand, slotId, failure, operator, event, {
+        canonicalCalendarEventId: canonicalIdentity.iCalUID,
         auditFailure: auditFailure
       });
       return failure;
     }
 
-    // 7) Success paths (APPLIED / ALREADY_APPLIED) — audit after the
-    //    verified outcome. Audit evidence never rewrites availability.
     var successAudit = AttendanceAuditRepository.append({
       operator_id: operator.operatorId,
-      calendar_event_id: event.eventId,
-      calendar_id: event.calendarId,
+      calendar_event_id: canonicalIdentity.iCalUID,
+      calendar_id: canonicalIdentity.calendarId,
       slot_id: slotId,
       decision: decision,
       from_status: outcome === AttendanceService._AUDIT_OUTCOMES.ALREADY_APPLIED ? target : (freshStatus || ''),
@@ -327,27 +318,19 @@ const AttendanceService = {
       status: target,
       operatorId: operator.operatorId,
       authorizedAs: operator.authorityType,
-      calendarEventId: event.eventId,
-      calendarId: event.calendarId,
+      calendarEventId: canonicalIdentity.iCalUID,
+      calendarSourceEventId: event.eventId,
+      calendarId: canonicalIdentity.calendarId,
       auditRecorded: successAudit.ok
     });
 
     AttendanceService._diagnostic(logCommand, slotId, success, operator, event, {
+      canonicalCalendarEventId: canonicalIdentity.iCalUID,
       auditFailure: successAudit.ok ? null : successAudit.error
     });
     return success;
   },
 
-  /**
-   * Operator trust boundary (derived authority — trusted single-doctor
-   * deployment). Inputs are deliberately separate:
-   *   - operator.identity: the Google user identity (WHO acted)
-   *   - deployment policy: the configured trusted operator (WHO is trusted)
-   * The authority label 'DOCTOR' is DERIVED only when the policy is
-   * configured and the identity matches it exactly (trimmed, exact).
-   * No caller can claim authority; Calendar access alone is not
-   * authorization. Fails before any storage read.
-   */
   _validateOperator: function(context) {
     if (!context || typeof context !== 'object') {
       return Result.fail(
@@ -357,7 +340,6 @@ const AttendanceService = {
       );
     }
 
-    // 1) Identity (who) — anonymous operations are rejected.
     var operator = context.operator;
     if (!operator || typeof operator !== 'object') {
       return Result.fail(
@@ -375,7 +357,6 @@ const AttendanceService = {
     }
     var operatorId = operator.operatorId.trim();
 
-    // 2) Deployment trust policy (who is trusted).
     var deployment = context.deployment;
     var trustedEmail = deployment && typeof deployment.trustedOperatorEmail === 'string'
       ? deployment.trustedOperatorEmail.trim()
@@ -388,9 +369,6 @@ const AttendanceService = {
       );
     }
 
-    // 3) Authorization decision: identity must match the configured
-    //    trusted operator exactly. Mismatch is an explicit failure, never
-    //    a silent downgrade.
     if (operatorId !== trustedEmail) {
       return Result.fail(
         'ATTENDANCE_OPERATOR_UNAUTHORIZED',
@@ -399,7 +377,6 @@ const AttendanceService = {
       );
     }
 
-    // 4) Authority DERIVED from the validated identity + policy.
     return Result.ok({
       operatorId: operatorId,
       authorityType: AttendanceService.OPERATOR_AUTHORITY
@@ -407,8 +384,9 @@ const AttendanceService = {
   },
 
   /**
-   * Calendar event identity validation. Only stable identifiers are
-   * accepted; the event title is never part of the contract.
+   * Validates the external event context before Calendar resolution. The
+   * Add-on contract supplies both eventId and calendarId; neither may be
+   * guessed or substituted from another source.
    */
   _validateEventContext: function(context) {
     var event = context.calendarEvent;
@@ -426,23 +404,31 @@ const AttendanceService = {
         null
       );
     }
-    var calendarId = typeof event.calendarId === 'string' ? event.calendarId.trim() : '';
-    return Result.ok({ eventId: event.eventId.trim(), calendarId: calendarId });
+    if (typeof event.calendarId !== 'string' || event.calendarId.trim() === '') {
+      return Result.fail(
+        'ATTENDANCE_CALENDAR_CONTEXT_INVALID',
+        'calendarEvent.calendarId is required for Calendar identity resolution',
+        null
+      );
+    }
+    return Result.ok({
+      eventId: event.eventId.trim(),
+      calendarId: event.calendarId.trim()
+    });
   },
 
-  /**
-   * Diagnostic-only log (SYSTEM_LOG is never a source of truth).
-   * Carries operation, event identity, slot identity, operator identity,
-   * decision, and result — without patient PII.
-   */
   _diagnostic: function(logCommand, slotId, result, operator, event, extra) {
     try {
       var details = {
         decision: logCommand,
         operatorId: operator ? operator.operatorId : '',
         calendarEventId: event ? event.eventId : '',
-        outcome: result && result.ok ? (result.data ? (result.data.applied ? 'APPLIED' : 'ALREADY_APPLIED') : 'OK') : (result && result.error ? result.error.code : 'UNKNOWN'),
-        auditRecorded: result && result.ok && result.data ? (result.data.auditRecorded === true) : null
+        outcome: result && result.ok
+          ? (result.data ? (result.data.applied ? 'APPLIED' : 'ALREADY_APPLIED') : 'OK')
+          : (result && result.error ? result.error.code : 'UNKNOWN'),
+        auditRecorded: result && result.ok && result.data
+          ? (result.data.auditRecorded === true)
+          : null
       };
       if (extra) {
         Object.keys(extra).forEach(function(key) {
