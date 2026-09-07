@@ -25,10 +25,14 @@ jobs:
         run: |
           set -euo pipefail
           node --check Infrastructure/GoogleCalendar.js
+          node --check Application/AttendanceService.js
+          node --check AttendanceAddOn.js
+          node --check Repositories/CalendarRepository.js
           node --check Application/B6LifecycleService.js
           node --check tests/HardeningCalendarDeleteVerification.test.js
           node --check tests/HardeningB6.test.js
           node --check tests/HardeningB6TerminalProof.test.js
+          node --check tests/HardeningM0.test.js
 
       - name: Targeted Calendar verification test
         shell: bash
@@ -41,6 +45,12 @@ jobs:
         run: |
           set -euo pipefail
           node tests/HardeningB6TerminalProof.test.js
+
+      - name: Targeted Attendance identity/UI test
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tests/HardeningM0.test.js
 
       - name: Full hardening regression
         shell: bash
