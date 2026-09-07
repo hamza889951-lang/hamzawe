@@ -72,14 +72,7 @@ function load(sandbox, relativePath, globalName) {
 
 function loadAddOn(sandbox) {
   const source = fs.readFileSync(path.join(ROOT, 'AttendanceAddOn.js'), 'utf8');
-  vm.runInContext(
-    source +
-      '\nthis.onCalendarEventOpen = onCalendarEventOpen;' +
-      '\nthis.onMarkCompleted = onMarkCompleted;' +
-      '\nthis.onMarkNoShow = onMarkNoShow;',
-    sandbox,
-    { filename: 'AttendanceAddOn.js' }
-  );
+  vm.runInContext(source + '\nthis.onCalendarEventOpen = onCalendarEventOpen;\nthis.onMarkCompleted = onMarkCompleted;\nthis.onMarkNoShow = onMarkNoShow;', sandbox, { filename: 'AttendanceAddOn.js' });
 }
 
 function createSandbox() {
@@ -192,16 +185,15 @@ const tests = [];
 function test(name, fn) { tests.push({ name: name, fn: fn }); }
 
 test('M0-ID1 — Calendar API event.id resolves to canonical iCalUID with exact context', function() {
-  Reset();
-  const result = sandbox.CalendarRepository.resolveAppointmentEventIdentity(EVENT_ID, 'CAL_DEFAULT');
+  Reset(); const result = sandbox.CalendarRepository.resolveAppointmentEventIdentity(EVENT_ID, 'CAL_DEFAULT');
   assert.strictEqual(result.ok, true);
-  assert.deepStrictEqual(result.data, { eventId: EVENT_ID, calendarId: 'CAL_DEFAULT', iCalUID: ICAL_UID });
+  const data = JSON.parse(JSON.stringify(result.data));
+  assert.deepStrictEqual(data, { eventId: EVENT_ID, calendarId: 'CAL_DEFAULT', iCalUID: ICAL_UID });
   assert.deepStrictEqual(state.identityCalls, [{ calendarId: 'CAL_DEFAULT', eventId: EVENT_ID }]);
 });
 
 test('M0-ID2 — Add-on event.id alone never equals the stored iCalUID fixture', function() {
-  assert.notStrictEqual(EVENT_ID, ICAL_UID);
-  assert.strictEqual(ICAL_UID, EVENT_ID + '@google.com');
+  assert.notStrictEqual(EVENT_ID, ICAL_UID); assert.strictEqual(ICAL_UID, EVENT_ID + '@google.com');
 });
 
 test('M0-ID3 — resolved iCalUID correlates successfully to the stored appointment', function() {
@@ -277,7 +269,7 @@ test('M0-ATT6 — lock contention preserves existing concurrency boundary', func
 
 test('M0-UI1 — card uses the requested Arabic attendance buttons and existing handlers', function() {
   Reset(); const card = sandbox.onCalendarEventOpen({ calendarEventObject: { calendar: { id: EVENT_ID, calendarId: 'CAL_DEFAULT' } } });
-  assert.strictEqual(card.title, 'تسجيل حضور الموعد');
+  assert.strictEqual(card.header.title, 'تسجيل حضور الموعد');
   const decisionSection = sectionByHeader(card, 'تسجيل الحضور'); assert.ok(decisionSection);
   const uiButtons = decisionSection.widgets.filter(function(w) { return w.kind === 'newTextButton'; });
   assert.strictEqual(uiButtons.length, 2); assert.deepStrictEqual(uiButtons.map(function(b) { return b.text; }), ['حضر ✅', 'لم يحضر ❌']);
@@ -287,7 +279,6 @@ test('M0-UI1 — card uses the requested Arabic attendance buttons and existing 
 test('M0-UI2 — operator email is absent from success and failure cards', function() {
   Reset(); const success = sandbox.onMarkCompleted({ commonEventObject: { parameters: { eventId: EVENT_ID, calendarId: 'CAL_DEFAULT' } } });
   assert.strictEqual(cardText(resultCard(success)).indexOf(OPERATOR_EMAIL), -1);
-
   Reset(); state.identityMode = 'notFound'; const failure = sandbox.onMarkCompleted({ commonEventObject: { parameters: { eventId: EVENT_ID, calendarId: 'CAL_DEFAULT' } } });
   assert.strictEqual(cardText(resultCard(failure)).indexOf(OPERATOR_EMAIL), -1);
 });
@@ -314,7 +305,7 @@ test('M0-UI5 — UI source preserves internal decision constants and removes ope
   assert.strictEqual(src.indexOf("setText('MARK NO-SHOW')"), -1);
 });
 
-test('M0-ARCH1 — AttendanceService uses the existing CalendarRepository boundary and no CalendarApp/suffix heuristic', function() {
+test('M0-ARCH1 — AttendanceService uses existing CalendarRepository boundary and no CalendarApp/suffix heuristic', function() {
   const src = stripComments(fs.readFileSync(path.join(ROOT, 'Application/AttendanceService.js'), 'utf8'));
   assert.ok(src.indexOf('CalendarRepository.resolveAppointmentEventIdentity') !== -1);
   assert.strictEqual(src.indexOf('CalendarApp'), -1); assert.strictEqual(src.indexOf('@google.com'), -1);
