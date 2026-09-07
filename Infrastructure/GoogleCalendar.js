@@ -64,6 +64,48 @@ const GoogleCalendar = {
   },
 
   /**
+   * Resolves a Calendar Add-on Calendar API event.id to the existing HAMZAWE
+   * canonical Calendar identity (iCalUID).
+   *
+   * This is intentionally inside the Calendar infrastructure boundary: the
+   * Add-on provides Calendar API event.id, while existing HAMZAWE appointment
+   * rows retain the Apps Script CalendarEvent/iCalUID representation returned
+   * by event.getId(). No suffix manipulation is used.
+   */
+  resolveAppointmentEventIdentity(eventId, calendarId) {
+    if (typeof eventId !== 'string' || eventId.trim() === '') {
+      throw new Error('CALENDAR_EVENT_ID_REQUIRED');
+    }
+    if (typeof calendarId !== 'string' || calendarId.trim() === '') {
+      throw new Error('CALENDAR_ID_REQUIRED');
+    }
+    if (typeof Calendar === 'undefined' || !Calendar.Events ||
+      typeof Calendar.Events.get !== 'function') {
+      throw new Error('CALENDAR_ADVANCED_SERVICE_UNAVAILABLE');
+    }
+
+    const requestedEventId = eventId.trim();
+    const requestedCalendarId = calendarId.trim();
+    const event = Calendar.Events.get(requestedCalendarId, requestedEventId);
+
+    if (!event) {
+      throw new Error('CALENDAR_EVENT_NOT_FOUND');
+    }
+    if (event.id && String(event.id) !== requestedEventId) {
+      throw new Error('CALENDAR_EVENT_ID_MISMATCH');
+    }
+    if (typeof event.iCalUID !== 'string' || event.iCalUID.trim() === '') {
+      throw new Error('CALENDAR_EVENT_ICALUID_MISSING');
+    }
+
+    return {
+      eventId: requestedEventId,
+      calendarId: requestedCalendarId,
+      iCalUID: event.iCalUID.trim()
+    };
+  },
+
+  /**
    * Inspects a known event ID in a specific Calendar context. NOT_FOUND is an
    * observation only; callers must not treat it as terminal absence by itself.
    */
