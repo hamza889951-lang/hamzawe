@@ -15,7 +15,6 @@ const OTHER_ICAL_UID = OTHER_EVENT_ID + '@google.com';
 const SLOT_ID = 'SLT_TEST_001';
 const OTHER_SLOT_ID = 'SLT_TEST_002';
 const OPERATOR_EMAIL = 'doctor.test@hamzawe.clinic';
-const OTHER_ACCOUNT_EMAIL = 'stranger.test@hamzawe.clinic';
 const NOW_MS = 1770000000000;
 
 function stripComments(source) {
@@ -35,10 +34,11 @@ const CARD_SERVICE_CONTRACT = {
 
 function makeCardService() {
   function makeObject(factoryName) {
-    if (!CARD_SERVICE_CONTRACT[factoryName]) throw new Error('UNKNOWN_CARD_API:' + factoryName);
+    const spec = CARD_SERVICE_CONTRACT[factoryName];
+    if (!spec) throw new Error('UNKNOWN_CARD_API:' + factoryName);
     const state = { kind: factoryName, title: '', header: '', text: '', widgets: [], action: null, parameters: null, navigation: null, stateChanged: null };
     const obj = { state: state };
-    CARD_SERVICE_CONTRACT[factoryName].forEach(function(method) {
+    spec.forEach(function(method) {
       obj[method] = function() {
         const args = Array.prototype.slice.call(arguments);
         if (method === 'setHeader') state.header = args[0] && args[0].state ? args[0].state : args[0];
@@ -70,6 +70,18 @@ function load(sandbox, relativePath, globalName) {
   vm.runInContext(source + '\nthis.' + globalName + ' = ' + globalName + ';', sandbox, { filename: relativePath });
 }
 
+function loadAddOn(sandbox) {
+  const source = fs.readFileSync(path.join(ROOT, 'AttendanceAddOn.js'), 'utf8');
+  vm.runInContext(
+    source +
+      '\nthis.onCalendarEventOpen = onCalendarEventOpen;' +
+      '\nthis.onMarkCompleted = onMarkCompleted;' +
+      '\nthis.onMarkNoShow = onMarkNoShow;',
+    sandbox,
+    { filename: 'AttendanceAddOn.js' }
+  );
+}
+
 function createSandbox() {
   const sandbox = vm.createContext({ console: console });
   const state = {
@@ -79,12 +91,10 @@ function createSandbox() {
     identityMode: 'success', identityMap: {}, sessionEmail: OPERATOR_EMAIL,
     properties: { ATTENDANCE_OPERATOR_EMAIL: OPERATOR_EMAIL }
   };
-
   const AVAIL_HEADERS = ['slot_id', 'date', 'time', 'sort_key', 'status', 'is_available', 'patient_name', 'phone', 'calendar_event_id', 'Reminder_sent', 'whatsapp_message_id', 'reserved_until', 'reserved_until_unix'];
 
   sandbox.Clock = { now: function() { return new Date(state.nowMs); } };
   sandbox.ULID = { generate: function() { return 'TEST_ULID'; } };
-
   sandbox.GoogleSheets = {
     findRowByColumn: function(sheetName, columnName, value) {
       if (sheetName !== 'Availability') throw new Error('UNEXPECTED_SHEET:' + sheetName);
@@ -103,9 +113,7 @@ function createSandbox() {
       if (state.updateRowFailure) return false;
       const row = state.availabilityRows.find(function(r) { return r[columnName] === value; });
       if (!row) return false;
-      Object.keys(fields).forEach(function(key) {
-        if (AVAIL_HEADERS.indexOf(key) !== -1) { row[key] = fields[key]; state.cellWrites += 1; }
-      });
+      Object.keys(fields).forEach(function(key) { if (AVAIL_HEADERS.indexOf(key) !== -1) { row[key] = fields[key]; state.cellWrites += 1; } });
       return true;
     },
     getOrCreateSheet: function(name) { if (name !== 'ATTENDANCE_AUDIT' && name !== 'SYSTEM_LOG') throw new Error('UNEXPECTED_SHEET:' + name); },
@@ -118,12 +126,10 @@ function createSandbox() {
     },
     appendRow: function(name, row) { if (name !== 'SYSTEM_LOG') throw new Error('UNEXPECTED_SHEET:' + name); state.logEntries.push(row); }
   };
-
   sandbox.LockService = { getScriptLock: function() { return {
     waitLock: function() { if (state.lockHeld) throw new Error('LOCK_HELD'); state.lockHeld = true; },
     releaseLock: function() { state.lockHeld = false; }
   }; } };
-
   sandbox.Calendar = { Events: { get: function(calendarId, eventId) {
     state.identityCalls.push({ calendarId: calendarId, eventId: eventId });
     if (state.identityMode === 'throw') throw new Error('INJECTED_CALENDAR_API_FAILURE');
@@ -131,7 +137,6 @@ function createSandbox() {
     if (state.identityMode === 'missingIcalUID') return { id: eventId };
     return { id: eventId, iCalUID: Object.prototype.hasOwnProperty.call(state.identityMap, eventId) ? state.identityMap[eventId] : eventId + '@google.com' };
   } } };
-
   sandbox.CalendarApp = { getCalendarById: function() { return null; }, getDefaultCalendar: function() { return null; } };
   sandbox.PropertiesService = { getScriptProperties: function() { return { getProperty: function(key) { return Object.prototype.hasOwnProperty.call(state.properties, key) ? state.properties[key] : null; } }; } };
   sandbox.Session = { getActiveUser: function() { return { getEmail: function() { return state.sessionEmail; } }; } };
@@ -148,8 +153,7 @@ function createSandbox() {
   load(sandbox, 'Repositories/AttendanceAuditRepository.js', 'AttendanceAuditRepository');
   load(sandbox, 'LogRepository.js', 'LogRepository');
   load(sandbox, 'Application/AttendanceService.js', 'AttendanceService');
-  load(sandbox, 'AttendanceAddOn.js', 'AttendanceAddOn');
-
+  loadAddOn(sandbox);
   state.auditHeaders = sandbox.AttendanceAuditRepository.HEADERS.slice();
 
   function reset() {
@@ -182,6 +186,7 @@ function auditObject(index) {
 }
 function cardText(card) { return JSON.stringify(card); }
 function sectionByHeader(card, header) { return (card.widgets || []).find(function(s) { return s.header === header; }); }
+function resultCard(response) { return response && response.navigation ? response.navigation.navigationCard : null; }
 
 const tests = [];
 function test(name, fn) { tests.push({ name: name, fn: fn }); }
@@ -200,47 +205,38 @@ test('M0-ID2 — Add-on event.id alone never equals the stored iCalUID fixture',
 });
 
 test('M0-ID3 — resolved iCalUID correlates successfully to the stored appointment', function() {
-  Reset();
-  const result = sandbox.AttendanceService.markCompleted(ctx());
-  assert.strictEqual(result.ok, true);
-  assert.strictEqual(result.data.status, 'COMPLETED');
-  assert.strictEqual(result.data.calendarEventId, ICAL_UID);
-  assert.strictEqual(result.data.calendarSourceEventId, EVENT_ID);
-  assert.strictEqual(state.availabilityRows[0].status, 'COMPLETED');
-  assert.strictEqual(auditObject(0).calendar_event_id, ICAL_UID);
+  Reset(); const result = sandbox.AttendanceService.markCompleted(ctx());
+  assert.strictEqual(result.ok, true); assert.strictEqual(result.data.status, 'COMPLETED');
+  assert.strictEqual(result.data.calendarEventId, ICAL_UID); assert.strictEqual(result.data.calendarSourceEventId, EVENT_ID);
+  assert.strictEqual(state.availabilityRows[0].status, 'COMPLETED'); assert.strictEqual(auditObject(0).calendar_event_id, ICAL_UID);
 });
 
 test('M0-ID4 — event not found fails closed with no state mutation', function() {
-  Reset(); state.identityMode = 'notFound';
-  const result = sandbox.AttendanceService.markCompleted(ctx());
+  Reset(); state.identityMode = 'notFound'; const result = sandbox.AttendanceService.markCompleted(ctx());
   assert.strictEqual(result.ok, false); assert.strictEqual(result.error.code, 'ATTENDANCE_EVENT_IDENTITY_RESOLUTION_FAILED');
   assert.strictEqual(state.availabilityRows[0].status, 'CONFIRMED'); assert.strictEqual(state.cellWrites, 0); assert.strictEqual(state.auditRows.length, 0);
 });
 
 test('M0-ID5 — Calendar API read failure fails closed', function() {
-  Reset(); state.identityMode = 'throw';
-  const result = sandbox.AttendanceService.markNoShow(ctx());
+  Reset(); state.identityMode = 'throw'; const result = sandbox.AttendanceService.markNoShow(ctx());
   assert.strictEqual(result.ok, false); assert.strictEqual(result.error.code, 'ATTENDANCE_EVENT_IDENTITY_RESOLUTION_FAILED');
   assert.strictEqual(state.availabilityRows[0].status, 'CONFIRMED'); assert.strictEqual(state.cellWrites, 0);
 });
 
 test('M0-ID6 — successful Calendar API response without iCalUID fails closed', function() {
-  Reset(); state.identityMode = 'missingIcalUID';
-  const result = sandbox.AttendanceService.markCompleted(ctx());
+  Reset(); state.identityMode = 'missingIcalUID'; const result = sandbox.AttendanceService.markCompleted(ctx());
   assert.strictEqual(result.ok, false); assert.strictEqual(result.error.code, 'ATTENDANCE_EVENT_IDENTITY_RESOLUTION_FAILED');
   assert.strictEqual(state.availabilityRows[0].status, 'CONFIRMED'); assert.strictEqual(state.cellWrites, 0);
 });
 
 test('M0-ID7 — missing calendar context is rejected before API lookup', function() {
-  Reset();
-  const result = sandbox.AttendanceService.markCompleted(ctx({ calendarEvent: { eventId: EVENT_ID, calendarId: '' } }));
+  Reset(); const result = sandbox.AttendanceService.markCompleted(ctx({ calendarEvent: { eventId: EVENT_ID, calendarId: '' } }));
   assert.strictEqual(result.ok, false); assert.strictEqual(result.error.code, 'ATTENDANCE_CALENDAR_CONTEXT_INVALID');
   assert.strictEqual(state.identityCalls.length, 0); assert.strictEqual(state.cellWrites, 0);
 });
 
 test('M0-ID8 — ambiguous canonical iCalUID correlation remains rejected', function() {
-  Reset();
-  state.availabilityRows.push(Object.assign({}, state.availabilityRows[0], { slot_id: OTHER_SLOT_ID, phone: OTHER_PHONE, patient_name: 'Other Patient' }));
+  Reset(); state.availabilityRows.push(Object.assign({}, state.availabilityRows[0], { slot_id: OTHER_SLOT_ID, phone: OTHER_PHONE, patient_name: 'Other Patient' }));
   const result = sandbox.AttendanceService.markCompleted(ctx());
   assert.strictEqual(result.ok, false); assert.strictEqual(result.error.code, 'ATTENDANCE_EVENT_AMBIGUOUS');
   assert.strictEqual(state.availabilityRows[0].status, 'CONFIRMED'); assert.strictEqual(state.availabilityRows[1].status, 'CONFIRMED'); assert.strictEqual(state.cellWrites, 0);
@@ -280,8 +276,7 @@ test('M0-ATT6 — lock contention preserves existing concurrency boundary', func
 });
 
 test('M0-UI1 — card uses the requested Arabic attendance buttons and existing handlers', function() {
-  Reset();
-  const card = sandbox.onCalendarEventOpen({ calendarEventObject: { calendar: { id: EVENT_ID, calendarId: 'CAL_DEFAULT' } } });
+  Reset(); const card = sandbox.onCalendarEventOpen({ calendarEventObject: { calendar: { id: EVENT_ID, calendarId: 'CAL_DEFAULT' } } });
   assert.strictEqual(card.title, 'تسجيل حضور الموعد');
   const decisionSection = sectionByHeader(card, 'تسجيل الحضور'); assert.ok(decisionSection);
   const uiButtons = decisionSection.widgets.filter(function(w) { return w.kind === 'newTextButton'; });
@@ -290,19 +285,16 @@ test('M0-UI1 — card uses the requested Arabic attendance buttons and existing 
 });
 
 test('M0-UI2 — operator email is absent from success and failure cards', function() {
-  Reset();
-  const success = sandbox.onMarkCompleted({ commonEventObject: { parameters: { eventId: EVENT_ID, calendarId: 'CAL_DEFAULT' } } });
-  assert.strictEqual(cardText(success.navigation.card).indexOf(OPERATOR_EMAIL), -1);
+  Reset(); const success = sandbox.onMarkCompleted({ commonEventObject: { parameters: { eventId: EVENT_ID, calendarId: 'CAL_DEFAULT' } } });
+  assert.strictEqual(cardText(resultCard(success)).indexOf(OPERATOR_EMAIL), -1);
 
-  Reset(); state.identityMode = 'notFound';
-  const failure = sandbox.onMarkCompleted({ commonEventObject: { parameters: { eventId: EVENT_ID, calendarId: 'CAL_DEFAULT' } } });
-  assert.strictEqual(cardText(failure.navigation.card).indexOf(OPERATOR_EMAIL), -1);
+  Reset(); state.identityMode = 'notFound'; const failure = sandbox.onMarkCompleted({ commonEventObject: { parameters: { eventId: EVENT_ID, calendarId: 'CAL_DEFAULT' } } });
+  assert.strictEqual(cardText(resultCard(failure)).indexOf(OPERATOR_EMAIL), -1);
 });
 
 test('M0-UI3 — failed identity is visibly FAILED and does not look successful', function() {
-  Reset(); state.identityMode = 'notFound';
-  const response = sandbox.onMarkNoShow({ commonEventObject: { parameters: { eventId: EVENT_ID, calendarId: 'CAL_DEFAULT' } } });
-  const text = cardText(response.navigation.card);
+  Reset(); state.identityMode = 'notFound'; const response = sandbox.onMarkNoShow({ commonEventObject: { parameters: { eventId: EVENT_ID, calendarId: 'CAL_DEFAULT' } } });
+  const text = cardText(resultCard(response));
   assert.ok(text.indexOf('FAILED: ATTENDANCE_EVENT_IDENTITY_RESOLUTION_FAILED') !== -1); assert.strictEqual(text.indexOf('تم تسجيل عدم الحضور بنجاح'), -1); assert.strictEqual(state.availabilityRows[0].status, 'CONFIRMED');
 });
 
@@ -325,8 +317,7 @@ test('M0-UI5 — UI source preserves internal decision constants and removes ope
 test('M0-ARCH1 — AttendanceService uses the existing CalendarRepository boundary and no CalendarApp/suffix heuristic', function() {
   const src = stripComments(fs.readFileSync(path.join(ROOT, 'Application/AttendanceService.js'), 'utf8'));
   assert.ok(src.indexOf('CalendarRepository.resolveAppointmentEventIdentity') !== -1);
-  assert.strictEqual(src.indexOf('CalendarApp'), -1);
-  assert.strictEqual(src.indexOf('@google.com'), -1);
+  assert.strictEqual(src.indexOf('CalendarApp'), -1); assert.strictEqual(src.indexOf('@google.com'), -1);
 });
 
 test('M0-ARCH2 — GoogleCalendar resolver uses Calendar.Events.get without suffix conversion', function() {
