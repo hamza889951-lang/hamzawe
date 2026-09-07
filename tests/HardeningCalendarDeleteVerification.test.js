@@ -36,7 +36,7 @@ function calendarContext(calendarId) {
       // Deliberately keep returning the deleted CalendarEvent object. This
       // reproduces the observed false-negative verifier behavior while the
       // authoritative API below reports the actual server-side state.
-      return eventPresent ? event : event;
+      return event;
     }
   };
 }
@@ -46,15 +46,19 @@ sandbox.CalendarApp = {
   getCalendarById: function(calendarId) { return calendarContext(calendarId); }
 };
 
-sandbox.Calendar = {
-  Events: {
-    list: function(calendarId, args) {
-      apiListCalls += 1;
-      lastApiListArgs = { calendarId: calendarId, args: args };
-      return { items: apiItems.slice() };
+function installCalendarApiMock() {
+  sandbox.Calendar = {
+    Events: {
+      list: function(calendarId, args) {
+        apiListCalls += 1;
+        lastApiListArgs = { calendarId: calendarId, args: args };
+        return { items: apiItems.slice() };
+      }
     }
-  }
-};
+  };
+}
+
+installCalendarApiMock();
 
 const source = fs.readFileSync(path.join(ROOT, 'Infrastructure/GoogleCalendar.js'), 'utf8');
 vm.runInContext(source + '\nthis.GoogleCalendar = GoogleCalendar;', sandbox, {
@@ -69,6 +73,7 @@ function reset() {
   deleteCalls = 0;
   apiListCalls = 0;
   lastApiListArgs = null;
+  installCalendarApiMock();
 }
 
 function testAuthoritativeAbsenceIgnoresStaleCalendarAppObservation() {
@@ -113,36 +118,20 @@ function testApiEvidenceStillPresentRemainsFailClosed() {
   assert.strictEqual(apiListCalls, 1);
 }
 
-function testAdvancedServiceUnavailableFailsClosedThroughRepositoryBoundary() {
+function testMissingAdvancedServiceThrowsAtInfrastructureBoundary() {
   reset();
   sandbox.Calendar = undefined;
 
-  const result = sandbox.GoogleCalendar.deleteLifecycleEvent(
-    'OLD_EVENT@google.com',
-    'CAL_DEFAULT',
-    operationId
-  );
-
   assert.throws(function() {
-    // The direct infrastructure call is expected to throw because the
-    // authoritative proof dependency is unavailable.
-    throw new Error('CALENDAR_ADVANCED_SERVICE_UNAVAILABLE');
+    sandbox.GoogleCalendar.deleteLifecycleEvent(
+      'OLD_EVENT@google.com',
+      'CAL_DEFAULT',
+      operationId
+    );
   }, /CALENDAR_ADVANCED_SERVICE_UNAVAILABLE/);
 
-  // Restore the mock for the remaining explicit checks; the actual
-  // CalendarRepository converts this exception into a Result.fail envelope.
-  sandbox.Calendar = {
-    Events: {
-      list: function(calendarId, args) {
-        apiListCalls += 1;
-        lastApiListArgs = { calendarId: calendarId, args: args };
-        return { items: [] };
-      }
-    }
-  };
-
   assert.strictEqual(deleteCalls, 1);
-  assert.strictEqual(result, undefined);
+  installCalendarApiMock();
 }
 
 function testCorrelationMismatchNeverDeletesOrCallsApi() {
@@ -166,7 +155,7 @@ function testCorrelationMismatchNeverDeletesOrCallsApi() {
 const tests = [
   ['authoritative absence ignores stale CalendarApp observation', testAuthoritativeAbsenceIgnoresStaleCalendarAppObservation],
   ['authoritative API still present remains DELETE_NOT_PROVEN', testApiEvidenceStillPresentRemainsFailClosed],
-  ['missing advanced service is a proof dependency failure', testAdvancedServiceUnavailableFailsClosedThroughRepositoryBoundary],
+  ['missing advanced service fails at the infrastructure proof boundary', testMissingAdvancedServiceThrowsAtInfrastructureBoundary],
   ['correlation mismatch never deletes or queries authoritative API', testCorrelationMismatchNeverDeletesOrCallsApi]
 ];
 
