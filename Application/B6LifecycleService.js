@@ -411,22 +411,17 @@ const B6LifecycleService = {
     var replacementResult = this.verifyReplacementAppointment(ctx);
     if (!replacementResult.ok) return replacementResult;
 
-    if (!ctx.oldCalendarDeleteResult || !ctx.oldCalendarDeleteResult.deleteConfirmed ||
-      !ctx.oldCalendarDeleteResult.absenceObserved) {
-      return Result.fail('B6_OLD_CALENDAR_ABSENCE_NOT_PROVEN', 'Old Calendar absence has not been proven');
-    }
-
-    var oldAbsence = CalendarRepository.inspectLifecycleAppointmentEvent(
-      ctx.oldCalendarEventId,
-      ctx.oldCalendarId || ctx.calendarId,
-      null
-    );
-    if (!oldAbsence.ok || !oldAbsence.data || oldAbsence.data.status !== 'NOT_FOUND' ||
-      !oldAbsence.data.contextResolved) {
+    var oldDelete = ctx.oldCalendarDeleteResult;
+    if (!oldDelete ||
+      oldDelete.status !== 'ABSENCE_OBSERVED' ||
+      oldDelete.deleteConfirmed !== true ||
+      oldDelete.absenceObserved !== true ||
+      oldDelete.eventId !== ctx.oldCalendarEventId ||
+      !oldDelete.calendarId) {
       return Result.fail(
         'B6_OLD_CALENDAR_ABSENCE_NOT_PROVEN',
-        'Old Calendar event absence observation is not sufficient',
-        oldAbsence.ok ? oldAbsence.data : oldAbsence.error
+        'Old Calendar deletion proof is incomplete',
+        oldDelete || null
       );
     }
 
@@ -452,22 +447,17 @@ const B6LifecycleService = {
   },
 
   verifyTerminalCancel: function(ctx) {
-    if (!ctx.oldCalendarDeleteResult || !ctx.oldCalendarDeleteResult.deleteConfirmed ||
-      !ctx.oldCalendarDeleteResult.absenceObserved) {
-      return Result.fail('B6_TARGET_CALENDAR_ABSENCE_NOT_PROVEN', 'Target Calendar absence has not been proven');
-    }
-
-    var absence = CalendarRepository.inspectLifecycleAppointmentEvent(
-      ctx.oldCalendarEventId,
-      ctx.oldCalendarId || ctx.calendarId,
-      null
-    );
-    if (!absence.ok || !absence.data || absence.data.status !== 'NOT_FOUND' ||
-      !absence.data.contextResolved) {
+    var oldDelete = ctx.oldCalendarDeleteResult;
+    if (!oldDelete ||
+      oldDelete.status !== 'ABSENCE_OBSERVED' ||
+      oldDelete.deleteConfirmed !== true ||
+      oldDelete.absenceObserved !== true ||
+      oldDelete.eventId !== ctx.oldCalendarEventId ||
+      !oldDelete.calendarId) {
       return Result.fail(
         'B6_TARGET_CALENDAR_ABSENCE_NOT_PROVEN',
-        'Target Calendar absence observation is not sufficient',
-        absence.ok ? absence.data : absence.error
+        'Target Calendar deletion proof is incomplete',
+        oldDelete || null
       );
     }
 
