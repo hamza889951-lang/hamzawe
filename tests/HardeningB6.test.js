@@ -864,12 +864,15 @@ test('B6-33 — same operator re-entry requires the exact recoveryOwnerToken', f
   assert.strictEqual(JSON.parse(claim(PHONE)).recoveryOwnerToken, token);
 });
 
-test('B6-34 — GoogleCalendar lifecycle infrastructure persists and finds exact operation tags', function() {
+test('B6-34 — GoogleCalendar lifecycle infrastructure preserves the Advanced Calendar Service contract', function() {
   const calendarSource = fs.readFileSync(path.join(ROOT, 'Infrastructure/GoogleCalendar.js'), 'utf8');
   const tagStore = {};
   let deleted = false;
+  let apiListCalls = 0;
+  let apiListArgs = null;
+
   const event = {
-    getId: function() { return 'INFRA_EVENT'; },
+    getId: function() { return 'INFRA_EVENT@google.com'; },
     setTag: function(key, value) { tagStore[key] = value; return this; },
     getTag: function(key) { return tagStore[key] || ''; },
     deleteEvent: function() { deleted = true; }
@@ -877,21 +880,51 @@ test('B6-34 — GoogleCalendar lifecycle infrastructure persists and finds exact
   const calendar = {
     getId: function() { return 'INFRA_CAL'; },
     createEvent: function() { deleted = false; return event; },
-    getEventById: function(id) { return deleted ? null : (id === 'INFRA_EVENT' ? event : null); },
+    getEventById: function(id) { return deleted ? null : (id === 'INFRA_EVENT@google.com' ? event : null); },
     getEvents: function() { return deleted ? [] : [event]; }
   };
-  const isolated = vm.createContext({ CalendarApp: { getDefaultCalendar: function() { return calendar; }, getCalendarById: function() { return calendar; } } });
+  const isolated = vm.createContext({
+    CalendarApp: {
+      getDefaultCalendar: function() { return calendar; },
+      getCalendarById: function() { return calendar; }
+    },
+    Calendar: {
+      Events: {
+        list: function(calendarId, args) {
+          apiListCalls += 1;
+          apiListArgs = { calendarId: calendarId, args: args };
+          if (calendarId !== 'INFRA_CAL' || args.iCalUID !== 'INFRA_EVENT@google.com' || args.showDeleted !== false) {
+            return { items: [{ id: 'api-event-id', iCalUID: 'INFRA_EVENT@google.com', status: 'confirmed' }] };
+          }
+          return deleted
+            ? { items: [] }
+            : { items: [{ id: 'api-event-id', iCalUID: 'INFRA_EVENT@google.com', status: 'confirmed' }] };
+        }
+      }
+    }
+  });
+
   vm.runInContext(calendarSource + '\nthis.GoogleCalendar = GoogleCalendar;', isolated, { filename: 'Infrastructure/GoogleCalendar.js' });
   const created = isolated.GoogleCalendar.createLifecycleEvent({
     title: 't', startTime: new Date(NOW_MS), endTime: new Date(NOW_MS + 60000), description: 'd', operationId: 'B6_INFRA'
   });
-  assert.strictEqual(created.eventId, 'INFRA_EVENT');
+  assert.strictEqual(created.eventId, 'INFRA_EVENT@google.com');
   assert.strictEqual(tagStore.operation_id, 'B6_INFRA');
   const matches = isolated.GoogleCalendar.findLifecycleEventsByOperationId('B6_INFRA', new Date(NOW_MS), new Date(NOW_MS + 86400000), 'INFRA_CAL');
   assert.strictEqual(matches.matches.length, 1);
-  const deletedResult = isolated.GoogleCalendar.deleteLifecycleEvent('INFRA_EVENT', 'INFRA_CAL', 'B6_INFRA');
+
+  const deletedResult = isolated.GoogleCalendar.deleteLifecycleEvent('INFRA_EVENT@google.com', 'INFRA_CAL', 'B6_INFRA');
   assert.strictEqual(deletedResult.status, 'ABSENCE_OBSERVED');
   assert.strictEqual(deletedResult.deleteConfirmed, true);
+  assert.strictEqual(deletedResult.absenceObserved, true);
+  assert.strictEqual(deletedResult.matchingEventCount, 0);
+  assert.strictEqual(deletedResult.verificationAttempts, 1);
+  assert.strictEqual(apiListCalls, 1);
+  assert.strictEqual(apiListArgs.calendarId, 'INFRA_CAL');
+  assert.strictEqual(apiListArgs.args.iCalUID, 'INFRA_EVENT@google.com');
+  assert.strictEqual(apiListArgs.args.showDeleted, false);
+  assert.strictEqual(apiListArgs.args.maxResults, 50);
+  assert.strictEqual(deleted, true);
 });
 
 let failures = 0;
