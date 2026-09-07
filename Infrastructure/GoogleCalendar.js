@@ -9,6 +9,13 @@ const GoogleCalendar = {
 
   B6_OPERATION_TAG_KEY: 'operation_id',
 
+  // Absence verification is deliberately bounded and fail-closed. The first
+  // read is immediate; retries are only used when the event is still observed.
+  // This avoids treating a transient read-after-write observation as proof
+  // that deleteEvent() failed, without ever treating an unproven delete as
+  // successful.
+  B6_DELETE_VERIFICATION_DELAYS_MS: [0, 250, 500, 1000, 2000],
+
   _getCalendar(calendarId) {
     const calendar = calendarId
       ? CalendarApp.getCalendarById(calendarId)
@@ -101,10 +108,40 @@ const GoogleCalendar = {
     };
   },
 
+  _verifyLifecycleEventAbsence(eventId, calendarId) {
+    for (let i = 0; i < this.B6_DELETE_VERIFICATION_DELAYS_MS.length; i++) {
+      const delayMs = this.B6_DELETE_VERIFICATION_DELAYS_MS[i];
+      if (delayMs > 0) {
+        if (typeof Utilities === 'undefined' || typeof Utilities.sleep !== 'function') {
+          throw new Error('CALENDAR_DELETE_VERIFICATION_SLEEP_UNAVAILABLE');
+        }
+        Utilities.sleep(delayMs);
+      }
+
+      // Resolve a fresh Calendar context for every observation. Do not reuse
+      // the pre-delete Calendar/Event object because a stale read must not be
+      // allowed to become the terminal deletion verdict.
+      const calendar = this._getCalendar(calendarId);
+      const event = calendar.getEventById(eventId);
+      if (!event) {
+        return {
+          absenceObserved: true,
+          verificationAttempts: i + 1
+        };
+      }
+    }
+
+    return {
+      absenceObserved: false,
+      verificationAttempts: this.B6_DELETE_VERIFICATION_DELAYS_MS.length
+    };
+  },
+
   /**
-   * Deletes a known event and then performs a same-context lookup. A null
-   * lookup alone is never returned as proof; deleteConfirmed records that this
-   * execution first resolved the exact event and called deleteEvent().
+   * Deletes a known event and verifies absence using bounded fresh-context
+   * observations. A delete is considered proven only after an absence is
+   * observed. Exhausting verification remains DELETE_NOT_PROVEN so B6 can
+   * enter recovery rather than silently releasing an unresolved appointment.
    */
   deleteLifecycleEvent(eventId, calendarId, expectedOperationId) {
     const before = this.inspectLifecycleEvent(eventId, calendarId, expectedOperationId);
@@ -114,40 +151,45 @@ const GoogleCalendar = {
         eventId: eventId,
         calendarId: before.calendarId || calendarId || '',
         deleteConfirmed: false,
-        absenceObserved: false
+        absenceObserved: false,
+        verificationAttempts: 0
       };
     }
 
-    const calendar = this._getCalendar(before.calendarId || calendarId);
+    const resolvedCalendarId = before.calendarId || calendarId || '';
+    const calendar = this._getCalendar(resolvedCalendarId);
     const event = calendar.getEventById(eventId);
     if (!event) {
       return {
         status: 'NOT_FOUND',
         eventId: eventId,
-        calendarId: before.calendarId || calendarId || '',
+        calendarId: resolvedCalendarId,
         deleteConfirmed: false,
-        absenceObserved: false
+        absenceObserved: false,
+        verificationAttempts: 0
       };
     }
 
     event.deleteEvent();
-    const after = calendar.getEventById(eventId);
-    if (after) {
+    const verification = this._verifyLifecycleEventAbsence(eventId, resolvedCalendarId);
+    if (!verification.absenceObserved) {
       return {
         status: 'DELETE_NOT_PROVEN',
         eventId: eventId,
-        calendarId: before.calendarId || calendarId || '',
+        calendarId: resolvedCalendarId,
         deleteConfirmed: true,
-        absenceObserved: false
+        absenceObserved: false,
+        verificationAttempts: verification.verificationAttempts
       };
     }
 
     return {
       status: 'ABSENCE_OBSERVED',
       eventId: eventId,
-      calendarId: before.calendarId || calendarId || '',
+      calendarId: resolvedCalendarId,
       deleteConfirmed: true,
-      absenceObserved: true
+      absenceObserved: true,
+      verificationAttempts: verification.verificationAttempts
     };
   },
 
