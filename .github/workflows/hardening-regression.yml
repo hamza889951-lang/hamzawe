@@ -1,0 +1,43 @@
+name: Hardening Regression
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - 'fix/**'
+
+jobs:
+  hardening:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Syntax checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check Infrastructure/GoogleCalendar.js
+          node --check tests/HardeningCalendarDeleteVerification.test.js
+          node --check tests/HardeningB6.test.js
+
+      - name: Targeted Calendar verification test
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tests/HardeningCalendarDeleteVerification.test.js
+
+      - name: Full hardening regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          for test_file in tests/Hardening*.test.js; do
+            echo "===== ${test_file} ====="
+            node "${test_file}"
+          done
