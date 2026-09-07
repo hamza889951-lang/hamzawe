@@ -5,16 +5,16 @@
  *
  * يضمن:
  *   - claim(key, nowMs, duplicateWindowMs): عملية ذرية واحدة تجمع
- *     قراءة claim موجود + فحص صلاحيته + كتابة claim جديد داخل
- *     Lock.runExclusive('idempotency'). لا يمكن لتنفيذين متزامنين
- *     لنفس المفتاح الحصول على ACQUIRED معًا.
+ *     قراءة claim موجود + فحص صلاحيته + cleanup محدود للمفاتيح المنتهية
+ *     + كتابة claim جديد داخل Lock.runExclusive('idempotency'). لا يمكن
+ *     لتنفيذين متزامنين لنفس المفتاح الحصول على ACQUIRED معًا.
  *   - read(key): قراءة قيمة مخزّنة (للاستخدام legacy).
  *   - write(key, value): كتابة قيمة (للاستخدام legacy).
  *   - عزل طبقة Service عن PropertiesService و Lock.
  *
  * لا يضمن:
  *   - أي ذرية عبر موارد خارجية (Sheets, Calendar).
- *   - أي cleanup أو expiration تلقائي للمفاتيح.
+ *   - cleanup غير محدود أو حذف قيم msg_* غير القابلة للتفسير كـtimestamp.
  *
  * ملاحظة معمارية:
  *   هذا الملف هو الحدود الوحيدة المسموح لها بمعرفة PropertiesService
@@ -22,6 +22,12 @@
  *   Application استدعاء أي منهما مباشرة.
  */
 const ProcessedMessagesRepository = {
+
+  // B2 storage hardening: housekeeping is intentionally small and deterministic.
+  // PropertiesService only exposes a full snapshot for key discovery; therefore
+  // we separately cap our in-memory inspection work and never sort the snapshot.
+  CLEANUP_MAX_PER_CLAIM: 20,
+  CLEANUP_MAX_INSPECTED_PER_CLAIM: 100,
 
   /**
    * Atomic claim — عملية ذرية واحدة داخل Lock.
@@ -64,6 +70,45 @@ const ProcessedMessagesRepository = {
         }
       }
 
+      // ── best-effort bounded cleanup of expired B2 claims ──
+      // Cleanup is housekeeping, not an ownership precondition. Any failure
+      // here is intentionally swallowed so a valid current claim can proceed.
+      try {
+        var allProperties = PropertiesService.getScriptProperties().getProperties();
+        var removed = 0;
+        var keys = Object.keys(allProperties);
+        var inspected = 0;
+
+        for (var i = 0;
+             i < keys.length &&
+             inspected < this.CLEANUP_MAX_INSPECTED_PER_CLAIM &&
+             removed < this.CLEANUP_MAX_PER_CLAIM;
+             i++) {
+          inspected++;
+          var candidateKey = keys[i];
+          if (candidateKey === key || candidateKey.indexOf('msg_') !== 0) {
+            continue;
+          }
+
+          var candidateRaw = allProperties[candidateKey];
+          if (typeof candidateRaw !== 'string' || !/^\d+$/.test(candidateRaw)) {
+            continue;
+          }
+
+          var candidateMs = Number(candidateRaw);
+          if (!isFinite(candidateMs) || Math.floor(candidateMs) !== candidateMs || candidateMs > nowMs) {
+            continue;
+          }
+
+          if (nowMs - candidateMs >= duplicateWindowMs) {
+            PropertiesService.getScriptProperties().deleteProperty(candidateKey);
+            removed++;
+          }
+        }
+      } catch (e) {
+        // Best-effort housekeeping must not turn an otherwise valid claim into failure.
+      }
+
       // ── establish ownership ──
       try {
         var props = PropertiesService.getScriptProperties();
@@ -77,7 +122,7 @@ const ProcessedMessagesRepository = {
       }
 
       return Result.ok({ status: 'ACQUIRED' });
-    });
+    }.bind(this));
   },
 
   /**
