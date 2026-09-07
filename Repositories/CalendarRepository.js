@@ -24,6 +24,20 @@ const CalendarRepository = {
     }
   },
 
+  /**
+   * Resolves Calendar Add-on event.id into the canonical iCalUID representation
+   * already stored in Availability.calendar_event_id.
+   */
+  resolveAppointmentEventIdentity(eventId, calendarId) {
+    try {
+      return Result.ok(
+        GoogleCalendar.resolveAppointmentEventIdentity(eventId, calendarId)
+      );
+    } catch (e) {
+      return Result.fail('CALENDAR_EVENT_IDENTITY_RESOLUTION_FAILED', e.message, e.stack);
+    }
+  },
+
   inspectLifecycleAppointmentEvent(eventId, calendarId, expectedOperationId) {
     try {
       return Result.ok(
