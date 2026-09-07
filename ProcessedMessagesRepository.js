@@ -24,9 +24,10 @@
 const ProcessedMessagesRepository = {
 
   // B2 storage hardening: housekeeping is intentionally small and deterministic.
-  // The PropertiesService API only exposes a full snapshot for key discovery,
-  // so the bound applies to inspection/deletion work performed by our loop.
+  // PropertiesService only exposes a full snapshot for key discovery; therefore
+  // we separately cap our in-memory inspection work and never sort the snapshot.
   CLEANUP_MAX_PER_CLAIM: 20,
+  CLEANUP_MAX_INSPECTED_PER_CLAIM: 100,
 
   /**
    * Atomic claim — عملية ذرية واحدة داخل Lock.
@@ -75,9 +76,15 @@ const ProcessedMessagesRepository = {
       try {
         var allProperties = PropertiesService.getScriptProperties().getProperties();
         var removed = 0;
-        var keys = Object.keys(allProperties).sort();
+        var keys = Object.keys(allProperties);
+        var inspected = 0;
 
-        for (var i = 0; i < keys.length && removed < this.CLEANUP_MAX_PER_CLAIM; i++) {
+        for (var i = 0;
+             i < keys.length &&
+             inspected < this.CLEANUP_MAX_INSPECTED_PER_CLAIM &&
+             removed < this.CLEANUP_MAX_PER_CLAIM;
+             i++) {
+          inspected++;
           var candidateKey = keys[i];
           if (candidateKey === key || candidateKey.indexOf('msg_') !== 0) {
             continue;
