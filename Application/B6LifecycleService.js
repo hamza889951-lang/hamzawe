@@ -326,6 +326,9 @@ const B6LifecycleService = {
       {}
     );
     if (!released.ok) {
+      // Properties ownership is already absent. The prior RELEASE_PENDING
+      // journal entry intentionally blocks a later normal admission until a
+      // trusted recovery inspection records the missing release evidence.
       B6RecoveryAuditRepository.append({
         recovery_case_id: ctx.recoveryCaseId,
         operation_id: ctx.operationId,
@@ -506,6 +509,9 @@ const B6LifecycleService = {
       return this._closeReleasePending(lifecycle, authorizationContext, recoveryDecision, recoveryOwnerToken);
     }
 
+    // Recovery resolution may start only from an unresolved lifecycle record.
+    // A recovery case ID is an identifier, not permission to resurrect an
+    // ACTIVE, terminal, rejected, or already-released operation.
     if (lifecycle.lifecycle_state !== this.LIFECYCLE_STATES.UNRESOLVED &&
       lifecycle.lifecycle_state !== this.LIFECYCLE_STATES.RECOVERY_REQUIRED) {
       return Result.fail(
@@ -881,6 +887,9 @@ const B6LifecycleService = {
       );
     }
 
+    // Closure approval/audit is durable before RELEASED becomes the latest
+    // lifecycle state. If this write is ambiguous, RELEASE_PENDING remains the
+    // latest journal fence and normal admission stays blocked.
     var closureAudit = B6RecoveryAuditRepository.append({
       recovery_case_id: lifecycle.recovery_case_id || '',
       operation_id: lifecycle.operation_id,
@@ -945,6 +954,9 @@ const B6LifecycleService = {
       );
     }
 
+    // This post-release audit is additive. The pre-release closure approval
+    // above is the durable admission gate; a failure here must not rewrite an
+    // already-proven RELEASED lifecycle state.
     var finalAudit = B6RecoveryAuditRepository.append({
       recovery_case_id: lifecycle.recovery_case_id || '',
       operation_id: lifecycle.operation_id,
