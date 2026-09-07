@@ -9,13 +9,6 @@ const GoogleCalendar = {
 
   B6_OPERATION_TAG_KEY: 'operation_id',
 
-  // Absence verification is deliberately bounded and fail-closed. The first
-  // read is immediate; retries are only used when the event is still observed.
-  // This avoids treating a transient read-after-write observation as proof
-  // that deleteEvent() failed, without ever treating an unproven delete as
-  // successful.
-  B6_DELETE_VERIFICATION_DELAYS_MS: [0, 250, 500, 1000, 2000],
-
   _getCalendar(calendarId) {
     const calendar = calendarId
       ? CalendarApp.getCalendarById(calendarId)
@@ -108,40 +101,37 @@ const GoogleCalendar = {
     };
   },
 
-  _verifyLifecycleEventAbsence(eventId, calendarId) {
-    for (let i = 0; i < this.B6_DELETE_VERIFICATION_DELAYS_MS.length; i++) {
-      const delayMs = this.B6_DELETE_VERIFICATION_DELAYS_MS[i];
-      if (delayMs > 0) {
-        if (typeof Utilities === 'undefined' || typeof Utilities.sleep !== 'function') {
-          throw new Error('CALENDAR_DELETE_VERIFICATION_SLEEP_UNAVAILABLE');
-        }
-        Utilities.sleep(delayMs);
-      }
-
-      // Resolve a fresh Calendar context for every observation. Do not reuse
-      // the pre-delete Calendar/Event object because a stale read must not be
-      // allowed to become the terminal deletion verdict.
-      const calendar = this._getCalendar(calendarId);
-      const event = calendar.getEventById(eventId);
-      if (!event) {
-        return {
-          absenceObserved: true,
-          verificationAttempts: i + 1
-        };
-      }
+  /**
+   * Authoritative post-delete verification for B6 lifecycle events.
+   *
+   * CalendarEvent.getId() is an iCalUID, not the Calendar API event.id. The
+   * Calendar API explicitly supports resolving an iCalUID via events.list.
+   * Therefore we keep the existing CalendarApp mutation/correlation path,
+   * then use the Calendar API as the independent server-side absence proof.
+   */
+  _verifyLifecycleEventAbsenceAuthoritatively(eventId, calendarId) {
+    if (typeof Calendar === 'undefined' || !Calendar.Events ||
+      typeof Calendar.Events.list !== 'function') {
+      throw new Error('CALENDAR_ADVANCED_SERVICE_UNAVAILABLE');
     }
 
+    const response = Calendar.Events.list(calendarId, {
+      iCalUID: eventId,
+      showDeleted: false,
+      maxResults: 50
+    });
+    const items = response && Array.isArray(response.items) ? response.items : [];
+
     return {
-      absenceObserved: false,
-      verificationAttempts: this.B6_DELETE_VERIFICATION_DELAYS_MS.length
+      absenceObserved: items.length === 0,
+      matchingEventCount: items.length
     };
   },
 
   /**
-   * Deletes a known event and verifies absence using bounded fresh-context
-   * observations. A delete is considered proven only after an absence is
-   * observed. Exhausting verification remains DELETE_NOT_PROVEN so B6 can
-   * enter recovery rather than silently releasing an unresolved appointment.
+   * Deletes a known event using the established CalendarApp mutation, then
+   * proves absence through the Calendar API. This deliberately does not treat
+   * the CalendarApp getEventById() observation as authoritative after delete.
    */
   deleteLifecycleEvent(eventId, calendarId, expectedOperationId) {
     const before = this.inspectLifecycleEvent(eventId, calendarId, expectedOperationId);
@@ -171,7 +161,11 @@ const GoogleCalendar = {
     }
 
     event.deleteEvent();
-    const verification = this._verifyLifecycleEventAbsence(eventId, resolvedCalendarId);
+
+    const verification = this._verifyLifecycleEventAbsenceAuthoritatively(
+      eventId,
+      resolvedCalendarId
+    );
     if (!verification.absenceObserved) {
       return {
         status: 'DELETE_NOT_PROVEN',
@@ -179,7 +173,8 @@ const GoogleCalendar = {
         calendarId: resolvedCalendarId,
         deleteConfirmed: true,
         absenceObserved: false,
-        verificationAttempts: verification.verificationAttempts
+        matchingEventCount: verification.matchingEventCount,
+        verificationAttempts: 1
       };
     }
 
@@ -189,7 +184,8 @@ const GoogleCalendar = {
       calendarId: resolvedCalendarId,
       deleteConfirmed: true,
       absenceObserved: true,
-      verificationAttempts: verification.verificationAttempts
+      matchingEventCount: verification.matchingEventCount,
+      verificationAttempts: 1
     };
   },
 
