@@ -29,6 +29,7 @@ jobs:
           node --check tests/HardeningCalendarDeleteVerification.test.js
           node --check tests/HardeningB6.test.js
           node --check tests/HardeningB6TerminalProof.test.js
+          node --check tests/HardeningM0CriticalCoverage.test.js
 
       - name: Targeted Calendar verification test
         shell: bash
@@ -41,6 +42,12 @@ jobs:
         run: |
           set -euo pipefail
           node tests/HardeningB6TerminalProof.test.js
+
+      - name: Targeted M0 critical coverage test
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tests/HardeningM0CriticalCoverage.test.js
 
       - name: Full hardening regression
         shell: bash
