@@ -12,6 +12,8 @@ on:
 jobs:
   hardening:
     runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Baghdad
     steps:
       - name: Checkout
         uses: actions/checkout@v4
