@@ -160,7 +160,7 @@ const CalendarRsvpAttendanceService = {
   _checkpointKey(event) { return typeof event.iCalUID === 'string' && event.iCalUID.trim() ? event.iCalUID.trim() : ''; },
   _normalizeEmail(email) { return typeof email === 'string' ? email.trim().toLowerCase() : ''; },
   _executionPrincipal() { try { return Session.getEffectiveUser().getEmail() || ''; } catch (e) { return ''; } },
-  _nowIso() { return new Date().toISOString(); },
+  _nowIso() { return Clock.now().toISOString(); },
   handleEventUpdated() {
     const result = this.syncNow();
     if (!result.ok) {
