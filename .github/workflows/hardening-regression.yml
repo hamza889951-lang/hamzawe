@@ -27,6 +27,7 @@ jobs:
           node --check Infrastructure/GoogleCalendar.js
           node --check Infrastructure/CalendarRsvpTrigger.js
           node --check Repositories/CalendarRsvpConfigRepository.js
+          node --check Repositories/CalendarRsvpCheckpointRepository.js
           node --check Repositories/CalendarRsvpSyncRepository.js
           node --check Application/CalendarRsvpAttendanceService.js
           node --check CalendarRsvpEntry.js
