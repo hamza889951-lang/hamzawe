@@ -34,14 +34,19 @@ function loadInto(sandbox, rel, name) {
 }
 
 function formatInTimeZone(date, timeZone, fmt) {
-  if (!(date instanceof Date)) return String(date);
+  // Dates created inside vm.createContext are valid Apps Script-like Date
+  // values, but they are not instanceof the host realm's Date constructor.
+  // Use the stable Date API instead of realm identity so the test exercises
+  // the real production flow rather than a VM implementation detail.
+  if (!date || typeof date.getTime !== 'function' || isNaN(date.getTime())) return String(date);
+  const instant = new Date(date.getTime());
   if (fmt === 'HH:mm') {
     const parts = new Intl.DateTimeFormat('en-GB', {
       timeZone: timeZone,
       hour12: false,
       hour: '2-digit',
       minute: '2-digit'
-    }).formatToParts(date).reduce(function(acc, part) {
+    }).formatToParts(instant).reduce(function(acc, part) {
       acc[part.type] = part.value;
       return acc;
     }, {});
@@ -53,13 +58,13 @@ function formatInTimeZone(date, timeZone, fmt) {
       year: 'numeric',
       month: '2-digit',
       day: '2-digit'
-    }).formatToParts(date).reduce(function(acc, part) {
+    }).formatToParts(instant).reduce(function(acc, part) {
       acc[part.type] = part.value;
       return acc;
     }, {});
     return parts.year + '-' + parts.month + '-' + parts.day;
   }
-  return date.toISOString();
+  return instant.toISOString();
 }
 
 function createBaseSandbox(settingsOverride) {
