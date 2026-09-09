@@ -112,24 +112,34 @@ const CalendarRsvpConfigRepository = {
     try {
       this._props().setProperty(this._checkpointKey(iCalUID), JSON.stringify(checkpoint || {}));
       return Result.ok({ saved: true, iCalUID: String(iCalUID).trim() });
-    } catch (e) { return Result.fail('RSVP_CHECKPOINT_WRITE_FAILED', e.message, e.stack, { iCalUID }); }
+    } catch (e) { return Result.fail('RSVP_CHECKPOINT_WRITE_FAILED', e.message, { iCalUID }); }
+  },
+
+  clearCheckpoints() {
+    try {
+      const props = this._props();
+      const all = props.getProperties();
+      const keys = Object.keys(all);
+      let removed = 0;
+      for (let i = 0; i < keys.length; i++) {
+        if (keys[i].indexOf(this.KEYS.CHECKPOINT_PREFIX) === 0) {
+          props.deleteProperty(keys[i]);
+          removed++;
+        }
+      }
+      return Result.ok({ removed });
+    } catch (e) { return Result.fail('RSVP_CHECKPOINT_WRITE_FAILED', e.message, e.stack); }
   },
 
   saveState(syncToken, initialized, config) {
     try {
       const props = this._props();
-      const entries = {
-        INITIALIZED: initialized ? 'true' : 'false',
-        BOUND_CALENDAR_ID: config.calendarId,
-        BOUND_SECRETARY_EMAIL: config.secretaryEmail
-      };
-      if (syncToken) entries[this.KEYS.SYNC_TOKEN] = String(syncToken);
+      if (syncToken) props.setProperty(this.KEYS.SYNC_TOKEN, String(syncToken));
       else props.deleteProperty(this.KEYS.SYNC_TOKEN);
       props.setProperties({
-        [this.KEYS.INITIALIZED]: entries.INITIALIZED,
-        [this.KEYS.BOUND_CALENDAR_ID]: entries.BOUND_CALENDAR_ID,
-        [this.KEYS.BOUND_SECRETARY_EMAIL]: entries.BOUND_SECRETARY_EMAIL,
-        ...(syncToken ? { [this.KEYS.SYNC_TOKEN]: entries[this.KEYS.SYNC_TOKEN] } : {})
+        [this.KEYS.INITIALIZED]: initialized ? 'true' : 'false',
+        [this.KEYS.BOUND_CALENDAR_ID]: config.calendarId,
+        [this.KEYS.BOUND_SECRETARY_EMAIL]: config.secretaryEmail
       }, false);
       return Result.ok({ saved: true });
     } catch (e) { return Result.fail('RSVP_CHECKPOINT_WRITE_FAILED', e.message, e.stack); }
