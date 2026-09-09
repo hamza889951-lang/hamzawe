@@ -12,82 +12,42 @@ const CalendarRepository = {
       if (typeof CalendarRsvpConfigRepository !== 'undefined') {
         const config = CalendarRsvpConfigRepository.getRuntimeConfig();
         if (config && config.ok) {
-          appointmentParams.calendarId = config.data.calendarId;
-          appointmentParams.secretaryEmail = config.data.secretaryEmail;
+          const active = CalendarRsvpConfigRepository.getActive();
+          if (active && active.ok && active.data) {
+            appointmentParams.calendarId = config.data.calendarId;
+            appointmentParams.secretaryEmail = config.data.secretaryEmail;
+          }
         }
       }
       const eventId = GoogleCalendar.createEvent(appointmentParams);
       return Result.ok({ eventId: eventId });
-    } catch (e) {
-      return Result.fail('CALENDAR_CREATE_FAILED', e.message, e.stack);
-    }
+    } catch (e) { return Result.fail('CALENDAR_CREATE_FAILED', e.message, e.stack); }
   },
-
   createLifecycleAppointmentEvent(params) {
-    try {
-      const event = GoogleCalendar.createLifecycleEvent(params);
-      return Result.ok(event);
-    } catch (e) {
-      return Result.fail('CALENDAR_CREATE_OUTCOME_UNKNOWN', e.message, e.stack);
-    }
+    try { return Result.ok(GoogleCalendar.createLifecycleEvent(params)); }
+    catch (e) { return Result.fail('CALENDAR_CREATE_OUTCOME_UNKNOWN', e.message, e.stack); }
   },
-
   resolveAppointmentEventIdentity(eventId, calendarId) {
-    try {
-      return Result.ok(
-        GoogleCalendar.resolveAppointmentEventIdentity(eventId, calendarId)
-      );
-    } catch (e) {
-      return Result.fail('CALENDAR_EVENT_IDENTITY_RESOLUTION_FAILED', e.message, e.stack);
-    }
+    try { return Result.ok(GoogleCalendar.resolveAppointmentEventIdentity(eventId, calendarId)); }
+    catch (e) { return Result.fail('CALENDAR_EVENT_IDENTITY_RESOLUTION_FAILED', e.message, e.stack); }
   },
-
   inspectLifecycleAppointmentEvent(eventId, calendarId, expectedOperationId) {
-    try {
-      return Result.ok(
-        GoogleCalendar.inspectLifecycleEvent(eventId, calendarId, expectedOperationId)
-      );
-    } catch (e) {
-      return Result.fail('CALENDAR_LOOKUP_FAILED', e.message, e.stack);
-    }
+    try { return Result.ok(GoogleCalendar.inspectLifecycleEvent(eventId, calendarId, expectedOperationId)); }
+    catch (e) { return Result.fail('CALENDAR_LOOKUP_FAILED', e.message, e.stack); }
   },
-
   deleteLifecycleAppointmentEvent(eventId, calendarId, expectedOperationId) {
     try {
-      const result = GoogleCalendar.deleteLifecycleEvent(
-        eventId,
-        calendarId,
-        expectedOperationId
-      );
-      if (result.status !== 'ABSENCE_OBSERVED') {
-        return Result.fail('CALENDAR_ABSENCE_NOT_PROVEN', result.status, result);
-      }
+      const result = GoogleCalendar.deleteLifecycleEvent(eventId, calendarId, expectedOperationId);
+      if (result.status !== 'ABSENCE_OBSERVED') return Result.fail('CALENDAR_ABSENCE_NOT_PROVEN', result.status, result);
       return Result.ok(result);
-    } catch (e) {
-      return Result.fail('CALENDAR_DELETE_OUTCOME_UNKNOWN', e.message, e.stack);
-    }
+    } catch (e) { return Result.fail('CALENDAR_DELETE_OUTCOME_UNKNOWN', e.message, e.stack); }
   },
-
   findLifecycleEventsByOperationId(operationId, startTime, endTime, calendarId) {
-    try {
-      const result = GoogleCalendar.findLifecycleEventsByOperationId(
-        operationId,
-        startTime,
-        endTime,
-        calendarId
-      );
-      return Result.ok(result);
-    } catch (e) {
-      return Result.fail('CALENDAR_CORRELATION_LOOKUP_FAILED', e.message, e.stack);
-    }
+    try { return Result.ok(GoogleCalendar.findLifecycleEventsByOperationId(operationId, startTime, endTime, calendarId)); }
+    catch (e) { return Result.fail('CALENDAR_CORRELATION_LOOKUP_FAILED', e.message, e.stack); }
   },
-
   deleteAppointmentEvent(eventId, calendarId) {
-    try {
-      const deleted = GoogleCalendar.deleteEvent(eventId, calendarId);
-      return Result.ok({ deleted: deleted });
-    } catch (e) {
-      return Result.fail('CALENDAR_DELETE_FAILED', e.message, e.stack);
-    }
+    try { return Result.ok({ deleted: GoogleCalendar.deleteEvent(eventId, calendarId) }); }
+    catch (e) { return Result.fail('CALENDAR_DELETE_FAILED', e.message, e.stack); }
   }
 };
