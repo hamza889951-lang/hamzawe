@@ -11,11 +11,7 @@ const CalendarRsvpSyncRepository = {
       if (typeof Calendar === 'undefined' || !Calendar.Events || typeof Calendar.Events.list !== 'function') {
         return Result.fail('CALENDAR_ADVANCED_SERVICE_UNAVAILABLE', 'Calendar Advanced Service is unavailable');
       }
-      const params = {
-        showDeleted: true,
-        singleEvents: false,
-        maxResults: this.PAGE_SIZE
-      };
+      const params = { showDeleted: true, singleEvents: false, maxResults: this.PAGE_SIZE };
       if (syncToken) params.syncToken = syncToken;
       if (pageToken) params.pageToken = pageToken;
       const response = Calendar.Events.list(calendarId, params) || {};
@@ -32,6 +28,7 @@ const CalendarRsvpSyncRepository = {
   },
 
   getEvent(calendarId, eventId) {
+    if (!calendarId || !eventId) return Result.fail('RSVP_EVENT_CONTEXT_REQUIRED', 'calendarId and eventId are required');
     try {
       if (typeof Calendar === 'undefined' || !Calendar.Events || typeof Calendar.Events.get !== 'function') {
         return Result.fail('CALENDAR_ADVANCED_SERVICE_UNAVAILABLE', 'Calendar Advanced Service is unavailable');
@@ -39,7 +36,7 @@ const CalendarRsvpSyncRepository = {
       const event = Calendar.Events.get(calendarId, eventId);
       return Result.ok(event || null);
     } catch (e) {
-      return Result.fail('RSVP_EVENT_GET_FAILED', e.message, e.stack);
+      return Result.fail('RSVP_EVENT_GET_FAILED', e.message, e && e.stack);
     }
   },
 
