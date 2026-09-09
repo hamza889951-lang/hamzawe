@@ -8,7 +8,13 @@
 const CalendarRepository = {
   createAppointmentEvent(params) {
     try {
-      const eventId = GoogleCalendar.createEvent(params);
+      const config = CalendarRsvpConfigRepository.getRuntimeConfig();
+      const appointmentParams = Object.assign({}, params || {});
+      if (config.ok) {
+        appointmentParams.calendarId = config.data.calendarId;
+        appointmentParams.secretaryEmail = config.data.secretaryEmail;
+      }
+      const eventId = GoogleCalendar.createEvent(appointmentParams);
       return Result.ok({ eventId: eventId });
     } catch (e) {
       return Result.fail('CALENDAR_CREATE_FAILED', e.message, e.stack);
@@ -24,10 +30,6 @@ const CalendarRepository = {
     }
   },
 
-  /**
-   * Resolves Calendar Add-on event.id into the canonical iCalUID representation
-   * already stored in Availability.calendar_event_id.
-   */
   resolveAppointmentEventIdentity(eventId, calendarId) {
     try {
       return Result.ok(

@@ -23,8 +23,9 @@ const GoogleCalendar = {
   },
 
   /**
-   * Existing generic appointment creation path. It intentionally returns only
-   * the event ID so BookingService's established contract remains unchanged.
+   * Existing generic appointment creation path. When the RSVP path is
+   * activated, CalendarRepository supplies the explicit HAMZAWE calendar ID
+   * and secretary attendee email. Outside activation, legacy behavior remains.
    */
   createEvent(params) {
     const calendar = this._getCalendar(params.calendarId);
@@ -34,13 +35,10 @@ const GoogleCalendar = {
       params.endTime,
       { description: params.description || '' }
     );
+    if (params.secretaryEmail) event.addGuest(params.secretaryEmail);
     return event.getId();
   },
 
-  /**
-   * B6 lifecycle event creation. The operation ID is stored as Calendar custom
-   * metadata before the event is reported as created to the caller.
-   */
   createLifecycleEvent(params) {
     if (!params || !params.operationId) {
       throw new Error('B6_OPERATION_ID_REQUIRED');
@@ -63,15 +61,6 @@ const GoogleCalendar = {
     };
   },
 
-  /**
-   * Resolves a Calendar Add-on Calendar API event.id to the existing HAMZAWE
-   * canonical Calendar identity (iCalUID).
-   *
-   * This is intentionally inside the Calendar infrastructure boundary: the
-   * Add-on provides Calendar API event.id, while existing HAMZAWE appointment
-   * rows retain the Apps Script CalendarEvent/iCalUID representation returned
-   * by event.getId(). No suffix manipulation is used.
-   */
   resolveAppointmentEventIdentity(eventId, calendarId) {
     if (typeof eventId !== 'string' || eventId.trim() === '') {
       throw new Error('CALENDAR_EVENT_ID_REQUIRED');
@@ -105,10 +94,6 @@ const GoogleCalendar = {
     };
   },
 
-  /**
-   * Inspects a known event ID in a specific Calendar context. NOT_FOUND is an
-   * observation only; callers must not treat it as terminal absence by itself.
-   */
   inspectLifecycleEvent(eventId, calendarId, expectedOperationId) {
     const calendar = this._getCalendar(calendarId);
     const resolvedCalendarId = this._calendarId(calendar, calendarId);
@@ -143,14 +128,6 @@ const GoogleCalendar = {
     };
   },
 
-  /**
-   * Authoritative post-delete verification for B6 lifecycle events.
-   *
-   * CalendarEvent.getId() is an iCalUID, not the Calendar API event.id. The
-   * Calendar API explicitly supports resolving an iCalUID via events.list.
-   * Therefore we keep the existing CalendarApp mutation/correlation path,
-   * then use the Calendar API as the independent server-side absence proof.
-   */
   _verifyLifecycleEventAbsenceAuthoritatively(eventId, calendarId) {
     if (typeof Calendar === 'undefined' || !Calendar.Events ||
       typeof Calendar.Events.list !== 'function') {
@@ -170,11 +147,6 @@ const GoogleCalendar = {
     };
   },
 
-  /**
-   * Deletes a known event using the established CalendarApp mutation, then
-   * proves absence through the Calendar API. This deliberately does not treat
-   * the CalendarApp getEventById() observation as authoritative after delete.
-   */
   deleteLifecycleEvent(eventId, calendarId, expectedOperationId) {
     const before = this.inspectLifecycleEvent(eventId, calendarId, expectedOperationId);
     if (before.status !== 'MATCH') {
@@ -231,11 +203,6 @@ const GoogleCalendar = {
     };
   },
 
-  /**
-   * Finds events carrying an exact B6 operation tag in an explicitly supplied
-   * Calendar/time context. The caller interprets 0/1/many results under the
-   * recovery contract.
-   */
   findLifecycleEventsByOperationId(operationId, startTime, endTime, calendarId) {
     if (!operationId) throw new Error('B6_OPERATION_ID_REQUIRED');
     if (!startTime || !endTime) throw new Error('B6_CALENDAR_WINDOW_REQUIRED');
@@ -263,7 +230,6 @@ const GoogleCalendar = {
     };
   },
 
-  /** @returns {boolean} true if deleted, false if not found */
   deleteEvent(eventId, calendarId) {
     const calendar = this._getCalendar(calendarId);
     const event = calendar.getEventById(eventId);
