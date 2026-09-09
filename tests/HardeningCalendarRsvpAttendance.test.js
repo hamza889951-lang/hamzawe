@@ -4,6 +4,7 @@ const path = require('path');
 const vm = require('vm');
 const ROOT = path.resolve(__dirname, '..');
 const GLOBALS = {
+  'Clock.js': 'Clock',
   'CalendarRsvpConfigRepository.js': 'CalendarRsvpConfigRepository',
   'CalendarRsvpCheckpointRepository.js': 'CalendarRsvpCheckpointRepository',
   'CalendarRsvpSyncRepository.js': 'CalendarRsvpSyncRepository',
@@ -54,7 +55,7 @@ function makeHarness() {
   vm.createContext(sandbox); return sandbox;
 }
 function load(s, p) { const source = fs.readFileSync(path.join(ROOT, p), 'utf8'); const name = GLOBALS[path.basename(p)]; vm.runInContext(source + (name ? '\nthis.' + name + ' = ' + name + ';' : ''), s, { filename: p }); }
-function loadRsvp(s) { load(s, 'Repositories/CalendarRsvpConfigRepository.js'); load(s, 'Repositories/CalendarRsvpCheckpointRepository.js'); load(s, 'Repositories/CalendarRsvpSyncRepository.js'); load(s, 'Infrastructure/CalendarRsvpTrigger.js'); load(s, 'Application/CalendarRsvpAttendanceService.js'); }
+function loadRsvp(s) { load(s, 'Clock.js'); s.Clock.now = () => new Date('2026-09-09T18:00:00.000Z'); load(s, 'Repositories/CalendarRsvpConfigRepository.js'); load(s, 'Repositories/CalendarRsvpCheckpointRepository.js'); load(s, 'Repositories/CalendarRsvpSyncRepository.js'); load(s, 'Infrastructure/CalendarRsvpTrigger.js'); load(s, 'Application/CalendarRsvpAttendanceService.js'); }
 function event(responseStatus, extra) { return Object.assign({ id: 'evt-1', iCalUID: 'uid-1', status: 'confirmed', attendees: [{ email: 'Secretary@Example.com ', responseStatus }] }, extra || {}); }
 function availability(uid, slotId) { return { calendar_event_id: uid, slot_id: slotId || 'slot-1', status: 'CONFIRMED' }; }
 function configure(s) { s.__props.HAMZAWE_CALENDAR_ID = 'clinic-calendar@example.com'; s.__props.ATTENDANCE_SECRETARY_EMAIL = 'Secretary@Example.com'; s.__props.ATTENDANCE_OPERATOR_EMAIL = 'secretary@example.com'; s.__props.HAMZAWE_RSVP_INITIALIZED = 'true'; s.__props.HAMZAWE_RSVP_ACTIVE = 'true'; s.__props.HAMZAWE_RSVP_BOUND_CALENDAR_ID = 'clinic-calendar@example.com'; s.__props.HAMZAWE_RSVP_BOUND_SECRETARY_EMAIL = 'secretary@example.com'; s.__props.HAMZAWE_RSVP_SYNC_TOKEN = 'sync-1'; s.__setAvailability([availability('uid-1')]); }
