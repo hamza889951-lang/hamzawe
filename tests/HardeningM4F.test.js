@@ -1124,7 +1124,8 @@ const CHANGED_FILES = [
   'tests/HardeningCalendarRsvpTriggerSafety.test.js',
   'tests/HardeningLiveConfirmation.test.js',
   'tests/HardeningLiveReservationCanonicalTime.test.js',
-  'tests/HardeningPatientPresentation.test.js'
+  'tests/HardeningPatientPresentation.test.js',
+  'tests/HardeningM4F.test.js'
 ];
 
 test('M4F-48 — full hardening regression: all hardening suites must pass', function() {
