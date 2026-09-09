@@ -53,6 +53,7 @@ const GoogleCalendar = {
     );
 
     event.setTag(this.B6_OPERATION_TAG_KEY, params.operationId);
+    if (params.secretaryEmail) event.addGuest(params.secretaryEmail);
 
     return {
       eventId: event.getId(),
