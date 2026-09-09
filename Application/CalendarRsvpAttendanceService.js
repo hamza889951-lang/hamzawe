@@ -46,6 +46,7 @@ const CalendarRsvpAttendanceService = {
   _runSyncLocked(config, options) {
     const tokenResult = CalendarRsvpConfigRepository.getSyncToken(); if (!tokenResult.ok) return tokenResult;
     const checkpointResult = CalendarRsvpCheckpointRepository.readAll(); if (!checkpointResult.ok) return checkpointResult;
+    let existingCheckpoints = checkpointResult.data;
     let syncToken = options.baseline ? null : tokenResult.data;
     let restartedFrom410 = false;
     while (true) {
@@ -53,11 +54,13 @@ const CalendarRsvpAttendanceService = {
       if (!pageResult.ok) {
         if (pageResult.error && pageResult.error.code === 'RSVP_SYNC_TOKEN_INVALID' && syncToken && !restartedFrom410) {
           const clear = CalendarRsvpConfigRepository.clearSyncToken(); if (!clear.ok) return clear;
+          const clearCheckpoints = CalendarRsvpCheckpointRepository.clearAll(); if (!clearCheckpoints.ok) return clearCheckpoints;
+          existingCheckpoints = Object.create(null);
           syncToken = null; restartedFrom410 = true; continue;
         }
         return pageResult;
       }
-      const checkpoints = options.baseline || options.resetCheckpoints ? Object.create(null) : checkpointResult.data;
+      const checkpoints = options.baseline || options.resetCheckpoints ? Object.create(null) : existingCheckpoints;
       if (options.baseline || options.resetCheckpoints) {
         const clearCheckpoints = CalendarRsvpCheckpointRepository.clearAll(); if (!clearCheckpoints.ok) return clearCheckpoints;
       }
@@ -130,10 +133,7 @@ const CalendarRsvpAttendanceService = {
     return this._recordCheckpoint(key, { responseStatus: response, eventStatus: event.status || 'confirmed', outcome: mutation.data.alreadyApplied ? this.RECONCILIATION.ALREADY_RECONCILED : this.RECONCILIATION.APPLIED, updatedAt: this._nowIso(), decision }, checkpoints, dirty, { decisionCandidate: true, applied: !!mutation.data.applied });
   },
 
-  _recordCheckpoint(key, checkpoint, checkpoints, dirty, outcome) {
-    checkpoints[key] = checkpoint; dirty[key] = checkpoint;
-    return Result.ok(Object.assign({ skipped: false }, outcome || {}));
-  },
+  _recordCheckpoint(key, checkpoint, checkpoints, dirty, outcome) { checkpoints[key] = checkpoint; dirty[key] = checkpoint; return Result.ok(Object.assign({ skipped: false }, outcome || {})); },
 
   _findSecretaryAttendee(event, calendarId, secretaryEmail) {
     if (event.attendeesOmitted === true) {
