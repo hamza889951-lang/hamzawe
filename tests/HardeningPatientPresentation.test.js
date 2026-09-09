@@ -60,24 +60,39 @@ function loadChangeForPresentation(settings) {
 test('PP-01 — ChangeService contains no patient-facing slot-time fallback', function() {
   const src = source('Changeservice.js');
   assert.strictEqual(src.indexOf("'الساعة ' + DateUtils.formatTimeDisplay(commandResult.data.time)"), -1);
-  assert.strictEqual(src.indexOf("'الساعة ' + DateUtils.formatTimeDisplay(commandResult.data.time))"), -1);
+  assert.strictEqual(src.indexOf("'الساعة ' + DateUtils.formatTimeDisplay(commandResult.data.time)"), -1);
   assert.ok(src.indexOf('يبدأ دوام العيادة الساعة') !== -1);
 });
 
 test('PP-02 — Change pre-confirm reply is bus/date/work-start only', function() {
   const src = source('Changeservice.js');
-  assert.ok(src.indexOf("const preConfirmDisplay = 'بتاريخ ' + DateUtils.formatDateDisplay(commandResult.data.date)") !== -1);
-  assert.ok(src.indexOf("'الباص رقم: ' + commandResult.data.busNumber") !== -1);
-  assert.ok(src.indexOf("'\\nيبدأ دوام العيادة الساعة ' + commandResult.data.clinicWorkStartDisplay") !== -1);
-  assert.strictEqual(src.indexOf("'الساعة ' + DateUtils.formatTimeDisplay(commandResult.data.time)"), -1);
+  const marker = 'const preConfirmDisplay =';
+  const start = src.indexOf(marker);
+  const end = src.indexOf('\n\n    return Result.ok({', start);
+  assert.ok(start !== -1 && end > start, 'pre-confirm presentation block exists');
+  const block = src.slice(start, end);
+  assert.ok(block.indexOf('DateUtils.formatDateDisplay(commandResult.data.date)') !== -1,
+    'date is presented through DateUtils');
+  assert.ok(block.indexOf('commandResult.data.busNumber') !== -1,
+    'bus number is presented from the typed result');
+  assert.ok(block.indexOf('commandResult.data.clinicWorkStartDisplay') !== -1,
+    'clinic work-start is presented from the typed result');
+  assert.strictEqual(block.indexOf('commandResult.data.time'), -1,
+    'exact slot time is not presented to the patient');
 });
 
 test('PP-03 — Confirmed-change reply is bus/date/work-start only', function() {
   const src = source('Changeservice.js');
-  assert.ok(src.indexOf("const confirmedDisplay = 'بتاريخ ' + DateUtils.formatDateDisplay(commandResult.data.date)") !== -1);
-  assert.ok(src.indexOf("'\\nرقم الباص الجديد: ' + commandResult.data.busNumber") !== -1);
-  assert.ok(src.indexOf("'\\nيبدأ دوام العيادة الساعة ' + commandResult.data.clinicWorkStartDisplay") !== -1);
-  assert.strictEqual(src.indexOf("'الساعة ' + DateUtils.formatTimeDisplay(commandResult.data.time)"), -1);
+  const marker = 'const confirmedDisplay =';
+  const start = src.indexOf(marker);
+  const end = src.indexOf('\n\n    return Result.ok({', start);
+  assert.ok(start !== -1 && end > start, 'confirmed presentation block exists');
+  const block = src.slice(start, end);
+  assert.ok(block.indexOf('DateUtils.formatDateDisplay(commandResult.data.date)') !== -1);
+  assert.ok(block.indexOf('commandResult.data.busNumber') !== -1);
+  assert.ok(block.indexOf('commandResult.data.clinicWorkStartDisplay') !== -1);
+  assert.strictEqual(block.indexOf('commandResult.data.time'), -1,
+    'exact slot time is not presented to the patient');
 });
 
 test('PP-04 — Confirmed-change presentation failure enters unresolved before confirmation', function() {

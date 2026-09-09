@@ -111,6 +111,7 @@ assert.strictEqual(result.data.conversationState, 'WAITING_CONFIRMATION');
 assert.ok(result.data.reply.indexOf('رقم الباص: 1') !== -1);
 assert.ok(result.data.reply.indexOf('2026-09-06') !== -1);
 assert.ok(result.data.reply.indexOf('02:57') === -1);
-assert.ok(result.data.reply.indexOf('16:00') !== -1);
+assert.ok(result.data.reply.indexOf('يبدأ دوام العيادة الساعة 04:00 مساءً') !== -1);
+assert.strictEqual(result.data.reply.indexOf('16:00'), -1);
 
 console.log('Live reserve canonical-time regression: 1/1 PASS');

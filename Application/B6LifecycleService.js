@@ -326,9 +326,6 @@ const B6LifecycleService = {
       {}
     );
     if (!released.ok) {
-      // Properties ownership is already absent. The prior RELEASE_PENDING
-      // journal entry intentionally blocks a later normal admission until a
-      // trusted recovery inspection records the missing release evidence.
       B6RecoveryAuditRepository.append({
         recovery_case_id: ctx.recoveryCaseId,
         operation_id: ctx.operationId,
@@ -1124,6 +1121,7 @@ const B6LifecycleService = {
       if (details.oldCalendarEventId) oldCalendarEventId = details.oldCalendarEventId;
       if (details.deleteConfirmed && details.absenceObserved) {
         oldCalendarDeleteResult = {
+          status: 'ABSENCE_OBSERVED',
           deleteConfirmed: true,
           absenceObserved: true,
           calendarId: details.oldCalendarId || oldCalendarId,
@@ -1398,19 +1396,11 @@ const B6LifecycleService = {
   },
 
   _diagnostic: function(command, phone, slotId, details) {
-    try {
-      LogRepository.write({
-        timestamp: Clock.now(),
-        command: command,
-        phone: phone || '',
-        slotId: slotId || '',
-        stage: 'END',
-        success: false,
-        durationMs: null,
-        error: this._details(details || {})
-      });
-    } catch (e) {
-      // SYSTEM_LOG is diagnostic only; it never authorizes release.
-    }
+    LogRepository.write({
+      action: command,
+      phone: phone,
+      slotId: slotId || '',
+      details: details || null
+    });
   }
 };

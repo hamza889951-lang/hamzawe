@@ -175,7 +175,10 @@ sandbox.DateUtils = {
   formatTimeDisplay: function(value) { return String(value); }
 };
 sandbox.LegacySlotTimeParser = { toComparableTime: function(value) { return typeof value === 'number' ? value : null; } };
-sandbox.SettingsRepository = { getSlotDurationMinutes: function() { return 30; } };
+sandbox.SettingsRepository = {
+  getSlotDurationMinutes: function() { return 30; },
+  getAll: function() { return { work_start: '08:00' }; }
+};
 sandbox.BusNumberCalculator = { fromSlot: function() { return sandbox.Result.ok({ busNumber: 1 }); } };
 sandbox.CommandExecutor = { execute: function(command, context, fn) { try { return fn(); } catch (e) { return sandbox.Result.fail('UNEXPECTED_ERROR', e.message, e.stack); } } };
 
