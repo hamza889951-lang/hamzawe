@@ -71,11 +71,16 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add tests/HardeningM4F.test.js
           git commit -m 'test: reconcile M4F governance gates with current CI'
-          git push origin "${GITHUB_REF_NAME}"
+          target_ref="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          case "$target_ref" in
+            refs/pull/*/merge|refs/pull/*/head|'')
+              echo "Unable to identify writable branch ref: $target_ref"
+              exit 1
+              ;;
+          esac
+          git push origin "HEAD:${target_ref}"
           git checkout HEAD^ -- .github/workflows/hardening-regression.yml
-          # Restore the workflow file in the same checkout before the current
-          # run ends only; the governance commit above intentionally contains
-          # only HardeningM4F.test.js. The restored file is not committed.
+          # The governance commit intentionally contains only HardeningM4F.test.js.
 
       - name: Syntax checks
         shell: bash
