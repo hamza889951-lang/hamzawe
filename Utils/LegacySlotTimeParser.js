@@ -50,17 +50,12 @@ const LegacySlotTimeParser = {
       const numeric = Number(value);
       const legacyParsed = LegacySlotTimeParser._parseYYYYMMDDHHmm(numeric);
       if (legacyParsed !== null) return legacyParsed;
-      return numeric; // ليست بصيغة YYYYMMDDHHmm — يُفترض Epoch جاهز كما كان سابقًا
+      return numeric;
     }
 
     return null;
   },
 
-  /**
-   * يفكّك رقمًا بصيغة YYYYMMDDHHmm (12 رقمًا بالضبط) إلى Epoch ms.
-   * @param {number} numeric
-   * @returns {number|null} null إن لم يطابق الصيغة أو كانت مكوناته غير صالحة
-   */
   _parseYYYYMMDDHHmm(numeric) {
     if (!Number.isFinite(numeric) || numeric < 0) return null;
 
@@ -82,17 +77,11 @@ const LegacySlotTimeParser = {
     return LegacySlotTimeParser._fromProjectLocalTime(year, month - 1, day, hour, minute);
   },
 
-  /**
-   * Converts a project-local wall-clock value into a real Epoch timestamp
-   * without inheriting the host/server timezone.
-   */
   _fromProjectLocalTime(year, monthIndex, day, hour, minute) {
     const baseUtcMs = Date.UTC(year, monthIndex, day, hour, minute, 0, 0);
 
     if (typeof Session === 'undefined' || typeof Session.getScriptTimeZone !== 'function' ||
       typeof Utilities === 'undefined' || typeof Utilities.formatDate !== 'function') {
-      // Backward-compatible fallback for non-Apps-Script harnesses that do
-      // not expose project timezone services.
       return new Date(year, monthIndex, day, hour, minute, 0, 0).getTime();
     }
 
@@ -101,22 +90,23 @@ const LegacySlotTimeParser = {
       return new Date(year, monthIndex, day, hour, minute, 0, 0).getTime();
     }
 
-    const rendered = Utilities.formatDate(
-      new Date(baseUtcMs),
-      timeZone,
-      'yyyy-MM-dd HH:mm'
-    );
-    const match = rendered.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$/);
-    if (!match) {
+    // Keep the format calls atomic and compatible with both Apps Script and
+    // the lightweight Node test harness: some harnesses expose only the
+    // individual date/time patterns even though Calendar semantics are local.
+    const renderedDate = Utilities.formatDate(new Date(baseUtcMs), timeZone, 'yyyy-MM-dd');
+    const renderedTime = Utilities.formatDate(new Date(baseUtcMs), timeZone, 'HH:mm');
+    const match = String(renderedDate) + ' ' + String(renderedTime);
+    if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(match)) {
       return new Date(year, monthIndex, day, hour, minute, 0, 0).getTime();
     }
 
+    const parts = match.split(/[\s:-]/).map(Number);
     const renderedAsUtcMs = Date.UTC(
-      Number(match[1]),
-      Number(match[2]) - 1,
-      Number(match[3]),
-      Number(match[4]),
-      Number(match[5]),
+      parts[0],
+      parts[1] - 1,
+      parts[2],
+      parts[3],
+      parts[4],
       0,
       0
     );
