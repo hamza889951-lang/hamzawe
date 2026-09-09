@@ -8,11 +8,13 @@
 const CalendarRepository = {
   createAppointmentEvent(params) {
     try {
-      const config = CalendarRsvpConfigRepository.getRuntimeConfig();
       const appointmentParams = Object.assign({}, params || {});
-      if (config.ok) {
-        appointmentParams.calendarId = config.data.calendarId;
-        appointmentParams.secretaryEmail = config.data.secretaryEmail;
+      if (typeof CalendarRsvpConfigRepository !== 'undefined') {
+        const config = CalendarRsvpConfigRepository.getRuntimeConfig();
+        if (config && config.ok) {
+          appointmentParams.calendarId = config.data.calendarId;
+          appointmentParams.secretaryEmail = config.data.secretaryEmail;
+        }
       }
       const eventId = GoogleCalendar.createEvent(appointmentParams);
       return Result.ok({ eventId: eventId });
