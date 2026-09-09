@@ -7,6 +7,8 @@
  * - تحويل قيمة sort_key بأي شكل صادر عن المولّد الحالي (نص رقمي بصيغة
  *   YYYYMMDDHHmm، أو Date، أو رقم Epoch) إلى Timestamp قابل للمقارنة
  *   فعليًا مع Clock.now().getTime() (Epoch ms حقيقي).
+ * - تفسير YYYYMMDDHHmm كوقت محلي لمنطقة المشروع التشغيلية، وليس كوقت
+ *   المنطقة الزمنية للمضيف الذي يشغّل الاختبار أو الكود.
  * لا يضمن:
  * - أي معنى دائم لشكل البيانات — يُحذف هذا الملف بالكامل فور إعادة
  *   بناء Generator ليتوافق مع النواة (ADR-016). ليس مرجعاً تصميمياً.
@@ -28,18 +30,13 @@
  *
  * الإصلاح: قبل افتراض أن أي رقم/نص رقمي هو Epoch جاهز، يُفحص أولاً هل
  * يطابق صيغة YYYYMMDDHHmm بالضبط (12 رقمًا، بمكونات تاريخ/وقت صالحة).
- * إن طابق، يُفكَّك فعليًا إلى سنة/شهر/يوم/ساعة/دقيقة ويُبنى منه Date
- * حقيقي عبر new Date(y, m-1, d, h, min) — نفس نمط DateUtils.fromTimestamp
- * (بناء Date من قيمة مُمرَّرة صراحة هو عملية حسابية بحتة، لا استحضارًا
- * للوقت الحالي من النظام، فلا يخالف CAS-008 بنفس المبرر الموثّق هناك).
- * إن لم يطابق (13 رقمًا مثلاً، أو خارج مدى سنوات معقول)، يُفترض أنه
- * Epoch حقيقي بالفعل كما كان سابقًا — لا تغيير على هذا المسار.
+ * إن طابق، يُفكَّك فعليًا إلى سنة/شهر/يوم/ساعة/دقيقة ويُبنى منه Epoch
+ * مع احترام timezone المشروع التشغيلي. إن لم يطابق (13 رقمًا مثلاً،
+ * أو خارج مدى سنوات معقول)، يُفترض أنه Epoch حقيقي بالفعل كما كان
+ * سابقًا — لا تغيير على هذا المسار.
  *
- * ⚠️ افتراض بيئي: new Date(y, m-1, d, h, min) يُفسَّر بالمنطقة الزمنية
- * المضبوطة لمشروع Apps Script نفسه (Project Settings ← Time zone).
- * يجب أن تكون مضبوطة على المنطقة الزمنية الفعلية للعيادة (Asia/Baghdad
- * حسب عمود timezone في ورقة Settings) لتطابق مقارنتها مع Clock.now()
- * بمعنى "الآن" الفعلي نفسه.
+ * ⚠️ افتراض بيئي: Session.getScriptTimeZone() يجب أن يطابق المنطقة
+ * الزمنية التشغيلية للمشروع. في HAMZAWE هي Asia/Baghdad.
  */
 const LegacySlotTimeParser = {
   /**
@@ -82,6 +79,48 @@ const LegacySlotTimeParser = {
     if (hour < 0 || hour > 23) return null;
     if (minute < 0 || minute > 59) return null;
 
-    return new Date(year, month - 1, day, hour, minute, 0, 0).getTime();
+    return LegacySlotTimeParser._fromProjectLocalTime(year, month - 1, day, hour, minute);
+  },
+
+  /**
+   * Converts a project-local wall-clock value into a real Epoch timestamp
+   * without inheriting the host/server timezone.
+   */
+  _fromProjectLocalTime(year, monthIndex, day, hour, minute) {
+    const baseUtcMs = Date.UTC(year, monthIndex, day, hour, minute, 0, 0);
+
+    if (typeof Session === 'undefined' || typeof Session.getScriptTimeZone !== 'function' ||
+      typeof Utilities === 'undefined' || typeof Utilities.formatDate !== 'function') {
+      // Backward-compatible fallback for non-Apps-Script harnesses that do
+      // not expose project timezone services.
+      return new Date(year, monthIndex, day, hour, minute, 0, 0).getTime();
+    }
+
+    const timeZone = Session.getScriptTimeZone();
+    if (!timeZone) {
+      return new Date(year, monthIndex, day, hour, minute, 0, 0).getTime();
+    }
+
+    const rendered = Utilities.formatDate(
+      new Date(baseUtcMs),
+      timeZone,
+      'yyyy-MM-dd HH:mm'
+    );
+    const match = rendered.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$/);
+    if (!match) {
+      return new Date(year, monthIndex, day, hour, minute, 0, 0).getTime();
+    }
+
+    const renderedAsUtcMs = Date.UTC(
+      Number(match[1]),
+      Number(match[2]) - 1,
+      Number(match[3]),
+      Number(match[4]),
+      Number(match[5]),
+      0,
+      0
+    );
+    const offsetMs = renderedAsUtcMs - baseUtcMs;
+    return baseUtcMs - offsetMs;
   }
 };
