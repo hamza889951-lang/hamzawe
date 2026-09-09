@@ -45,6 +45,7 @@ const CalendarRsvpAttendanceService = {
 
   _runSyncLocked(config, options) {
     const tokenResult = CalendarRsvpConfigRepository.getSyncToken(); if (!tokenResult.ok) return tokenResult;
+    const checkpointResult = CalendarRsvpCheckpointRepository.readAll(); if (!checkpointResult.ok) return checkpointResult;
     let syncToken = options.baseline ? null : tokenResult.data;
     let restartedFrom410 = false;
     while (true) {
@@ -56,11 +57,13 @@ const CalendarRsvpAttendanceService = {
         }
         return pageResult;
       }
+      const checkpoints = options.baseline || options.resetCheckpoints ? Object.create(null) : checkpointResult.data;
       if (options.baseline || options.resetCheckpoints) {
-        const clearCheckpoints = CalendarRsvpConfigRepository.clearCheckpoints(); if (!clearCheckpoints.ok) return clearCheckpoints;
+        const clearCheckpoints = CalendarRsvpCheckpointRepository.clearAll(); if (!clearCheckpoints.ok) return clearCheckpoints;
       }
       const correlation = this._buildCorrelationIndex(); if (!correlation.ok) return correlation;
-      const processed = this._processEvents(pageResult.data.items, config, !!options.baseline, correlation.data); if (!processed.ok) return processed;
+      const processed = this._processEvents(pageResult.data.items, config, !!options.baseline, correlation.data, checkpoints); if (!processed.ok) return processed;
+      const checkpointWrite = CalendarRsvpCheckpointRepository.appendAll(processed.data.dirtyCheckpoints); if (!checkpointWrite.ok) return checkpointWrite;
       const save = CalendarRsvpConfigRepository.saveState(pageResult.data.nextSyncToken, true, config); if (!save.ok) return save;
       return Result.ok({ mode: options.baseline ? 'BASELINE' : 'INCREMENTAL', processedEvents: processed.data.processedEvents, decisionCandidates: processed.data.decisionCandidates, applied: processed.data.applied, skipped: processed.data.skipped, semanticRejections: processed.data.semanticRejections, unmatchedEvents: processed.data.unmatchedEvents, ambiguousEvents: processed.data.ambiguousEvents, nextSyncToken: pageResult.data.nextSyncToken, restartedFrom410 });
     }
@@ -89,46 +92,47 @@ const CalendarRsvpAttendanceService = {
     }
   },
 
-  _processEvents(items, config, baseline, correlationIndex) {
+  _processEvents(items, config, baseline, correlationIndex, checkpoints) {
     let processedEvents = 0, decisionCandidates = 0, applied = 0, skipped = 0, semanticRejections = 0, unmatchedEvents = 0, ambiguousEvents = 0;
+    const dirty = Object.create(null);
     for (let i = 0; i < items.length; i++) {
       processedEvents++;
-      const outcome = this._processEvent(items[i] || {}, config, baseline, correlationIndex); if (!outcome.ok) return outcome;
+      const outcome = this._processEvent(items[i] || {}, config, baseline, correlationIndex, checkpoints, dirty); if (!outcome.ok) return outcome;
       decisionCandidates += outcome.data.decisionCandidate ? 1 : 0; applied += outcome.data.applied ? 1 : 0; skipped += outcome.data.skipped ? 1 : 0; semanticRejections += outcome.data.semanticRejection ? 1 : 0; unmatchedEvents += outcome.data.unmatched ? 1 : 0; ambiguousEvents += outcome.data.ambiguous ? 1 : 0;
     }
-    return Result.ok({ processedEvents, decisionCandidates, applied, skipped, semanticRejections, unmatchedEvents, ambiguousEvents });
+    return Result.ok({ processedEvents, decisionCandidates, applied, skipped, semanticRejections, unmatchedEvents, ambiguousEvents, dirtyCheckpoints: dirty });
   },
 
-  _processEvent(event, config, baseline, correlationIndex) {
+  _processEvent(event, config, baseline, correlationIndex, checkpoints, dirty) {
     const key = this._checkpointKey(event); if (!key) return Result.ok({ skipped: true });
     const matches = correlationIndex[key] || [];
     if (matches.length === 0) return Result.ok({ skipped: true, unmatched: true });
     if (matches.length > 1) return Result.ok({ skipped: true, ambiguous: true });
-    if (event.status === 'cancelled') return this._saveCheckpoint(key, { responseStatus: '', eventStatus: 'cancelled', outcome: this.RECONCILIATION.IGNORED_CANCELLED, updatedAt: this._nowIso() });
+    if (event.status === 'cancelled') return this._recordCheckpoint(key, { responseStatus: '', eventStatus: 'cancelled', outcome: this.RECONCILIATION.IGNORED_CANCELLED, updatedAt: this._nowIso() }, checkpoints, dirty);
 
     const attendeeResult = this._findSecretaryAttendee(event, config.calendarId, config.secretaryEmail); if (!attendeeResult.ok) return attendeeResult;
     if (attendeeResult.data.incomplete) return Result.ok({ skipped: true });
     const response = attendeeResult.data.responseStatus || 'none';
-    const previous = CalendarRsvpConfigRepository.getCheckpoint(key); if (!previous.ok) return previous;
-    if (previous.data && previous.data.responseStatus === response && previous.data.eventStatus !== 'cancelled') return Result.ok({ skipped: true });
-    if (baseline) return this._saveCheckpoint(key, { responseStatus: response, eventStatus: event.status || 'confirmed', outcome: this.RECONCILIATION.OBSERVED_NO_DECISION, updatedAt: this._nowIso() });
+    const previous = checkpoints[key];
+    if (previous && previous.responseStatus === response && previous.eventStatus !== 'cancelled') return Result.ok({ skipped: true });
+    if (baseline) return this._recordCheckpoint(key, { responseStatus: response, eventStatus: event.status || 'confirmed', outcome: this.RECONCILIATION.OBSERVED_NO_DECISION, updatedAt: this._nowIso() }, checkpoints, dirty);
 
     const decision = this._decisionForResponse(response);
-    if (!decision) return this._saveCheckpoint(key, { responseStatus: response, eventStatus: event.status || 'confirmed', outcome: this.RECONCILIATION.OBSERVED_NO_DECISION, updatedAt: this._nowIso() });
+    if (!decision) return this._recordCheckpoint(key, { responseStatus: response, eventStatus: event.status || 'confirmed', outcome: this.RECONCILIATION.OBSERVED_NO_DECISION, updatedAt: this._nowIso() }, checkpoints, dirty);
     const mutation = this._applyDecision(event, config, decision);
     if (!mutation.ok) {
       if (this._isSemanticRejection(mutation)) {
-        const checkpoint = this._saveCheckpoint(key, { responseStatus: response, eventStatus: event.status || 'confirmed', outcome: this.RECONCILIATION.SEMANTIC_REJECTION, reasonCode: mutation.error && mutation.error.code ? mutation.error.code : 'UNKNOWN', updatedAt: this._nowIso() });
+        const checkpoint = this._recordCheckpoint(key, { responseStatus: response, eventStatus: event.status || 'confirmed', outcome: this.RECONCILIATION.SEMANTIC_REJECTION, reasonCode: mutation.error && mutation.error.code ? mutation.error.code : 'UNKNOWN', updatedAt: this._nowIso() }, checkpoints, dirty);
         if (!checkpoint.ok) return checkpoint; return Result.ok({ decisionCandidate: true, semanticRejection: true });
       }
       return mutation;
     }
-    return this._saveCheckpoint(key, { responseStatus: response, eventStatus: event.status || 'confirmed', outcome: mutation.data.alreadyApplied ? this.RECONCILIATION.ALREADY_RECONCILED : this.RECONCILIATION.APPLIED, updatedAt: this._nowIso(), decision }, { decisionCandidate: true, applied: !!mutation.data.applied });
+    return this._recordCheckpoint(key, { responseStatus: response, eventStatus: event.status || 'confirmed', outcome: mutation.data.alreadyApplied ? this.RECONCILIATION.ALREADY_RECONCILED : this.RECONCILIATION.APPLIED, updatedAt: this._nowIso(), decision }, checkpoints, dirty, { decisionCandidate: true, applied: !!mutation.data.applied });
   },
 
-  _saveCheckpoint(key, checkpoint, outcome) {
-    const save = CalendarRsvpConfigRepository.saveCheckpoint(key, checkpoint); if (!save.ok) return save;
-    return Result.ok(Object.assign({ skipped: false }, outcome || { skipped: true }));
+  _recordCheckpoint(key, checkpoint, checkpoints, dirty, outcome) {
+    checkpoints[key] = checkpoint; dirty[key] = checkpoint;
+    return Result.ok(Object.assign({ skipped: false }, outcome || {}));
   },
 
   _findSecretaryAttendee(event, calendarId, secretaryEmail) {
@@ -157,7 +161,6 @@ const CalendarRsvpAttendanceService = {
   _normalizeEmail(email) { return typeof email === 'string' ? email.trim().toLowerCase() : ''; },
   _executionPrincipal() { try { return Session.getEffectiveUser().getEmail() || ''; } catch (e) { return ''; } },
   _nowIso() { return new Date().toISOString(); },
-
   handleEventUpdated() {
     const result = this.syncNow();
     if (!result.ok) {
