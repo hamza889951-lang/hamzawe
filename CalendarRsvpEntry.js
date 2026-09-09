@@ -10,6 +10,10 @@ function activateCalendarRsvpAttendance() {
   return CalendarRsvpAttendanceService.activate();
 }
 
-function onCalendarRsvpEventUpdated(e) {
-  return CalendarRsvpAttendanceService.handleEventUpdated(e);
+function deactivateCalendarRsvpAttendance() {
+  return CalendarRsvpAttendanceService.deactivate();
+}
+
+function onCalendarRsvpEventUpdated() {
+  return CalendarRsvpAttendanceService.handleEventUpdated();
 }
