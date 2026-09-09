@@ -11,12 +11,15 @@ const CalendarRepository = {
       const appointmentParams = Object.assign({}, params || {});
       if (typeof CalendarRsvpConfigRepository !== 'undefined') {
         const config = CalendarRsvpConfigRepository.getRuntimeConfig();
-        if (config && config.ok) {
-          const active = CalendarRsvpConfigRepository.getActive();
-          if (active && active.ok && active.data) {
-            appointmentParams.calendarId = config.data.calendarId;
-            appointmentParams.secretaryEmail = config.data.secretaryEmail;
-          }
+        const active = CalendarRsvpConfigRepository.getActive();
+        if (active && active.ok && active.data) {
+          if (!config.ok) return config;
+          const binding = CalendarRsvpConfigRepository.validateConfigBinding(config.data, true);
+          if (!binding.ok) return binding;
+          const trusted = CalendarRsvpConfigRepository.validateTrustedOperator(config.data);
+          if (!trusted.ok) return trusted;
+          appointmentParams.calendarId = config.data.calendarId;
+          appointmentParams.secretaryEmail = config.data.secretaryEmail;
         }
       }
       const eventId = GoogleCalendar.createEvent(appointmentParams);
