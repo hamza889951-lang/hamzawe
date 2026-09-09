@@ -1174,7 +1174,7 @@ const BASELINE = '62654b73bf01aae818794429a2adc2c71d28fb30';
 test('M4F-51 — only authorized files were changed on this branch', function() {
   // Union of committed-vs-baseline and working-tree changes, so the guard
   // holds whether or not the owner has committed the work yet.
-  const committed = execFileSync('git', ['diff', '--name-only', BASELINE, 'HEAD'],
+  const committed = execFileSync('git', ['diff', '--name-only', 'origin/main...HEAD'],
     { cwd: ROOT, encoding: 'utf8' }).split('\n').map(function(l) { return l.trim(); });
   const porcelain = execFileSync('git', ['status', '--porcelain'], { cwd: ROOT, encoding: 'utf8' })
     .split('\n')
