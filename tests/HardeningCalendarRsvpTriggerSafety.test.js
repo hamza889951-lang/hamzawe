@@ -7,6 +7,7 @@ const vm = require('vm');
 
 const ROOT = path.resolve(__dirname, '..');
 
+// Temporary non-functional branch touch for one-time governance execution.
 function load(sourceSandbox) {
   const source = fs.readFileSync(path.join(ROOT, 'Infrastructure/CalendarRsvpTrigger.js'), 'utf8');
   vm.runInContext(source + '\nthis.CalendarRsvpTrigger = CalendarRsvpTrigger;', sourceSandbox, { filename: 'Infrastructure/CalendarRsvpTrigger.js' });
