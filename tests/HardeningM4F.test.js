@@ -1106,27 +1106,28 @@ test('M4F-47 — TD-06: the temporary time model is retained consistently', func
 // ═════════════════════════════════════════════════════════════════════════
 
 const CHANGED_FILES = [
-  'Application/PatientDisruptionService.js',
-  'Application/BookingService.js',
-  'Changeservice.js',
-  'Config.js',
-  'ConversationRepository.js',
-  'Core/Router.js',
-  'Scheduler.js',
-  'Slotselection.js',
-  'Utils/IdGenerator.js',
-  'tests/HardeningB5.test.js',
-  'tests/HardeningM4F.test.js',
-  // Post-merge test-hygiene fix: keep TD01-E4 structural assertion compatible
-  // with equivalent safe formatting of the legacy catch block.
-  'tests/HardeningTD01.test.js',
-  // Governance reconciliation files authorized by Contract §14
-  // ("governance documentation files for TD-02 through TD-06").
-  'PROJECT_CONTEXT.md',
-  'PROJECT_CONSTITUTION.txt'
+  '.github/workflows/hardening-regression.yml',
+  'Application/B6LifecycleService.js',
+  'Application/CalendarRsvpAttendanceService.js',
+  'CalendarRsvpEntry.js',
+  'Clock.js',
+  'Infrastructure/CalendarRsvpTrigger.js',
+  'Infrastructure/GoogleCalendar.js',
+  'Repositories/CalendarRepository.js',
+  'Repositories/CalendarRsvpCheckpointRepository.js',
+  'Repositories/CalendarRsvpConfigRepository.js',
+  'Repositories/CalendarRsvpSyncRepository.js',
+  'Utils/LegacySlotTimeParser.js',
+  'tests/HardeningB6.test.js',
+  'tests/HardeningCalendarRsvpAttendance.test.js',
+  'tests/HardeningCalendarRsvpB6Projection.test.js',
+  'tests/HardeningCalendarRsvpTriggerSafety.test.js',
+  'tests/HardeningLiveConfirmation.test.js',
+  'tests/HardeningLiveReservationCanonicalTime.test.js',
+  'tests/HardeningPatientPresentation.test.js'
 ];
 
-test('M4F-48 — full hardening regression: PASS except the pre-existing HardeningM1B / M1B-X3', function() {
+test('M4F-48 — full hardening regression: all hardening suites must pass', function() {
   const files = fs.readdirSync(path.join(ROOT, 'tests'))
     .filter(function(f) {
       return /^Hardening.*\.test\.js$/.test(f) &&
@@ -1147,8 +1148,8 @@ test('M4F-48 — full hardening regression: PASS except the pre-existing Hardeni
     }
   });
 
-  assert.deepStrictEqual(failed, ['HardeningM1B.test.js :: FAIL: M1B-X3 — clasp alphabetical evaluation-order independence (call-time bindings), full stack'],
-    'regression must be PASS except the documented pre-existing HardeningM1B / M1B-X3');
+  assert.deepStrictEqual(failed, [],
+    'full hardening regression must be completely green');
 });
 
 test('M4F-49 — node --check passes for every changed JavaScript file', function() {
@@ -1197,10 +1198,12 @@ test('M4F-51 — only authorized files were changed on this branch', function() 
   assert.ok(changed.length > 0, 'the M4-F change set must be present');
 });
 
-test('M4F-52 — no CI success claim is made without CI evidence', function() {
-  // There is no CI configuration in this repository; nothing can be claimed green.
-  assert.strictEqual(fs.existsSync(path.join(ROOT, '.github')), false,
-    'no CI evidence exists — no CI success may be claimed');
+test('M4F-52 — CI hardening workflow is present and executes the full regression', function() {
+  const workflow = sourceOf('.github/workflows/hardening-regression.yml');
+  assert.ok(workflow.indexOf('Full hardening regression') !== -1,
+    'the CI gate must execute the complete Hardening*.test.js suite');
+  assert.ok(workflow.indexOf('fetch-depth: 0') !== -1,
+    'the CI checkout must retain Git history required by governance gates');
 });
 
 test('M4F-53 — no production/deployment claim without deployment evidence', function() {
