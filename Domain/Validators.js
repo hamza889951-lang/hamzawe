@@ -23,16 +23,44 @@ const Validators = {
   },
 
   /**
-   * تحقق أساسي فقط: القيمة موجودة وغير فارغة وذات طول معقول.
-   * لا يفرض أي سياسة إضافية (مثل عدد الكلمات) — تلك مسؤولية Application
-   * إذا احتاجها المشروع مستقبلاً، لا Domain.
+   * سياسة اسم المريض في مسار الحجز:
+   * - ثلاثة مقاطع اسمية على الأقل.
+   * - كل مقطع يتكون من حروف عربية فقط (مع السماح بعلامات التشكيل).
+   * - كل مقطع يحتوي على حرفين أبجديين على الأقل.
+   * - الأرقام، الأحرف اللاتينية، وعلامات الترقيم/الرموز مرفوضة.
+   *
+   * الـ Validator يتحقق فقط ولا يعيد تشكيل قيمة الاسم وفق CAS-013.
    * @param {string} name
    */
   validatePatientName(name) {
-    if (!name || typeof name !== 'string' || name.trim().length < 2) {
-      return Result.fail('INVALID_NAME', 'Name is missing or too short');
+    if (!name || typeof name !== 'string') {
+      return Result.fail('INVALID_NAME', 'Name is missing or malformed');
     }
-    return Result.ok(name.trim());
+
+    const trimmed = name.trim();
+    if (!trimmed) {
+      return Result.fail('INVALID_NAME', 'Name is missing or malformed');
+    }
+
+    const words = trimmed.split(/\s+/u);
+    if (words.length < 3) {
+      return Result.fail('INVALID_NAME', 'Patient name must contain at least three words');
+    }
+
+    for (let i = 0; i < words.length; i++) {
+      const word = words[i];
+      const lettersAndMarks = word.match(/[\p{L}\p{M}]/gu) || [];
+
+      if (lettersAndMarks.length < 2) {
+        return Result.fail('INVALID_NAME', 'Each name word must contain at least two letters');
+      }
+
+      if (!/^(?:(?=\p{L}|\p{M})\p{Script=Arabic})+$/u.test(word)) {
+        return Result.fail('INVALID_NAME', 'Patient name must contain Arabic letters only');
+      }
+    }
+
+    return Result.ok(trimmed);
   },
 
   /**
