@@ -24,6 +24,25 @@ const DateUtils = {
   },
 
   /**
+   * Convert a Date / numeric / date-string value to epoch ms.
+   * Invalid or absent values return null.
+   */
+  toEpochMs(value) {
+    if (value instanceof Date) {
+      var dateMs = value.getTime();
+      return isNaN(dateMs) ? null : dateMs;
+    }
+    if (typeof value === 'number') {
+      return isFinite(value) ? value : null;
+    }
+    if (typeof value === 'string' && value.trim() !== '') {
+      var parsedMs = new Date(value).getTime();
+      return isNaN(parsedMs) ? null : parsedMs;
+    }
+    return null;
+  },
+
+  /**
    * Format a Date as clinic-local YYYY-MM-DD.
    */
   formatClinicDate(dateValue) {
