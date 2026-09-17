@@ -48,6 +48,13 @@ function runTest(name, fn) {
   }
 }
 
+runTest('operational Scheduler source contains no retention entry point', function() {
+  var scheduler = fs.readFileSync(path.join(ROOT, 'Scheduler.js'), 'utf8');
+  assert.strictEqual((scheduler.match(/ArchiveService\.run\(\)/g) || []).length, 0);
+  assert.strictEqual(scheduler.indexOf('RetentionService.run('), -1);
+  assert.strictEqual(scheduler.indexOf("retention: 'SEPARATED'"), -1, 'scheduler boundary should remain operational-only');
+});
+
 runTest('dedicated retention entry point invokes ArchiveService', function() {
   archiveCalls = 0;
   logEntries = [];
@@ -76,4 +83,4 @@ runTest('retention result is surfaced as failure without being converted to succ
   }));
 });
 
-if (process.exitCode !== 1) console.log('2/2 PASS');
+if (process.exitCode !== 1) console.log('3/3 PASS');
