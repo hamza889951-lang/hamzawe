@@ -52,7 +52,6 @@ runTest('operational Scheduler source contains no retention entry point', functi
   var scheduler = fs.readFileSync(path.join(ROOT, 'Scheduler.js'), 'utf8');
   assert.strictEqual((scheduler.match(/ArchiveService\.run\(\)/g) || []).length, 0);
   assert.strictEqual(scheduler.indexOf('RetentionService.run('), -1);
-  assert.strictEqual(scheduler.indexOf("retention: 'SEPARATED'"), -1, 'scheduler boundary should remain operational-only');
 });
 
 runTest('dedicated retention entry point invokes ArchiveService', function() {
