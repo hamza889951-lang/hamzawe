@@ -49,7 +49,8 @@ const ActiveAppointmentReconciliationService = {
 
     if (activeAppointments.length === 1) {
       return Result.ok({
-        status: 'ACTIVE_BOOKED',
+        activeAppointmentFound: true,
+        staleCleared: false,
         appointment: activeAppointments[0]
       });
     }
@@ -73,7 +74,8 @@ const ActiveAppointmentReconciliationService = {
     }
 
     return Result.ok({
-      status: 'STALE_CLEARED',
+      activeAppointmentFound: false,
+      staleCleared: true,
       activeCount: 0,
       reply: 'انتهى حجزك السابق. يمكنك الآن حجز موعد جديد. أرسل أي رسالة للبدء.',
       conversationState: Config.VOCABULARY.CONVERSATION_STATE.MENU_MAIN
