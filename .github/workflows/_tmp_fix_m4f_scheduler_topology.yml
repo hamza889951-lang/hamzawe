@@ -1,0 +1,72 @@
+name: Temporary M4F Scheduler Topology Repair
+
+on:
+  push:
+    branches:
+      - hotfix/scheduler-runtime-separation-v2
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Repair M4F scheduler topology expectations
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('tests/HardeningM4F.test.js')
+          src = path.read_text(encoding='utf-8')
+
+          old_comment = "  // Archive → Maintenance → Horizon → Disruption → Reminders → HealthCheck"
+          new_comment = "  // Maintenance → Horizon → Disruption → Reminders → HealthCheck; retention is a separate scheduler"
+          if old_comment not in src:
+              raise SystemExit('old M4F-37 scheduler-order comment not found exactly once')
+          src = src.replace(old_comment, new_comment, 1)
+
+          old_order = """  const order = ['ArchiveService.run', 'MaintenanceService.run', 'AvailabilityHorizonMaintainer.ensureHorizon',
+                 'PatientDisruptionService.processDisruptions', 'ReminderService.processPendingReminders',
+                 'HealthCheckService.run'];"""
+          new_order = """  const order = ['MaintenanceService.run', 'AvailabilityHorizonMaintainer.ensureHorizon',
+                 'PatientDisruptionService.processDisruptions', 'ReminderService.processPendingReminders',
+                 'HealthCheckService.run'];"""
+          if old_order not in src:
+              raise SystemExit('old M4F-37 order block not found exactly once')
+          src = src.replace(old_order, new_order, 1)
+
+          old_stages = """  assert.deepStrictEqual(env.st.stageCalls,
+    ['archive', 'maintenance', 'horizon', 'disruption', 'reminders', 'healthCheck'],
+    'later stages still run per the existing partial-failure pattern');"""
+          new_stages = """  assert.deepStrictEqual(env.st.stageCalls,
+    ['maintenance', 'horizon', 'disruption', 'reminders', 'healthCheck'],
+    'later stages still run per the existing partial-failure pattern');"""
+          if old_stages not in src:
+              raise SystemExit('old M4F-84 stageCalls expectation not found exactly once')
+          src = src.replace(old_stages, new_stages, 1)
+
+          if "'ArchiveService.run'" in src:
+              raise SystemExit('retired ArchiveService scheduler token remains in M4F test')
+          if "['archive', 'maintenance'" in src:
+              raise SystemExit('retired archive stage expectation remains in M4F test')
+
+          path.write_text(src, encoding='utf-8')
+
+      - name: Commit repair and remove helper workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/_tmp_fix_m4f_scheduler_topology.yml
+          git add tests/HardeningM4F.test.js
+          git diff --cached --check
+          git diff --cached -- tests/HardeningM4F.test.js
+          git commit -m 'test: update M4F for separated retention scheduler'
+          git push origin HEAD:hotfix/scheduler-runtime-separation-v2
