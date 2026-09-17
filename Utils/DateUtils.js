@@ -2,22 +2,14 @@
  * ═══════════════════════════════════════
  * CONTRACT — DateUtils
  * ═══════════════════════════════════════
- * يضمن:
- * - عمليات حسابية بحتة على تواريخ/أوقات مُمرَّرة إليه (إضافة دقائق،
- *   بناء Date من Timestamp).
- * لا يضمن:
- * - "الوقت الحالي" — ذلك حصراً من مسؤولية Clock.now().
- * - أي منطق عمل (Business Rules) — عمليات رياضية على التواريخ فقط.
- *
- * ملاحظة طبقية: استخدام new Date() هنا لا يخالف CAS-008 لأن الوظائف
- * تعمل على قيم مُمرَّرة إليها (Pure Functions)، ولا "تجلب" الوقت الحالي
- * من النظام — تماماً كما ورد في تبرير Clock نفسه كـ Cross-cutting primitive.
+ * Pure date/time conversions only. Current time remains the sole responsibility
+ * of Clock.now().
  */
 const DateUtils = {
   /**
    * @param {Date} date
    * @param {number} minutes
-   * @returns {Date} تاريخ جديد دون تعديل الأصل
+   * @returns {Date} date copy shifted by minutes
    */
   addMinutes(date, minutes) {
     return new Date(date.getTime() + minutes * 60000);
@@ -29,14 +21,40 @@ const DateUtils = {
    */
   fromTimestamp(timestampMs) {
     return new Date(timestampMs);
-  }
-,/**
-   * تنسيق كائن Date (تاريخ فقط) إلى نص مقروء "YYYY-MM-DD" لعرضه للمريض.
-   * ⚠️ إضافة جديدة (إصلاح: حقول date/time القادمة من Google Sheets هي
-   * كائنات Date خام، ودمجها مباشرة في نص الرد ينتج toString() افتراضيًا
-   * غير مقروء). دالة عرض بحتة — لا علاقة لها بأي منطق عمل.
-   * @param {Date} dateValue
-   * @returns {string}
+  },
+
+  /**
+   * Format a Date as clinic-local YYYY-MM-DD.
+   */
+  formatClinicDate(dateValue) {
+    if (!dateValue) return '';
+    return Utilities.formatDate(dateValue, 'Asia/Baghdad', 'yyyy-MM-dd');
+  },
+
+  /**
+   * Format an epoch millisecond value as clinic-local YYYY-MM-DD.
+   * The Date construction is deliberately kept inside DateUtils so CAS-009
+   * callers never construct Date objects from numeric timestamps themselves.
+   */
+  formatClinicDateFromEpoch(timestampMs) {
+    if (timestampMs === null || timestampMs === undefined) return '';
+    var numeric = Number(timestampMs);
+    if (!isFinite(numeric)) return '';
+    return DateUtils.formatClinicDate(new Date(numeric));
+  },
+
+  /**
+   * Return the clinic-local calendar date N*24h before a supplied Date.
+   */
+  clinicDateDaysAgo(dateValue, days) {
+    if (!(dateValue instanceof Date) || isNaN(dateValue.getTime())) return '';
+    return DateUtils.formatClinicDate(
+      new Date(dateValue.getTime() - Number(days) * 24 * 60 * 60 * 1000)
+    );
+  },
+
+  /**
+   * Format Date for display as YYYY-MM-DD.
    */
   formatDateDisplay(dateValue) {
     if (!dateValue) return '';
@@ -44,23 +62,14 @@ const DateUtils = {
   },
 
   /**
-   * تنسيق كائن Date (وقت فقط) إلى نص مقروء "HH:mm" لعرضه للمريض.
-   * ⚠️ إضافة جديدة — نفس المبرر أعلاه، لحقل time تحديدًا.
-   * @param {Date} timeValue
-   * @returns {string}
+   * Format Date for display as HH:mm.
    */
   formatTimeDisplay(timeValue) {
     if (!timeValue) return '';
     return Utilities.formatDate(timeValue, Session.getScriptTimeZone(), 'HH:mm');
-  }};
-  /**
- * ═══════════════════════════════════════
- * DateUtils.gs — إضافات المولّد (ADR-022)
- * ═══════════════════════════════════════
- *
- * الصق هذا الملف بعد DateUtils الأصلي مباشرة.
- * سيُضيف 3 دوال جديدة إلى الكائن الموجود.
- */
+  }
+};
+
 DateUtils.formatDateForStorage = function(dateValue) {
   if (!dateValue) return '';
   var yyyy = dateValue.getFullYear();
@@ -96,9 +105,6 @@ DateUtils.formatSortKey = function(dateValue) {
 
 /**
  * M4-C Continuation — local schedule stamp 'YYYY-MM-DDTHH:mm'.
- * Pure conversion of a passed-in Date using local getters; production
- * runtime is pinned to Asia/Baghdad (appsscript.json), so this yields
- * the clinic-local stamp used by the M4 schedule boundary.
  */
 DateUtils.formatLocalStamp = function(dateValue) {
   if (!dateValue) return '';
@@ -116,8 +122,6 @@ DateUtils.formatLocalStamp = function(dateValue) {
 
 /**
  * M4-C Continuation — next calendar date for a 'YYYY-MM-DD' string.
- * Pure Gregorian arithmetic (no Date object, no timezone dependency).
- * Single implementation shared by the M4 schedule boundary.
  */
 DateUtils.nextLocalDateString = function(dateStr) {
   if (typeof dateStr !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return null;
