@@ -77,11 +77,35 @@ const GoogleSheets = {
     return obj;
   },
 
+  /** Return true when a sheet contains at least one data row. */
+  hasDataRows: function(sheetName) {
+    var sheet = this._getSheet(sheetName);
+    return sheet.getLastRow() >= 2;
+  },
+
+  /**
+   * Read one fresh row without loading the entire sheet data range.
+   * This is intentionally a point-read path for atomic/fresh-read callers.
+   */
   findRowByColumn: function(sheetName, columnName, value) {
-    var rows = this.queryRows(sheetName, function(row) {
-      return row[columnName] === value;
-    });
-    return rows.length ? rows[0] : null;
+    var sheet = this._getSheet(sheetName);
+    var lastRow = sheet.getLastRow();
+    var lastColumn = sheet.getLastColumn();
+    if (lastRow < 2 || lastColumn < 1) return null;
+
+    var headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+    var columnIndex = headers.indexOf(columnName);
+    if (columnIndex === -1) throw new Error('COLUMN_NOT_FOUND: ' + columnName);
+
+    var columnValues = sheet.getRange(2, columnIndex + 1, lastRow - 1, 1).getValues();
+    for (var i = 0; i < columnValues.length; i++) {
+      if (columnValues[i][0] === value) {
+        var rowNumber = i + 2;
+        var rowValues = sheet.getRange(rowNumber, 1, 1, lastColumn).getValues()[0];
+        return this._rowToObject(headers, rowValues, rowNumber);
+      }
+    }
+    return null;
   },
 
   queryRows: function(sheetName, predicateFn) {
@@ -101,24 +125,37 @@ const GoogleSheets = {
     return this.queryRows(sheetName, function() { return true; });
   },
 
+  /**
+   * Update one fresh row located by a point lookup rather than rereading the
+   * entire sheet. First-match semantics are preserved.
+   */
   updateRowByColumn: function(sheetName, columnName, value, fields) {
     var sheet = this._getSheet(sheetName);
-    var data = sheet.getDataRange().getValues();
-    var headers = data[0];
-    var colIndex = headers.indexOf(columnName);
-    if (colIndex === -1) throw new Error('COLUMN_NOT_FOUND: ' + columnName);
-    for (var i = 1; i < data.length; i++) {
-      if (data[i][colIndex] === value) {
-        Object.keys(fields).forEach(function(key) {
-          var fieldColIndex = headers.indexOf(key);
-          if (fieldColIndex !== -1) {
-            sheet.getRange(i + 1, fieldColIndex + 1).setValue(fields[key]);
-          }
-        });
-        return true;
+    var lastRow = sheet.getLastRow();
+    var lastColumn = sheet.getLastColumn();
+    if (lastRow < 2 || lastColumn < 1) return false;
+
+    var headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+    var columnIndex = headers.indexOf(columnName);
+    if (columnIndex === -1) throw new Error('COLUMN_NOT_FOUND: ' + columnName);
+
+    var columnValues = sheet.getRange(2, columnIndex + 1, lastRow - 1, 1).getValues();
+    var rowNumber = null;
+    for (var i = 0; i < columnValues.length; i++) {
+      if (columnValues[i][0] === value) {
+        rowNumber = i + 2;
+        break;
       }
     }
-    return false;
+    if (rowNumber === null) return false;
+
+    Object.keys(fields).forEach(function(key) {
+      var fieldColIndex = headers.indexOf(key);
+      if (fieldColIndex !== -1) {
+        sheet.getRange(rowNumber, fieldColIndex + 1).setValue(fields[key]);
+      }
+    });
+    return true;
   },
 
   appendRow: function(sheetName, rowObject) {
@@ -142,7 +179,7 @@ const GoogleSheets = {
 GoogleSheets.updateBatch = function(sheetName, updates) {
   if (!updates || updates.length === 0) return Result.ok({ updated: 0 });
 
-  var sheet = this._getSheet(sheetName);
+  var sheet = GoogleSheets._getSheet(sheetName);
   var data = sheet.getDataRange().getValues();
   var headers = data[0];
 
@@ -179,12 +216,12 @@ GoogleSheets.updateBatch = function(sheetName, updates) {
 };
 
 GoogleSheets.getHeaders = function(sheetName) {
-  var sheet = this._getSheet(sheetName);
+  var sheet = GoogleSheets._getSheet(sheetName);
   return sheet.getDataRange().getValues()[0];
 };
 
 GoogleSheets.appendRows = function(sheetName, rows) {
-  var sheet = this._getSheet(sheetName);
+  var sheet = GoogleSheets._getSheet(sheetName);
   if (!rows || rows.length === 0) return Result.ok({ inserted: 0 });
 
   var lastRow = sheet.getLastRow();
@@ -194,7 +231,7 @@ GoogleSheets.appendRows = function(sheetName, rows) {
 };
 
 GoogleSheets.deleteRowsByNumbers = function(sheetName, rowNumbers) {
-  var sheet = this._getSheet(sheetName);
+  var sheet = GoogleSheets._getSheet(sheetName);
   if (!rowNumbers || rowNumbers.length === 0) return Result.ok({ deleted: 0 });
 
   var sorted = rowNumbers.slice().sort(function(a, b) { return a - b; });

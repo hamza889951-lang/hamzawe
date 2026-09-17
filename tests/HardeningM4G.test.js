@@ -300,10 +300,12 @@ Object.keys(M4F_PROPOSAL_EVIDENCE).forEach(function(g){ test(g+' — M4-F propos
 const M4F_RECOVERY_EVIDENCE = {'G-36':['M4F-28'],'G-37':['M4F-34'],'G-38':['M4F-76'],'G-39':['M4F-35','M4F-60'],'G-40':['M4F-88','M4F-89'],'G-41':['M4F-104'],'G-42':['M4F-98'],'G-43':['M4F-100'],'G-44':['M4F-32']};
 Object.keys(M4F_RECOVERY_EVIDENCE).forEach(function(g){ test(g+' — M4-F finalization/recovery criterion is behaviorally covered',function(){ assertSuiteHasPasses('HardeningM4F.test.js',M4F_RECOVERY_EVIDENCE[g]); }); });
 
-test('G-45 — Single Scheduler order is Archive → Maintenance → Horizon → Disruption → Reminders → HealthCheck', function() {
-  const order = ['ArchiveService.run','MaintenanceService.run','AvailabilityHorizonMaintainer.ensureHorizon','PatientDisruptionService.processDisruptions','ReminderService.processPendingReminders','HealthCheckService.run'].map(function(token){return scheduler.indexOf(token);});
+test('G-45 — Operational Scheduler order is Maintenance → Horizon → Disruption → Reminders → HealthCheck; Retention is separated', function() {
+  const order = ['MaintenanceService.run','AvailabilityHorizonMaintainer.ensureHorizon','PatientDisruptionService.processDisruptions','ReminderService.processPendingReminders','HealthCheckService.run'].map(function(token){return scheduler.indexOf(token);});
   order.forEach(function(index){assert.ok(index>=0,'missing Scheduler stage');});
   for(let i=1;i<order.length;i+=1) assert.ok(order[i-1]<order[i],'Scheduler order is incorrect');
+  assert.strictEqual((scheduler.match(/ArchiveService\.run\(\)/g)||[]).length,0,'Retention must not execute in Scheduler');
+  assert.strictEqual(scheduler.indexOf('RetentionService.run('),-1,'Retention must not execute in Scheduler');
 });
 test('G-46 — Scheduler stage failure is explicit', function(){assert.ok(/SCHEDULER_STAGE_FAILED/.test(scheduler)); assert.ok(/status\s*=\s*'FAILED'/.test(scheduler));});
 test('G-47 — Scheduler best-effort progression is preserved', function(){assert.ok(/try\s*\{\s*var [a-zA-Z]+Result/.test(scheduler)); assert.ok(/SCHEDULER_PARTIAL_FAILURE/.test(scheduler));});
