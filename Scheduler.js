@@ -34,12 +34,15 @@ const Scheduler = {
       var S = { archive: { status: 'NOT_RUN', error: null }, maintenance: { status: 'NOT_RUN', error: null }, horizon: { status: 'NOT_RUN', error: null }, disruption: { status: 'NOT_RUN', error: null }, reminders: { status: 'NOT_RUN', error: null }, healthCheck: { status: 'NOT_RUN', error: null } };
 
       // Unified retention/archive stage. ArchiveService is a compatibility
-      // facade only; it delegates directly to RetentionService, so this remains
-      // one retention engine inside the single Scheduler.
+      // facade only; runScheduled() is the Scheduler opt-in boundary and it
+      // still delegates to the same RetentionService engine.
       try {
-        var aResult = ArchiveService.run();
+        var aResult = typeof ArchiveService.runScheduled === 'function'
+          ? ArchiveService.runScheduled()
+          : ArchiveService.run();
         if (aResult && aResult.ok) {
-          S.archive.status = 'OK';
+          var archiveSkipped = !!(aResult.data && aResult.data.status === 'SKIPPED');
+          S.archive.status = archiveSkipped ? 'SKIPPED' : 'OK';
         } else {
           S.archive.status = 'FAILED';
           S.archive.error = aResult ? JSON.stringify(aResult.error) : 'null result';
@@ -66,19 +69,20 @@ const Scheduler = {
       try { var hcResult = HealthCheckService.run(); if (hcResult && hcResult.ok && hcResult.data && hcResult.data.healthy) { S.healthCheck.status = 'OK'; } else { S.healthCheck.status = 'FAILED'; S.healthCheck.error = (hcResult && hcResult.data) ? JSON.stringify(hcResult.data) : 'null result'; LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_STAGE_FAILED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: JSON.stringify({ stage: 'healthCheck', error: S.healthCheck.error }) }); } } catch (e) { S.healthCheck.status = 'FAILED'; S.healthCheck.error = e.message || 'Exception'; LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_STAGE_FAILED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: JSON.stringify({ stage: 'healthCheck', error: e.message }) }); }
 
       var operationalOk = S.maintenance.status === 'OK' && S.horizon.status === 'OK' && S.disruption.status === 'OK' && S.reminders.status === 'OK' && S.healthCheck.status === 'OK';
-      var allOk = operationalOk && S.archive.status === 'OK';
+      var retentionOk = S.archive.status === 'OK' || S.archive.status === 'SKIPPED';
+      var allOk = operationalOk && retentionOk;
       var finishedAt = Clock.now();
       var durationMs = finishedAt.getTime() - startedAt.getTime();
-      var summary = { archive: S.archive.status === 'OK' ? 'OK' : S.archive.error, maintenance: S.maintenance.status === 'OK' ? 'OK' : S.maintenance.error, horizon: S.horizon.status === 'OK' ? 'OK' : S.horizon.error, disruption: S.disruption.status === 'OK' ? 'OK' : S.disruption.error, reminders: S.reminders.status === 'OK' ? 'OK' : S.reminders.error, healthCheck: S.healthCheck.status === 'OK' ? 'OK' : S.healthCheck.error };
+      var summary = { archive: S.archive.status === 'OK' ? 'OK' : (S.archive.status === 'SKIPPED' ? 'SKIPPED' : S.archive.error), maintenance: S.maintenance.status === 'OK' ? 'OK' : S.maintenance.error, horizon: S.horizon.status === 'OK' ? 'OK' : S.horizon.error, disruption: S.disruption.status === 'OK' ? 'OK' : S.disruption.error, reminders: S.reminders.status === 'OK' ? 'OK' : S.reminders.error, healthCheck: S.healthCheck.status === 'OK' ? 'OK' : S.healthCheck.error };
 
       LogRepository.write({ timestamp: finishedAt, command: 'SCHEDULER_RUN', phone: '', slotId: '', stage: 'END', success: allOk, durationMs: durationMs, error: JSON.stringify(summary) });
 
       if (operationalOk) {
         try { PropertiesService.getScriptProperties().setProperty('LAST_SCHEDULER_SUCCESS_MS', String(finishedAt.getTime())); } catch (e) { /* best effort */ }
         if (allOk) {
-          return Result.ok({ stages: { archive: 'OK', maintenance: 'OK', horizon: 'OK', disruption: 'OK', reminders: 'OK', healthCheck: 'OK' }, durationMs: durationMs });
+          return Result.ok({ stages: { archive: S.archive.status, maintenance: 'OK', horizon: 'OK', disruption: 'OK', reminders: 'OK', healthCheck: 'OK' }, durationMs: durationMs });
         }
-        return Result.ok({ stages: { archive: 'FAILED', maintenance: 'OK', horizon: 'OK', disruption: 'OK', reminders: 'OK', healthCheck: 'OK' }, archiveWarning: summary.archive, durationMs: durationMs });
+        return Result.ok({ stages: { archive: S.archive.status, maintenance: 'OK', horizon: 'OK', disruption: 'OK', reminders: 'OK', healthCheck: 'OK' }, archiveWarning: summary.archive, durationMs: durationMs });
       }
       return Result.fail('SCHEDULER_PARTIAL_FAILURE', 'One or more Scheduler stages failed', { stages: { archive: S.archive.status, maintenance: S.maintenance.status, horizon: S.horizon.status, disruption: S.disruption.status, reminders: S.reminders.status, healthCheck: S.healthCheck.status }, details: summary, durationMs: durationMs });
 
