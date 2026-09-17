@@ -979,8 +979,8 @@ test('M4F-37 — the existing single Scheduler gained one disruption stage, no s
   const scheduler = strippedSourceOf('Scheduler.js');
   assert.ok(scheduler.indexOf('PatientDisruptionService.processDisruptions') !== -1,
     'the disruption stage lives in the existing Scheduler');
-  // Archive → Maintenance → Horizon → Disruption → Reminders → HealthCheck
-  const order = ['ArchiveService.run', 'MaintenanceService.run', 'AvailabilityHorizonMaintainer.ensureHorizon',
+  // Maintenance → Horizon → Disruption → Reminders → HealthCheck; retention runs separately
+  const order = ['MaintenanceService.run', 'AvailabilityHorizonMaintainer.ensureHorizon',
                  'PatientDisruptionService.processDisruptions', 'ReminderService.processPendingReminders',
                  'HealthCheckService.run'];
   let cursor = -1;
@@ -1968,7 +1968,7 @@ test('M4F-84 — [F9] a disruption stage failure is reported, never fabricated a
   assert.strictEqual(result.error.code, 'SCHEDULER_PARTIAL_FAILURE');
   assert.strictEqual(result.error.details.stages.disruption, 'FAILED', 'the stage is reported accurately');
   assert.deepStrictEqual(env.st.stageCalls,
-    ['archive', 'maintenance', 'horizon', 'disruption', 'reminders', 'healthCheck'],
+    ['maintenance', 'horizon', 'disruption', 'reminders', 'healthCheck'],
     'later stages still run per the existing partial-failure pattern');
   assert.strictEqual(env.st.props.LAST_SCHEDULER_SUCCESS_MS, undefined,
     'liveness is not updated on a failed operational run');
