@@ -65,6 +65,14 @@ const ActiveAppointmentReconciliationService = {
 
     try {
       ConversationRepository.resetToMenuMain(phone);
+      const conversation = ConversationRepository.findByPhone(phone);
+      if (!conversation ||
+          conversation.state !== Config.VOCABULARY.CONVERSATION_STATE.MENU_MAIN) {
+        return Result.fail(
+          'BOOKED_RECONCILIATION_RESET_FAILED',
+          'Conversation state reset was not confirmed'
+        );
+      }
     } catch (e) {
       return Result.fail(
         'BOOKED_RECONCILIATION_RESET_FAILED',
