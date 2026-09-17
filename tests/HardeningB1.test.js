@@ -7,6 +7,7 @@ const vm = require('vm');
 
 const ROOT = path.resolve(__dirname, '..');
 const NOW_MS = 1700000000000;
+const PATIENT_NAME = 'محمد علي حسن';
 const sandbox = vm.createContext({ console: console });
 
 function load(relativePath, globalName) {
@@ -103,7 +104,7 @@ function configureReservation(candidates, outcomesById) {
 function reserveWithBookingService() {
   return sandbox.BookingService._reserveEarliestBookable(
     '9647000000000',
-    'Test Patient',
+    PATIENT_NAME,
     new Date(NOW_MS + 5 * 60000)
   );
 }
@@ -132,7 +133,7 @@ function runPublicBookingWorkflow() {
 
   const result = sandbox.BookingService.handleIncomingMessage(
     '9647000000000',
-    'Test Patient'
+    PATIENT_NAME
   );
 
   return { result: result, movedToSlotId: movedToSlotId };
@@ -437,9 +438,7 @@ test('H — public ChangeService reserves new once before releasing old', functi
   };
   sandbox.SlotRepository.atomicUpdate = function(slotId, decisionFn) {
     attempts.push(slotId);
-    const fresh = slotId === 'OLD'
-      ? Object.assign({}, oldSlot)
-      : Object.assign({}, newSlot);
+    const fresh = slotId === 'OLD' ? Object.assign({}, oldSlot) : Object.assign({}, newSlot);
     const decision = decisionFn(fresh);
     if (!decision.ok) return decision;
     return sandbox.Result.ok(Object.assign({ slotId: slotId }, decision.data));
@@ -449,20 +448,21 @@ test('H — public ChangeService reserves new once before releasing old', functi
 
   assert.strictEqual(result.ok, true);
   assert.deepStrictEqual(attempts, ['NEW', 'OLD']);
-  assert.strictEqual(attempts.filter(function(id) { return id === 'NEW'; }).length, 1);
 });
 
-let failures = 0;
-tests.forEach(function(entry) {
+for (const entry of tests) {
   try {
     entry.fn();
-    console.log('PASS:', entry.name);
+    console.log('PASS: ' + entry.name);
   } catch (error) {
-    failures++;
-    console.error('FAIL:', entry.name);
+    console.error('FAIL: ' + entry.name);
     console.error(error.stack || error.message);
+    process.exitCode = 1;
   }
-});
+}
 
-if (failures > 0) process.exit(1);
-console.log('\n' + tests.length + '/' + tests.length + ' tests passed');
+if (process.exitCode === 1) {
+  process.exit(1);
+}
+
+console.log('All ' + tests.length + ' tests passed.');
