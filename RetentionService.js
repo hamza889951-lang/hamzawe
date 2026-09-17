@@ -7,12 +7,11 @@
  *   Availability -> Availability_ARCHIVE
  *
  * Deployment safety:
- *   DRY_RUN            = inspect only
+ *   DRY_RUN            = inspect only (migration default)
  *   ARCHIVE_ONLY       = archive + verify, never delete
  *   ARCHIVE_AND_DELETE = archive + verify + fresh-read/revalidate + delete
  *
- * Default is ARCHIVE_ONLY so deployment cannot introduce deletion merely by
- * shipping this contract. Deletion requires explicit RETENTION_MODE property.
+ * Deletion requires explicit RETENTION_MODE=ARCHIVE_AND_DELETE.
  */
 const RetentionService = {
 
@@ -28,7 +27,7 @@ const RetentionService = {
   },
 
   PROPERTY_KEY: 'RETENTION_MODE',
-  DEFAULT_MODE: 'ARCHIVE_ONLY',
+  DEFAULT_MODE: 'DRY_RUN',
 
   POLICIES: {
     SYSTEM_LOG_DAYS: 31,
@@ -44,6 +43,7 @@ const RetentionService = {
     var mode = modeResult.data.mode;
     var requestedSources = options.sources || [this.SOURCES.SYSTEM_LOG, this.SOURCES.AVAILABILITY];
     var startedAt = Clock.now();
+    var startedMs = startedAt.getTime();
     var results = {};
     var allOk = true;
 
@@ -52,9 +52,9 @@ const RetentionService = {
       var sourceResult;
 
       if (source === this.SOURCES.SYSTEM_LOG) {
-        sourceResult = this._runSystemLog(mode, startedAt.getTime());
+        sourceResult = this._runSystemLog(mode, startedMs);
       } else if (source === this.SOURCES.AVAILABILITY) {
-        sourceResult = this._runAvailability(mode, startedAt.getTime());
+        sourceResult = this._runAvailability(mode, startedMs);
       } else {
         sourceResult = Result.fail('RETENTION_SOURCE_UNKNOWN', 'Unknown retention source', { source: source });
       }
@@ -69,7 +69,7 @@ const RetentionService = {
     var finishedAt = Clock.now();
     var summary = {
       mode: mode,
-      durationMs: finishedAt.getTime() - startedAt.getTime(),
+      durationMs: finishedAt.getTime() - startedMs,
       sources: results
     };
 
@@ -87,7 +87,11 @@ const RetentionService = {
   },
 
   _runSystemLog: function(mode, nowMs) {
-    var cutoffMs = nowMs - this.POLICIES.SYSTEM_LOG_DAYS * 24 * 60 * 60 * 1000;
+    var cutoffDate = DateUtils.addMinutes(
+      DateUtils.fromTimestamp(nowMs),
+      -this.POLICIES.SYSTEM_LOG_DAYS * 24 * 60
+    );
+    var cutoffMs = cutoffDate.getTime();
     var findResult = LogArchiveRepository.findOlderThan(cutoffMs);
     if (!findResult.ok) {
       this._stageFailure(this.SOURCES.SYSTEM_LOG, 'read', findResult);
@@ -136,7 +140,10 @@ const RetentionService = {
   },
 
   _runAvailability: function(mode, nowMs) {
-    var cutoffDate = this._localDateDaysAgo(nowMs, this.POLICIES.AVAILABILITY_DAYS);
+    var cutoffDate = DateUtils.clinicDateDaysAgo(
+      DateUtils.fromTimestamp(nowMs),
+      this.POLICIES.AVAILABILITY_DAYS
+    );
     var findResult = AvailabilityArchiveRepository.findOlderThan(cutoffDate);
     if (!findResult.ok) {
       this._stageFailure(this.SOURCES.AVAILABILITY, 'read', findResult);
@@ -153,10 +160,11 @@ const RetentionService = {
       cutoffDate: cutoffDate,
       malformedSlotIds: findResult.data.malformedSlotIds || 0,
       malformedSortKeys: findResult.data.malformedSortKeys || 0,
-      reservedSkipped: findResult.data.reservedSkipped || 0
+      reservedSkipped: findResult.data.reservedSkipped || 0,
+      ambiguousSlotIds: findResult.data.ambiguousSlotIds || 0
     };
 
-    if (result.malformedSlotIds || result.malformedSortKeys || result.reservedSkipped) {
+    if (result.malformedSlotIds || result.malformedSortKeys || result.reservedSkipped || result.ambiguousSlotIds) {
       this._log('RETENTION_SKIP', true, {
         source: this.SOURCES.AVAILABILITY,
         mode: mode,
@@ -164,6 +172,7 @@ const RetentionService = {
         malformedSlotIds: result.malformedSlotIds,
         malformedSortKeys: result.malformedSortKeys,
         reservedSkipped: result.reservedSkipped,
+        ambiguousSlotIds: result.ambiguousSlotIds,
         reason: 'PROTECTED_OR_UNUSABLE_ROWS'
       });
     }
@@ -221,14 +230,6 @@ const RetentionService = {
     return Result.ok({ mode: mode });
   },
 
-  _localDateDaysAgo: function(nowMs, days) {
-    return Utilities.formatDate(
-      new Date(nowMs - days * 24 * 60 * 60 * 1000),
-      'Asia/Baghdad',
-      'yyyy-MM-dd'
-    );
-  },
-
   _stageFailure: function(source, phase, result) {
     var code = result && result.error && result.error.code ? result.error.code : '';
     var command = (code.indexOf('VERIFY') !== -1 || code.indexOf('ARCHIVE_VERIFY') !== -1)
@@ -255,8 +256,8 @@ const RetentionService = {
         error: JSON.stringify(payload || {})
       });
     } catch (e) {
-      // Retention observability is best-effort and must never turn a safe
-      // retention result into a data mutation or deletion path.
+      // Observability must never turn a safe retention result into a data
+      // mutation or deletion path.
     }
   }
 };
