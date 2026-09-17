@@ -295,7 +295,7 @@ const AvailabilityArchiveRepository = {
 
   _value: function(value) {
     if (value instanceof Date) return 'date:' + value.getTime();
-    if (value === undefined || value === null) return 'null:';
+    if (value === undefined || value === null || value === '') return 'empty';
     return typeof value + ':' + String(value);
   }
 };
