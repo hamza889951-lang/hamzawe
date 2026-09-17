@@ -1,15 +1,12 @@
 /**
  * LogArchiveRepository
- * مسؤول عن كل تفاصيل التخزين المتعلقة بأرشفة SYSTEM_LOG:
- * قراءة السجلات القديمة، النسخ إلى ورقة الأرشيف، التحقق، ثم الحذف.
  *
- * لا يعرف سياسة الاحتفاظ (Retention) ولا أي منطق أعمال — فقط التخزين.
- * لا يظهر SpreadsheetApp أو أسماء الأوراق أو أرقام الصفوف خارج هذا الملف.
+ * Storage boundary for SYSTEM_LOG retention. It owns reading, idempotent
+ * archival, exact snapshot verification, fresh reread deletion checks, and
+ * deletion. Retention policy itself lives in RetentionService.
  *
- * قاعدة أمان الهوية عند الحذف:
- *   - تطابق واحد بالضبط (بالمحتوى الكامل) → مرشح صالح للحذف.
- *   - لا يوجد تطابق → Result.fail ولا حذف.
- *   - أكثر من تطابق → Result.fail ولا حذف (لا تخمين بأرقام الصفوف).
+ * Delete invariant:
+ *   archive snapshot -> verify exact snapshot -> fresh reread -> exact-match -> delete
  */
 const LogArchiveRepository = {
 
@@ -17,68 +14,147 @@ const LogArchiveRepository = {
 
   findOlderThan: function(cutoffMs) {
     var sourceName = Config.VOCABULARY.SHEETS.SYSTEM_LOG;
-    var rows = GoogleSheets.getAllRows(sourceName);
+    var rows;
+    try {
+      rows = GoogleSheets.getAllRows(sourceName);
+    } catch (e) {
+      return Result.fail('ARCHIVE_READ_FAILED', 'Failed to read SYSTEM_LOG', { message: e.message });
+    }
 
     var records = [];
+    var malformedTimestamps = 0;
     for (var i = 0; i < rows.length; i++) {
       var row = rows[i];
-      var ts = row.timestamp;
-      if (!ts) continue;
-      var rowMs = (typeof ts === 'object') ? ts.getTime() : new Date(ts).getTime();
-      if (isNaN(rowMs)) continue;
+      var rowMs = DateUtils.toEpochMs(row.timestamp);
+      if (rowMs === null) {
+        if (row.timestamp !== undefined && row.timestamp !== null && String(row.timestamp).trim() !== '') {
+          malformedTimestamps += 1;
+        }
+        continue;
+      }
       if (rowMs < cutoffMs) records.push(this._toRecord(row));
     }
 
-    return Result.ok({ records: records, totalCount: rows.length });
+    return Result.ok({ records: records, totalCount: rows.length, malformedTimestamps: malformedTimestamps });
   },
 
-  appendToArchive: function(records) {
-    if (!records || records.length === 0) return Result.ok({ appended: 0 });
-
-    var sourceName = Config.VOCABULARY.SHEETS.SYSTEM_LOG;
-    var headers = GoogleSheets.getHeaders(sourceName);
+  /**
+   * Idempotent archive operation. Existing exact snapshots are accepted;
+   * ambiguous duplicates block the operation and therefore block deletion.
+   */
+  archiveRecords: function(records) {
+    if (!records || records.length === 0) return Result.ok({ appended: 0, verified: 0 });
 
     try {
-      GoogleSheets.getOrCreateSheet(this.ARCHIVE_SHEET_NAME, headers);
+      var sourceName = Config.VOCABULARY.SHEETS.SYSTEM_LOG;
+      var sourceHeaders = GoogleSheets.getHeaders(sourceName);
+      GoogleSheets.getOrCreateSheet(this.ARCHIVE_SHEET_NAME, sourceHeaders);
+      var archiveHeaders = GoogleSheets.ensureHeaders(this.ARCHIVE_SHEET_NAME, sourceHeaders);
+      var archiveRows = GoogleSheets.getAllRows(this.ARCHIVE_SHEET_NAME);
+
+      var toAppend = [];
+      for (var i = 0; i < records.length; i++) {
+        var record = records[i];
+        var matches = this._findExactMatches(archiveRows, record);
+        if (matches.length > 1) {
+          return Result.fail('ARCHIVE_IDENTITY_AMBIGUOUS',
+            'More than one exact archive snapshot exists; delete blocked', {
+              timestamp: record.timestamp,
+              command: record.command,
+              slotId: record.slotId
+            });
+        }
+        if (matches.length === 0) {
+          toAppend.push(archiveHeaders.map(function(header) {
+            return record.hasOwnProperty(header) ? record[header] : '';
+          }));
+        }
+      }
+
+      if (toAppend.length > 0) {
+        var appendResult = GoogleSheets.appendRows(this.ARCHIVE_SHEET_NAME, toAppend);
+        if (!appendResult || !appendResult.ok) {
+          return Result.fail('ARCHIVE_WRITE_FAILED', 'Failed to write SYSTEM_LOG archive', appendResult ? appendResult.error : null);
+        }
+      }
+
+      var verifiedRows = GoogleSheets.getAllRows(this.ARCHIVE_SHEET_NAME);
+      for (var r = 0; r < records.length; r++) {
+        var verified = this._findExactMatches(verifiedRows, records[r]);
+        if (verified.length !== 1) {
+          return Result.fail('ARCHIVE_VERIFY_FAILED', 'SYSTEM_LOG archive verification failed', {
+            matchCount: verified.length,
+            timestamp: records[r].timestamp,
+            command: records[r].command,
+            slotId: records[r].slotId
+          });
+        }
+      }
+
+      return Result.ok({ appended: toAppend.length, verified: records.length });
     } catch (e) {
-      return Result.fail('ARCHIVE_SHEET_FAILED', 'Cannot create or access SYSTEM_LOG_ARCHIVE', e.message);
+      return Result.fail('ARCHIVE_VERIFY_FAILED', 'SYSTEM_LOG archive operation failed before delete', { message: e.message });
     }
-
-    var rows = records.map(function(record) {
-      return headers.map(function(header) {
-        return record.hasOwnProperty(header) ? record[header] : '';
-      });
-    });
-
-    var appendResult = GoogleSheets.appendRows(this.ARCHIVE_SHEET_NAME, rows);
-    if (!appendResult.ok) return Result.fail('ARCHIVE_WRITE_FAILED', 'Failed to write to archive', appendResult.error);
-
-    var verifyResult = this._verifyAppended(rows);
-    if (!verifyResult.ok) return verifyResult;
-
-    return Result.ok({ appended: rows.length });
   },
 
+  // Backward-compatible API used by older callers/tests.
+  appendToArchive: function(records) {
+    return this.archiveRecords(records);
+  },
+
+  /**
+   * Fresh reread and exact identity validation before delete.
+   */
   deleteRecords: function(records) {
     if (!records || records.length === 0) return Result.ok({ deleted: 0 });
 
     var sourceName = Config.VOCABULARY.SHEETS.SYSTEM_LOG;
-    var currentRows = GoogleSheets.getAllRows(sourceName);
+    var currentRows;
+    try {
+      currentRows = GoogleSheets.getAllRows(sourceName);
+    } catch (e) {
+      return Result.fail('ARCHIVE_DELETE_REVALIDATION_FAILED',
+        'Failed to reread SYSTEM_LOG before delete', { message: e.message });
+    }
 
     var rowNumbers = [];
     for (var i = 0; i < records.length; i++) {
       var matches = this._findExactMatches(currentRows, records[i]);
       if (matches.length === 0) {
-        return Result.fail('ARCHIVE_IDENTITY_NOT_FOUND', 'No exact match for archived record; delete blocked');
+        return Result.fail('ARCHIVE_IDENTITY_NOT_FOUND',
+          'No exact SYSTEM_LOG match for archived record; delete blocked');
       }
       if (matches.length > 1) {
-        return Result.fail('ARCHIVE_IDENTITY_AMBIGUOUS', 'More than one exact match for archived record; delete blocked');
+        return Result.fail('ARCHIVE_IDENTITY_AMBIGUOUS',
+          'More than one exact SYSTEM_LOG match for archived record; delete blocked');
       }
       rowNumbers.push(matches[0]._rowNumber);
     }
 
-    var deleteResult = GoogleSheets.deleteRowsByNumbers(sourceName, rowNumbers);
-    if (!deleteResult.ok) return Result.fail('ARCHIVE_DELETE_FAILED', 'Failed to delete archived rows', deleteResult.error);
+    var deleteResult;
+    try {
+      deleteResult = GoogleSheets.deleteRowsByNumbers(sourceName, rowNumbers);
+    } catch (e2) {
+      return Result.fail('ARCHIVE_DELETE_FAILED',
+        'Failed to delete archived SYSTEM_LOG rows', { message: e2.message });
+    }
+    if (!deleteResult || !deleteResult.ok) {
+      return Result.fail('ARCHIVE_DELETE_FAILED',
+        'Failed to delete archived SYSTEM_LOG rows', deleteResult ? deleteResult.error : null);
+    }
+
+    try {
+      var remaining = GoogleSheets.getAllRows(sourceName);
+      for (var r = 0; r < records.length; r++) {
+        if (this._findExactMatches(remaining, records[r]).length > 0) {
+          return Result.fail('ARCHIVE_DELETE_VERIFY_FAILED',
+            'SYSTEM_LOG archived snapshot remains after deletion');
+        }
+      }
+    } catch (e3) {
+      return Result.fail('ARCHIVE_DELETE_VERIFY_FAILED',
+        'Could not verify SYSTEM_LOG deletion', { message: e3.message });
+    }
 
     return Result.ok({ deleted: rowNumbers.length });
   },
@@ -101,11 +177,14 @@ const LogArchiveRepository = {
 
   _recordsEqual: function(a, b) {
     var keys = {};
-    Object.keys(a).forEach(function(k) { keys[k] = true; });
-    Object.keys(b).forEach(function(k) { keys[k] = true; });
+    Object.keys(a || {}).forEach(function(k) {
+      if (k !== '_rowNumber') keys[k] = true;
+    });
+    Object.keys(b || {}).forEach(function(k) {
+      if (k !== '_rowNumber') keys[k] = true;
+    });
 
     for (var key in keys) {
-      if (key === '_rowNumber') continue;
       if (this._value(a[key]) !== this._value(b[key])) return false;
     }
     return true;
@@ -114,27 +193,6 @@ const LogArchiveRepository = {
   _value: function(v) {
     if (v instanceof Date) return 'D:' + v.getTime();
     if (v === undefined || v === null) return '';
-    return v;
-  },
-
-  _verifyAppended: function(rows) {
-    var appended = GoogleSheets.getAllRows(this.ARCHIVE_SHEET_NAME);
-    if (appended.length < rows.length) {
-      return Result.fail('ARCHIVE_VERIFY_COUNT', 'Verification read back fewer rows than written');
-    }
-
-    var start = appended.length - rows.length;
-    var headers = GoogleSheets.getHeaders(this.ARCHIVE_SHEET_NAME);
-
-    for (var r = 0; r < rows.length; r++) {
-      for (var h = 0; h < headers.length; h++) {
-        var header = headers[h];
-        if (this._value(appended[start + r][header]) !== this._value(rows[r][h])) {
-          return Result.fail('ARCHIVE_VERIFY_MISMATCH', 'Appended row content differs at row ' + (start + r + 1) + ' column ' + header);
-        }
-      }
-    }
-
-    return Result.ok(true);
+    return String(v);
   }
 };

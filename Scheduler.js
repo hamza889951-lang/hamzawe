@@ -1,10 +1,9 @@
 /**
- * Scheduler.js — v3 + Liveness + Archive + M4-F Disruption
- * الترتيب: Archive → Maintenance → Horizon → Patient Disruption → Reminders → HealthCheck
+ * Scheduler.js — v3 + Liveness + Unified Retention + M4-F Disruption
+ * الترتيب: Retention → Maintenance → Horizon → Patient Disruption → Reminders → HealthCheck
  *
- * M4-F (Contract §9): the disruption stage runs after availability/horizon
- * materialization and before reminders, inside this single orchestrator.
- * No second trigger is introduced.
+ * Retention is one logical stage inside the existing single Scheduler.
+ * It does NOT create a second trigger or a second orchestration path.
  */
 const Scheduler = {
 
@@ -14,17 +13,14 @@ const Scheduler = {
     // via Lock.runExclusive(); this Scheduler must therefore never hold the
     // ScriptLock across a stage that itself acquires it through
     // Lock.runExclusive() (Maintenance/Horizon/Reminders) — that is a nested
-    // acquisition of the same global lock, the exact topology B5 removes — and
-    // must not couple Scheduler orchestration to webhook atomicUpdate.
+    // acquisition of the same global lock, the exact topology B5 removes —
+    // and must not couple Scheduler orchestration to webhook atomicUpdate.
     //
     // The UserLock serializes Scheduler executions under the documented
     // deployment model, which is a precondition to verify at deploy time, not
     // a runtime fact asserted here: every Scheduler invocation (the single
     // daily time-driven trigger and manual RUN_scheduler) runs as the same
-    // owner user — appsscript.json (webapp executeAs: USER_DEPLOYING) and
-    // PROJECT_CONTEXT.md §5 ("Google services run as the deploying user"),
-    // §11 (trigger configured manually by the owner), §12 (single daily
-    // trigger). (Supervisor decision — B5.)
+    // owner user.
     var schedulerLock = LockService.getUserLock();
     var hasLock = false;
 
@@ -37,11 +33,28 @@ const Scheduler = {
       var startedAt = Clock.now();
       var S = { archive: { status: 'NOT_RUN', error: null }, maintenance: { status: 'NOT_RUN', error: null }, horizon: { status: 'NOT_RUN', error: null }, disruption: { status: 'NOT_RUN', error: null }, reminders: { status: 'NOT_RUN', error: null }, healthCheck: { status: 'NOT_RUN', error: null } };
 
-      try { var aResult = ArchiveService.run(); if (aResult && aResult.ok) { S.archive.status = 'OK'; } else { S.archive.status = 'FAILED'; S.archive.error = aResult ? JSON.stringify(aResult.error) : 'null result'; LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_STAGE_FAILED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: JSON.stringify({ stage: 'archive', error: S.archive.error }) }); } } catch (e) { S.archive.status = 'FAILED'; S.archive.error = e.message || 'Exception'; LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_STAGE_FAILED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: JSON.stringify({ stage: 'archive', error: e.message }) }); }
+      // Unified retention/archive stage. ArchiveService is a compatibility
+      // facade only; it delegates directly to RetentionService, so this remains
+      // one retention engine inside the single Scheduler.
+      try {
+        var aResult = ArchiveService.run();
+        if (aResult && aResult.ok) {
+          S.archive.status = 'OK';
+        } else {
+          S.archive.status = 'FAILED';
+          S.archive.error = aResult ? JSON.stringify(aResult.error) : 'null result';
+          LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_STAGE_FAILED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: JSON.stringify({ stage: 'retention', error: S.archive.error }) });
+        }
+      } catch (e) {
+        S.archive.status = 'FAILED';
+        S.archive.error = e.message || 'Exception';
+        LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_STAGE_FAILED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: JSON.stringify({ stage: 'retention', error: e.message }) });
+      }
 
       try { var mResult = MaintenanceService.run(); if (mResult && mResult.ok) { S.maintenance.status = 'OK'; } else { S.maintenance.status = 'FAILED'; S.maintenance.error = mResult ? JSON.stringify(mResult.error) : 'null result'; LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_STAGE_FAILED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: JSON.stringify({ stage: 'maintenance', error: S.maintenance.error }) }); } } catch (e) { S.maintenance.status = 'FAILED'; S.maintenance.error = e.message || 'Exception'; LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_STAGE_FAILED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: JSON.stringify({ stage: 'maintenance', error: e.message }) }); }
 
       try { var hResult = AvailabilityHorizonMaintainer.ensureHorizon(); if (hResult && hResult.ok) { S.horizon.status = 'OK'; } else { S.horizon.status = 'FAILED'; S.horizon.error = hResult ? JSON.stringify(hResult.error) : 'null result'; LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_STAGE_FAILED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: JSON.stringify({ stage: 'horizon', error: S.horizon.error }) }); } } catch (e) { S.horizon.status = 'FAILED'; S.horizon.error = e.message || 'Exception'; LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_STAGE_FAILED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: JSON.stringify({ stage: 'horizon', error: e.message }) }); }
+
       // M4-F — Patient Disruption Processing (Contract §9): runs after the
       // availability/horizon materialization stage and before reminders, inside
       // the existing single Scheduler. No second trigger. The stage never holds

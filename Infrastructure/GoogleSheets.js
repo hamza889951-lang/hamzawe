@@ -24,6 +24,53 @@ const GoogleSheets = {
     return sheet;
   },
 
+  /**
+   * Ensure an archive sheet contains every source header while preserving
+   * existing archive-only columns. New source columns are appended at the
+   * end so historical snapshots remain column-compatible and lossless.
+   */
+  ensureHeaders: function(sheetName, requiredHeaders) {
+    if (!requiredHeaders || requiredHeaders.length === 0) {
+      return this.getHeaders(sheetName);
+    }
+
+    var spreadsheet = this._openSpreadsheet();
+    var sheet = spreadsheet.getSheetByName(sheetName);
+    if (!sheet) {
+      this.getOrCreateSheet(sheetName, requiredHeaders);
+      return requiredHeaders.slice();
+    }
+
+    var values = sheet.getDataRange().getValues();
+    var existing = values.length ? values[0].slice() : [];
+    var merged = existing.slice();
+
+    for (var i = 0; i < requiredHeaders.length; i++) {
+      var header = requiredHeaders[i];
+      if (merged.indexOf(header) === -1) merged.push(header);
+    }
+
+    if (merged.length > sheet.getMaxColumns()) {
+      sheet.insertColumnsAfter(sheet.getMaxColumns(), merged.length - sheet.getMaxColumns());
+    }
+
+    var changed = merged.length !== existing.length;
+    if (!changed) {
+      for (var j = 0; j < merged.length; j++) {
+        if (merged[j] !== existing[j]) {
+          changed = true;
+          break;
+        }
+      }
+    }
+
+    if (changed) {
+      sheet.getRange(1, 1, 1, merged.length).setValues([merged]);
+    }
+
+    return merged;
+  },
+
   _rowToObject: function(headers, row, rowNumber) {
     var obj = { _rowNumber: rowNumber };
     headers.forEach(function(h, i) { obj[h] = row[i]; });
