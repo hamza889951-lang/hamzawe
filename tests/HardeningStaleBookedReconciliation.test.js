@@ -151,7 +151,7 @@ test('SBR-4 — zero CONFIRMED with an EXPIRED row clears stale BOOKED', functio
   addTerminal(sandbox.Config.VOCABULARY.STATUS.EXPIRED);
   const result = sandbox.ActiveAppointmentReconciliationService.reconcileBookedConversation(PHONE);
   assert.strictEqual(result.ok, true);
-  assert.strictEqual(result.data.status, 'STALE_CLEARED');
+  assert.strictEqual(result.data.staleCleared, true);
   assert.strictEqual(resetCount, 1);
   assert.strictEqual(conversationState, sandbox.Config.VOCABULARY.CONVERSATION_STATE.MENU_MAIN);
 });
