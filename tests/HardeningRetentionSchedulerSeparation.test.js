@@ -82,4 +82,6 @@ runTest('retention result is surfaced as failure without being converted to succ
   }));
 });
 
+// The operational/retention boundary is intentionally explicit: this suite
+// is part of the final runtime-gate verification for the deployed topology.
 if (process.exitCode !== 1) console.log('3/3 PASS');
