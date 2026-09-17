@@ -33,10 +33,11 @@ const Scheduler = {
       var startedAt = Clock.now();
       var S = { archive: { status: 'NOT_RUN', error: null }, maintenance: { status: 'NOT_RUN', error: null }, horizon: { status: 'NOT_RUN', error: null }, disruption: { status: 'NOT_RUN', error: null }, reminders: { status: 'NOT_RUN', error: null }, healthCheck: { status: 'NOT_RUN', error: null } };
 
-      // Unified retention/archive stage. One engine owns both logical sources:
-      // SYSTEM_LOG -> SYSTEM_LOG_ARCHIVE and Availability -> Availability_ARCHIVE.
+      // Unified retention/archive stage. ArchiveService is a compatibility
+      // facade only; it delegates directly to RetentionService, so this remains
+      // one retention engine inside the single Scheduler.
       try {
-        var aResult = RetentionService.run();
+        var aResult = ArchiveService.run();
         if (aResult && aResult.ok) {
           S.archive.status = 'OK';
         } else {
