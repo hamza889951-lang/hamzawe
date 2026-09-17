@@ -182,6 +182,17 @@ test('ARCHIVE_ONLY is idempotent', function() {
   assert.strictEqual(count('SYSTEM_LOG_ARCHIVE'), a); assert.strictEqual(count('Availability_ARCHIVE'), b);
 });
 
+test('Availability archive preserves extra headers and remains idempotent', function() {
+  reset();
+  state.sheets.Availability_ARCHIVE = { headers: AV_HEADERS.concat(['archive_note']), rows: [] };
+  addAvailability({ slot_id: 'OLD', sort_key: '202607181000' });
+  assert.strictEqual(run({ mode: 'ARCHIVE_ONLY', sources: ['Availability'] }).ok, true);
+  assert.strictEqual(state.sheets.Availability_ARCHIVE.headers[state.sheets.Availability_ARCHIVE.headers.length - 1], 'archive_note');
+  assert.strictEqual(count('Availability_ARCHIVE'), 1);
+  assert.strictEqual(run({ mode: 'ARCHIVE_ONLY', sources: ['Availability'] }).ok, true);
+  assert.strictEqual(count('Availability_ARCHIVE'), 1);
+});
+
 test('SYSTEM_LOG boundary is strict at 31 days', function() {
   reset(); addLog('2026-08-17T12:00:00Z', 'BOUNDARY'); addLog('2026-08-17T11:59:59Z', 'OLD');
   var r = run({ mode: 'DRY_RUN', sources: ['SYSTEM_LOG'] });
