@@ -27,6 +27,7 @@ let bookingCalls = 0;
 let changeCalls = 0;
 let cancelCalls = 0;
 let queryFailure = false;
+let resetWriteFailure = false;
 
 sandbox.SlotRepository = {
   queryResult: function(predicateFn) {
@@ -45,7 +46,9 @@ sandbox.ConversationRepository = {
   },
   resetToMenuMain: function() {
     resetCount += 1;
-    conversationState = sandbox.Config.VOCABULARY.CONVERSATION_STATE.MENU_MAIN;
+    if (!resetWriteFailure) {
+      conversationState = sandbox.Config.VOCABULARY.CONVERSATION_STATE.MENU_MAIN;
+    }
   }
 };
 
@@ -90,6 +93,7 @@ function reset() {
   changeCalls = 0;
   cancelCalls = 0;
   queryFailure = false;
+  resetWriteFailure = false;
 }
 
 function addConfirmed(slotId) {
@@ -187,6 +191,17 @@ test('SBR-7 — stale BOOKED ordinary message is reconciled before BookingServic
   assert.strictEqual(result.data.conversationState, sandbox.Config.VOCABULARY.CONVERSATION_STATE.MENU_MAIN);
   assert.strictEqual(resetCount, 1);
   assert.strictEqual(bookingCalls, 0);
+});
+
+test('SBR-8 — failed Conversation reset does not claim staleCleared success', function() {
+  reset();
+  addTerminal(sandbox.Config.VOCABULARY.STATUS.COMPLETED);
+  resetWriteFailure = true;
+  const result = sandbox.ActiveAppointmentReconciliationService.reconcileBookedConversation(PHONE);
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.error.code, 'BOOKED_RECONCILIATION_RESET_FAILED');
+  assert.strictEqual(resetCount, 1);
+  assert.strictEqual(conversationState, sandbox.Config.VOCABULARY.CONVERSATION_STATE.BOOKED);
 });
 
 tests.forEach(function(item) {
