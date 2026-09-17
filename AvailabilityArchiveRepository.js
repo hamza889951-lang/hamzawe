@@ -6,7 +6,7 @@
  * verification, fresh-read deletion checks, and archive identity.
  *
  * Safety invariant:
- *   archive snapshot -> verify exact snapshot -> fresh reread -> revalidate -> delete
+ *   archive snapshot -> verify exact snapshot -> fresh-read -> revalidate -> delete
  */
 const AvailabilityArchiveRepository = {
 
@@ -23,10 +23,20 @@ const AvailabilityArchiveRepository = {
       });
     }
 
+    var slotIdCounts = {};
+    for (var c = 0; c < rows.length; c++) {
+      var countedId = rows[c].slot_id;
+      if (countedId === undefined || countedId === null || String(countedId).trim() === '') continue;
+      var countedKey = String(countedId);
+      slotIdCounts[countedKey] = (slotIdCounts[countedKey] || 0) + 1;
+    }
+
     var records = [];
     var malformedSlotIds = 0;
     var malformedSortKeys = 0;
     var reservedSkipped = 0;
+    var ambiguousSlotIds = 0;
+    var seenAmbiguous = {};
 
     for (var i = 0; i < rows.length; i++) {
       var row = rows[i];
@@ -36,17 +46,28 @@ const AvailabilityArchiveRepository = {
         continue;
       }
 
+      var slotKey = String(slotId);
+      if (slotIdCounts[slotKey] > 1) {
+        if (!seenAmbiguous[slotKey]) {
+          seenAmbiguous[slotKey] = true;
+          ambiguousSlotIds += 1;
+        }
+        // Duplicate slot_id is an identity ambiguity. Protect every row in
+        // the ambiguous group rather than guessing which lifecycle row wins.
+        continue;
+      }
+
       var startMs = LegacySlotTimeParser.toComparableTime(row.sort_key);
       if (startMs === null || isNaN(startMs)) {
         malformedSortKeys += 1;
         continue;
       }
 
-      var appointmentDate = Utilities.formatDate(
-        new Date(startMs),
-        'Asia/Baghdad',
-        'yyyy-MM-dd'
-      );
+      var appointmentDate = DateUtils.formatClinicDateFromEpoch(startMs);
+      if (!appointmentDate) {
+        malformedSortKeys += 1;
+        continue;
+      }
 
       // Strictly older than the retention boundary. The boundary date itself
       // remains live and is therefore protected.
@@ -66,6 +87,7 @@ const AvailabilityArchiveRepository = {
       malformedSlotIds: malformedSlotIds,
       malformedSortKeys: malformedSortKeys,
       reservedSkipped: reservedSkipped,
+      ambiguousSlotIds: ambiguousSlotIds,
       cutoffDate: cutoffDate
     });
   },
@@ -86,16 +108,17 @@ const AvailabilityArchiveRepository = {
 
       var toAppend = [];
       for (var i = 0; i < records.length; i++) {
-        var matches = this._findExactMatches(archiveRows, records[i]);
+        var record = records[i];
+        var matches = this._findExactMatches(archiveRows, record);
         if (matches.length > 1) {
           return Result.fail('AVAILABILITY_ARCHIVE_IDENTITY_AMBIGUOUS',
             'More than one exact Availability archive snapshot exists',
-            { slotId: records[i].slot_id });
+            { slotId: record.slot_id });
         }
         if (matches.length === 0) {
           toAppend.push(archiveHeaders.map(function(header) {
-            return records[i].hasOwnProperty(header) ? records[i][header] : '';
-          }, this));
+            return record.hasOwnProperty(header) ? record[header] : '';
+          }));
         }
       }
 
@@ -180,11 +203,13 @@ const AvailabilityArchiveRepository = {
           });
       }
 
-      var appointmentDate = Utilities.formatDate(
-        new Date(startMs),
-        'Asia/Baghdad',
-        'yyyy-MM-dd'
-      );
+      var appointmentDate = DateUtils.formatClinicDateFromEpoch(startMs);
+      if (!appointmentDate) {
+        return Result.fail('AVAILABILITY_DELETE_REVALIDATION_FAILED',
+          'Fresh Availability row has an unresolvable appointment date', {
+            slotId: record.slot_id
+          });
+      }
       if (appointmentDate >= cutoffDate) {
         return Result.fail('AVAILABILITY_DELETE_REVALIDATION_FAILED',
           'Availability row no longer falls outside the retention window', {
@@ -269,8 +294,8 @@ const AvailabilityArchiveRepository = {
   },
 
   _value: function(value) {
-    if (value instanceof Date) return 'D:' + value.getTime();
-    if (value === undefined || value === null) return '';
-    return String(value);
+    if (value instanceof Date) return 'date:' + value.getTime();
+    if (value === undefined || value === null) return 'null:';
+    return typeof value + ':' + String(value);
   }
 };
