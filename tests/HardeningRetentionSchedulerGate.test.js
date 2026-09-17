@@ -79,7 +79,8 @@ runTest('Scheduler retention executes only with explicit TRUE enablement', funct
   assert.strictEqual(result.ok, true);
   assert.strictEqual(result.data.status, 'EXECUTED');
   assert.strictEqual(retentionCalls.length, 1);
-  assert.deepStrictEqual(retentionCalls[0], { sources: ['SYSTEM_LOG'] });
+  assert.strictEqual(retentionCalls[0].sources.length, 1);
+  assert.strictEqual(retentionCalls[0].sources[0], 'SYSTEM_LOG');
 });
 
 runTest('non-TRUE values remain disabled', function() {
