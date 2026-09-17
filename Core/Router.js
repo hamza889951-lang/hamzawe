@@ -17,11 +17,15 @@
  *   Actor مصرح له فقط يدخل DoctorControlEntry؛ أي أخرى (unknown /
  *   unauthorized / identity failure) تنساب إلى patient routing الحالي.
  *   لا يتعامل Router مع أي Sheets أو Calendar أو Settings أو WhatsApp.
+ * - BOOKED consistency gate: قبل توجيه أي رسالة من حالة BOOKED، يُستدعى
+ *   ActiveAppointmentReconciliationService للتحقق من وجود موعد CONFIRMED
+ *   authoritative. Router لا يقرأ Availability بنفسه ولا يقرر صلاحية الموعد.
  * - إرجاع Result من الخدمة المستهدفة — دون أي تعديل أو إثراء من Router.
  *
  * لا يضمن:
  * - أي منطق عمل — مجرد توجيه بناءً على جدول الحالات المعتمد وحد الـ
- *   authorization المحدد هويته خارجياً.
+ *   authorization المحدد هويته خارجياً، مع hand-off لحدود Application
+ *   المتخصصة عند الحاجة.
  * - أي معرفة بـ Sheets أو Calendar أو UltraMsg.
  * - تحديد من هو الطبيب business-wise — هذا من DoctorAuthorizationService.
  * - أي نصوص ردود — كل النصوص داخل الخدمات.
@@ -39,22 +43,20 @@
  * | WAITING_CONFIRMATION | "1"         | BookingService.handleIncomingMessage |
  * | WAITING_CONFIRMATION | "2"         | ChangeService.changeReservation      |
  * | WAITING_CONFIRMATION | غير ذلك     | BookingService.handleIncomingMessage |
- * | BOOKED               | "2"         | ChangeService.changeConfirmed...     |
- * | BOOKED               | "3"         | CancelService.cancelAppointment       |
- * | BOOKED               | غير ذلك     | BookingService.handleIncomingMessage |
+ * | BOOKED + active      | "2"         | ChangeService.changeConfirmed...     |
+ * | BOOKED + active      | "3"         | CancelService.cancelAppointment       |
+ * | BOOKED + active      | غير ذلك     | BookingService.handleIncomingMessage |
+ * | BOOKED + stale       | أي رسالة    | ActiveAppointmentReconciliationService |
  *
  * ═══════════════════════════════════════
  * فلسفة التصميم
  * ═══════════════════════════════════════
- * Router لا يفحص محتوى الرسالة إلا في حالتين فقط:
- *   WAITING_CONFIRMATION — ليميّز "2" (تغيير قبل التأكيد)
- *   BOOKED               — ليميّز "2" و"3" (تغيير/إلغاء بعد التأكيد)
- * كل شيء آخر يذهب افتراضيًا إلى BookingService الذي يدير تفسير
- * الرسالة داخليًا حسب حالته الخاصة.
+ * Router يفحص محتوى الرسالة فقط عند الحاجة لتحديد الوجهة. في حالة BOOKED
+ * توجد أولًا consistency gate واحدة لاختبار وجود موعد CONFIRMED فعلي؛ إذا
+ * كانت الحالة stale، يقوم الحد المتخصص بإصلاح جلسة Conversation ويعيد الرد
+ * مباشرة، ولا تصل الرسالة إلى Change/Cancel/B6.
  *
- * Router يعتمد فقط على Conversation.state + message —
- * ولا يعتمد على rowNumber ولا على status ولا على calendar.
- * وهذا ينسجم تمامًا مع CAS.
+ * Router لا يتعامل مباشرة مع Availability أو Calendar أو B6.
  */
 const Router = {
 
@@ -128,7 +130,28 @@ const Router = {
     var normalizedMessage = (message || '').trim();
 
     // ─────────────────────────────
-    // 4. التوجيه حسب جدول الحالات
+    // 4. BOOKED consistency gate
+    //    Conversation.state is not authoritative proof of an active
+    //    appointment. The Application reconciliation boundary checks the
+    //    authoritative Availability rows before any BOOKED dispatch.
+    //    A typeof guard preserves fail-closed operation of older/partial
+    //    bundles that do not contain the new boundary yet.
+    // ─────────────────────────────
+    if (currentState === Config.VOCABULARY.CONVERSATION_STATE.BOOKED &&
+        typeof ActiveAppointmentReconciliationService !== 'undefined') {
+      var reconciliationResult = ActiveAppointmentReconciliationService.reconcileBookedConversation(phone);
+      if (!reconciliationResult.ok) return reconciliationResult;
+
+      if (reconciliationResult.data && reconciliationResult.data.staleCleared === true) {
+        return Result.ok({
+          reply: reconciliationResult.data.reply,
+          conversationState: reconciliationResult.data.conversationState
+        });
+      }
+    }
+
+    // ─────────────────────────────
+    // 5. التوجيه حسب جدول الحالات
     // ─────────────────────────────
 
     // --- M4-F: WAITING_DISRUPTION_CONFIRMATION → PatientDisruptionService ---
