@@ -26,9 +26,11 @@ const DateUtils = {
   /**
    * Convert a Date / numeric / date-string value to epoch ms.
    * Invalid or absent values return null.
+   * Date detection deliberately supports cross-realm Date objects as well,
+   * which is required by the repository's VM-based contract tests.
    */
   toEpochMs(value) {
-    if (value instanceof Date) {
+    if (Object.prototype.toString.call(value) === '[object Date]') {
       var dateMs = value.getTime();
       return isNaN(dateMs) ? null : dateMs;
     }
