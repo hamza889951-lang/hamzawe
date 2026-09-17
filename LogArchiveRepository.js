@@ -22,16 +22,20 @@ const LogArchiveRepository = {
     }
 
     var records = [];
+    var malformedTimestamps = 0;
     for (var i = 0; i < rows.length; i++) {
       var row = rows[i];
-      var ts = row.timestamp;
-      if (!ts) continue;
-      var rowMs = (typeof ts === 'object') ? ts.getTime() : new Date(ts).getTime();
-      if (isNaN(rowMs)) continue;
+      var rowMs = DateUtils.toEpochMs(row.timestamp);
+      if (rowMs === null) {
+        if (row.timestamp !== undefined && row.timestamp !== null && String(row.timestamp).trim() !== '') {
+          malformedTimestamps += 1;
+        }
+        continue;
+      }
       if (rowMs < cutoffMs) records.push(this._toRecord(row));
     }
 
-    return Result.ok({ records: records, totalCount: rows.length });
+    return Result.ok({ records: records, totalCount: rows.length, malformedTimestamps: malformedTimestamps });
   },
 
   /**
