@@ -19,13 +19,15 @@ const HealthCheckService = {
     var warnings = [];
 
     try {
-      var allSlots = GoogleSheets.getAllRows(Config.VOCABULARY.SHEETS.AVAILABILITY);
-      if (!allSlots || allSlots.length === 0) { issues.push('لا توجد فتحات في Availability'); }
+      if (!GoogleSheets.hasDataRows(Config.VOCABULARY.SHEETS.AVAILABILITY)) {
+        issues.push('لا توجد فتحات في Availability');
+      }
     } catch (e) { issues.push('فشل قراءة Availability: ' + e.message); }
 
     try {
-      var logRows = GoogleSheets.getAllRows(Config.VOCABULARY.SHEETS.SYSTEM_LOG);
-      if (!logRows || logRows.length === 0) { issues.push('SYSTEM_LOG فارغ'); }
+      if (!GoogleSheets.hasDataRows(Config.VOCABULARY.SHEETS.SYSTEM_LOG)) {
+        issues.push('SYSTEM_LOG فارغ');
+      }
     } catch (e) { issues.push('فشل قراءة SYSTEM_LOG: ' + e.message); }
 
     try {
