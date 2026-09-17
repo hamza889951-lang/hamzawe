@@ -142,8 +142,7 @@ const Router = {
       var reconciliationResult = ActiveAppointmentReconciliationService.reconcileBookedConversation(phone);
       if (!reconciliationResult.ok) return reconciliationResult;
 
-      if (reconciliationResult.data &&
-          reconciliationResult.data.status === 'STALE_CLEARED') {
+      if (reconciliationResult.data && reconciliationResult.data.staleCleared === true) {
         return Result.ok({
           reply: reconciliationResult.data.reply,
           conversationState: reconciliationResult.data.conversationState
