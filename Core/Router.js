@@ -134,8 +134,11 @@ const Router = {
     //    Conversation.state is not authoritative proof of an active
     //    appointment. The Application reconciliation boundary checks the
     //    authoritative Availability rows before any BOOKED dispatch.
+    //    A typeof guard preserves fail-closed operation of older/partial
+    //    bundles that do not contain the new boundary yet.
     // ─────────────────────────────
-    if (currentState === Config.VOCABULARY.CONVERSATION_STATE.BOOKED) {
+    if (currentState === Config.VOCABULARY.CONVERSATION_STATE.BOOKED &&
+        typeof ActiveAppointmentReconciliationService !== 'undefined') {
       var reconciliationResult = ActiveAppointmentReconciliationService.reconcileBookedConversation(phone);
       if (!reconciliationResult.ok) return reconciliationResult;
 
