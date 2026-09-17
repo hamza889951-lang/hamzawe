@@ -77,6 +77,12 @@ const GoogleSheets = {
     return obj;
   },
 
+  /** Return true when a sheet contains at least one data row. */
+  hasDataRows: function(sheetName) {
+    var sheet = this._getSheet(sheetName);
+    return sheet.getLastRow() >= 2;
+  },
+
   /**
    * Read one fresh row without loading the entire sheet data range.
    * This is intentionally a point-read path for atomic/fresh-read callers.
