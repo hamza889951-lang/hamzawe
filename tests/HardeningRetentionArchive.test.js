@@ -260,12 +260,14 @@ test('Invalid mode, identity typing, CAS-009 and Scheduler boundary are enforced
   var retention = fs.readFileSync(path.join(ROOT, 'RetentionService.js'), 'utf8');
   var availability = fs.readFileSync(path.join(ROOT, 'AvailabilityArchiveRepository.js'), 'utf8');
   var scheduler = fs.readFileSync(path.join(ROOT, 'Scheduler.js'), 'utf8');
+  var archiveFacade = fs.readFileSync(path.join(ROOT, 'ArchiveService.js'), 'utf8');
   assert.strictEqual(retention.indexOf('new Date('), -1);
   assert.strictEqual(retention.indexOf('Utilities.formatDate'), -1);
   assert.strictEqual(availability.indexOf('new Date('), -1);
   assert.strictEqual(availability.indexOf('Utilities.formatDate'), -1);
-  assert.strictEqual((scheduler.match(/RetentionService\.run\(\)/g) || []).length, 1);
-  assert.strictEqual(scheduler.indexOf('ArchiveService.run()'), -1);
+  assert.strictEqual((scheduler.match(/ArchiveService\.run\(\)/g) || []).length, 1);
+  assert.strictEqual(scheduler.indexOf('RetentionService.run()'), -1);
+  assert.strictEqual((archiveFacade.match(/RetentionService\.run\(/g) || []).length, 1);
 });
 
 test('Frozen retention windows remain 31 and 60 days', function() {
