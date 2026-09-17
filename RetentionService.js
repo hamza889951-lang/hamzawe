@@ -105,8 +105,18 @@ const RetentionService = {
       eligible: records.length,
       archived: 0,
       deleted: 0,
-      cutoffMs: cutoffMs
+      cutoffMs: cutoffMs,
+      malformedTimestamps: findResult.data.malformedTimestamps || 0
     };
+
+    if (result.malformedTimestamps) {
+      this._log('RETENTION_SKIP', true, {
+        source: this.SOURCES.SYSTEM_LOG,
+        mode: mode,
+        malformedTimestamps: result.malformedTimestamps,
+        reason: 'PROTECTED_OR_UNUSABLE_ROWS'
+      });
+    }
 
     if (records.length === 0) return Result.ok(result);
 
