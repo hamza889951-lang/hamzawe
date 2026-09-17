@@ -30,12 +30,19 @@ jobs:
         run: |
           set -euo pipefail
           node --check Infrastructure/GoogleCalendar.js
+          node --check Infrastructure/GoogleSheets.js
           node --check Application/B6LifecycleService.js
+          node --check AvailabilityArchiveRepository.js
+          node --check RetentionService.js
+          node --check ArchiveService.js
+          node --check Scheduler.js
+          node --check LogArchiveRepository.js
           node --check tests/HardeningCalendarDeleteVerification.test.js
           node --check tests/HardeningB6.test.js
           node --check tests/HardeningB6TerminalProof.test.js
           node --check Domain/Validators.js
           node --check tests/HardeningPatientNameValidation.test.js
+          node --check tests/HardeningRetentionArchive.test.js
 
       - name: Targeted Calendar verification test
         shell: bash
@@ -60,6 +67,12 @@ jobs:
         run: |
           set -euo pipefail
           node tests/HardeningStaleBookedReconciliation.test.js
+
+      - name: Targeted Retention / Archive contract test
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tests/HardeningRetentionArchive.test.js
 
       - name: Full hardening regression
         shell: bash
