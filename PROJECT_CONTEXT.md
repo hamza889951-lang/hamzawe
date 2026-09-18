@@ -78,10 +78,10 @@ Repositories/AttendanceAuditRepository.js M0 append-only attendance decision evi
 Infrastructure/GoogleSheets.js    ONLY SpreadsheetApp access (getAllRows, updateBatch, appendRow, ...)
 Infrastructure/GoogleCalendar.js  ONLY CalendarApp access (createEvent/deleteEvent)
 Infrastructure/Lock.js            Lock.runExclusive(key, fn) — ScriptLock wrapper; "the only file knowing LockService"
-Infrastructure/WhatsAppAdapter.js ONLY ultramsg knowledge (send + parseIncomingPayload)
+Infrastructure/WhatsAppAdapter.js Meta Cloud transport boundary (send + normalized inbound envelope verification)
 Utils/ULID.js                     ULID generation (Math.random — not cryptographic, ID only)
 Utils/IdGenerator.js              generateSlotId/ConversationId/AppointmentId
-Utils/PhoneUtils.js               normalize(): strip @c.us, +, spaces
+Utils/PhoneUtils.js               normalize(): strip legacy JID suffixes, +, spaces
 Utils/DateUtils.js                Date math + display formatting + generator storage formats
 Utils/LegacySlotTimeParser.js     sort_key → comparable ms (TEMPORARY — ADR-016, dies with generator rebuild)
 Utils/Validators.js               validatePhone/validatePatientName/validateTransition (accept/reject only)
@@ -157,12 +157,12 @@ COMPLETED / NO_SHOW / EXPIRED / CANCELLED = terminal (no transitions)
 
 | Dependency | File | Details |
 |---|---|---|
-| WhatsApp (UltraMsg) | `Infrastructure/WhatsAppAdapter.js` | POST `https://api.ultramsg.com/{instance}/messages/chat` (form-encoded: token, to, body). Incoming webhook payload: `{ data: { from, body, id } }`. |
+| WhatsApp Cloud | `Infrastructure/WhatsAppAdapter.js` + external Meta gateway | Outbound Meta Graph messages; inbound Meta webhook is verified/normalized by the gateway and authenticated again by HAMZAWE. |
 | Google Calendar | `Infrastructure/GoogleCalendar.js` | `CalendarApp.getDefaultCalendar()` (no calendarId set in app code). `createEvent`, `getEventById/deleteEvent`. |
 | Google Sheets | `Infrastructure/GoogleSheets.js` | `SpreadsheetApp.openById(SPREADSHEET_ID)` or `getActiveSpreadsheet()` (both routed through `_openSpreadsheet()`; `SPREADSHEET_ID` wins when set). Generics: `getAllRows`, `getHeaders`, `appendRows`, `updateBatch`, `appendRow`, `getOrCreateSheet`, `deleteRowsByNumbers`. |
-| Script Properties | many | `SPREADSHEET_ID`, `ULTRAMSG_INSTANCE_ID`, `ULTRAMSG_TOKEN`, `ADMIN_PHONE` (owner/ops notification), `DOCTOR_PHONE` (M4-A doctor identity); runtime: `LAST_SCHEDULER_SUCCESS_MS`, `LAST_LIVENESS_ALERT_MS`. |
+| Script Properties | many | `SPREADSHEET_ID`, `META_GRAPH_API_VERSION`, `META_PHONE_NUMBER_ID`, `META_ACCESS_TOKEN`, `WHATSAPP_GATEWAY_SECRET`, `ADMIN_PHONE` (owner/ops notification), `DOCTOR_PHONE` (M4-A doctor identity); runtime: `LAST_SCHEDULER_SUCCESS_MS`, `LAST_LIVENESS_ALERT_MS`. |
 
-**Auth flow:** Web app deployment `executeAs: USER_DEPLOYING`, `access: ANYONE_ANONYMOUS` (ultramsg POSTs to the webapp URL with no auth). WhatsApp replies use the ultramsg token. No OAuth is handled in code (Google services run as the deploying user).
+**Auth flow:** Web app deployment `executeAs: USER_DEPLOYING`, `access: ANYONE_ANONYMOUS` (Meta authenticates the external gateway; the gateway signs normalized events for HAMZAWE; the Apps Script web app verifies the gateway envelope. Meta outbound calls use the configured Graph API access token. No OAuth is handled in code (Google services run as the deploying user).
 
 **Webhook flow (Webhook.js → Core/Router.js):**
 ```
@@ -308,7 +308,7 @@ Ranked by severity (P0=worst). All confirmed by code inspection.
 - **`atomicUpdate(slotId, decisionFn)` pattern** — lock + fresh re-read + transition validation + owner check. This is the core double-booking defense; do not bypass it.
 - **Bus-number presentation** (ADR-021) — patient sees bus number + date; doctor controls how many slots per day.
 - **Patient-retention-first** in reschedule — once the new appointment is confirmed, cleanup failures never surface to the patient.
-- **Webhook idempotency** (ADR-023) — 5-min dedup to survive ultramsg retries.
+- **Webhook idempotency** (ADR-023) — 5-min dedup to survive provider webhook retries.
 - **Result-only returns** (CAS-008) — uniform success/failure signaling; no silent true/false.
 - **`LogRepository` append-only** — diagnostic log; never a read/delete API (archived reads/deletes live in `LogArchiveRepository`).
 - **Archive identity safety (Phase A)** — no stable unique ID in SYSTEM_LOG; delete only on exactly-one full-content match, never on row number alone. Simple, safe, no schema change; a future `log_id` column would improve it (not needed now).

@@ -93,7 +93,7 @@ ADR
 	الفشل الجزئي بين Slot و Calendar يُسجَّل ولا يُرجع تلقائياً (ذرية مستقبلية)
 	✅ ثابت
 	ADR-007
-	WhatsAppAdapter يغلّف ultramsg، وأي تبديل مستقبلي يقتصر على هذا الملف
+	WhatsAppAdapter يغلّف Meta Cloud API؛ inbound security/normalization خارج HAMZAWE، وأي تبديل مزود مستقبلي يبقى عند حدود النقل
 	✅ ثابت
 	ADR-008
 	في v1، Slot يمثل حالة التوفر فقط. CancelAppointment → FREE مباشرة
@@ -333,7 +333,7 @@ doPost(e)
   ├─ ProcessedMessagesService.markProcessed(msgId, phone, message) ⭐
   ├─ Router.dispatch({ phone, message })
   │   └─ تعيد Result { reply, conversationState }
-  ├─ WhatsAppAdapter.sendMessage(phone, reply)
+  ├─ MessagingPolicyService.sendReply(phone, reply)
   │   └─ فشل؟ → تسجيل WEBHOOK_SEND_FAILED
   └─ Exception? → WEBHOOK_CRASH → ERROR_LOGGED
 ```
