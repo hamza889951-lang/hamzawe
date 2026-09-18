@@ -68,6 +68,24 @@ const ReminderService = {
     return false;
   },
 
+  _buildReminderDeliveryOptions: function(slot) {
+    var busResult = BusNumberCalculator.fromSlot(slot);
+    var workStartResult = ReminderService._getClinicWorkStartDisplay();
+    var dateDisplay = DateUtils.formatDateDisplay(slot.date);
+
+    if (busResult.ok && workStartResult.ok) {
+      return {
+        kind: MessagingPolicyService.KINDS.REMINDER,
+        templateParameters: [dateDisplay, busResult.data.busNumber, workStartResult.data]
+      };
+    }
+
+    return {
+      kind: MessagingPolicyService.KINDS.REMINDER_NO_BUS,
+      templateParameters: [dateDisplay]
+    };
+  },
+
   _buildReminderMessage: function(slot) {
     var busResult = BusNumberCalculator.fromSlot(slot);
     var workStartResult = ReminderService._getClinicWorkStartDisplay();
