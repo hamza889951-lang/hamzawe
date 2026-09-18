@@ -95,8 +95,16 @@ function loadScript(file, sandbox) {
     }
   };
 
-  loadScript('Application/MessagingPolicyService.js', sandbox);
-  const policy = vm.runInNewContext('MessagingPolicyService', sandbox);
+  const policySource = fs.readFileSync(
+    path.join(ROOT, 'Application/MessagingPolicyService.js'),
+    'utf8'
+  );
+  vm.runInNewContext(
+    policySource + '\nthis.__migrationPolicy = MessagingPolicyService;',
+    sandbox,
+    { filename: 'Application/MessagingPolicyService.js' }
+  );
+  const policy = sandbox.__migrationPolicy;
 
   let result = policy.sendProactive('9647', 'hello', {
     kind: policy.KINDS.REMINDER
