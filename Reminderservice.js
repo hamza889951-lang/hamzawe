@@ -75,13 +75,13 @@ const ReminderService = {
 
     if (busResult.ok && workStartResult.ok) {
       return {
-        kind: MessagingPolicyService.KINDS.REMINDER,
+        kind: 'REMINDER',
         templateParameters: [dateDisplay, busResult.data.busNumber, workStartResult.data]
       };
     }
 
     return {
-      kind: MessagingPolicyService.KINDS.REMINDER_NO_BUS,
+      kind: 'REMINDER_NO_BUS',
       templateParameters: [dateDisplay]
     };
   },
