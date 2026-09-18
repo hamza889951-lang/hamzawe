@@ -33,7 +33,7 @@ function doPost(e) {
       return ContentService.createTextOutput('OK');
     }
 
-    if (parsed.messageType !== 'TEXT') {
+    if (parsed.messageType && parsed.messageType !== 'TEXT') {
       LogRepository.write({
         timestamp: Clock.now(),
         command: 'WEBHOOK_UNSUPPORTED_MESSAGE',
