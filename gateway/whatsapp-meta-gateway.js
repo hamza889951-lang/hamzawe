@@ -47,6 +47,10 @@ function safeEqual(a, b) {
   return crypto.timingSafeEqual(aa, bb);
 }
 
+function verifyMetaWebhookChallenge(mode, verifyToken, expectedToken, challenge) {
+  return mode === 'subscribe' && verifyToken === expectedToken && typeof challenge === 'string' && challenge.length > 0;
+}
+
 function verifyMetaSignature(rawBody, headerValue, appSecret) {
   if (!headerValue || !appSecret) return false;
   const prefix = 'sha256=';
@@ -175,8 +179,11 @@ async function handleRequest(req, res) {
   }
 
   if (req.method === 'GET') {
-    if (requestUrl.searchParams.get('hub.mode') !== 'subscribe' ||
-        requestUrl.searchParams.get('hub.verify_token') !== CONFIG.metaVerifyToken) {
+    if (!verifyMetaWebhookChallenge(
+        requestUrl.searchParams.get('hub.mode'),
+        requestUrl.searchParams.get('hub.verify_token'),
+        CONFIG.metaVerifyToken,
+        requestUrl.searchParams.get('hub.challenge'))) {
       res.writeHead(401, { 'Content-Type': 'text/plain' });
       return res.end('VERIFICATION_FAILED');
     }
@@ -250,6 +257,7 @@ if (require.main === module) {
 
 module.exports = {
   hexHmacSha256,
+  verifyMetaWebhookChallenge,
   verifyMetaSignature,
   canonicalJson,
   signNormalizedEvent,
