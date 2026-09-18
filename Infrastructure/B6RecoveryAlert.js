@@ -6,7 +6,13 @@
  * Doctor identity source.
  */
 const B6RecoveryAlert = {
-  notifyRecoveryRequired: function(payload) {
+  notifyRecoveryRequired: function(payload, sendFn) {
+    if (typeof sendFn !== 'function') {
+      return Result.fail(
+        'B6_RECOVERY_ALERT_SENDER_MISSING',
+        'A provider-neutral outbound sender is required'
+      );
+    }
     try {
       var properties = PropertiesService.getScriptProperties();
       var adminPhone = properties.getProperty('ADMIN_PHONE');
@@ -22,7 +28,7 @@ const B6RecoveryAlert = {
         'Case: ' + (payload.recoveryCaseId || '') + '\n' +
         'Reason: ' + (payload.reason || 'UNRESOLVED');
 
-      return MessagingPolicyService.sendProactive(adminPhone, message, { kind: MessagingPolicyService.KINDS.B6_RECOVERY });
+      return sendFn(adminPhone, message, { kind: 'B6_RECOVERY' });
     } catch (e) {
       return Result.fail('B6_RECOVERY_ALERT_FAILED', e.message, e.stack);
     }
