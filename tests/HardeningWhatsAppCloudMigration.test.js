@@ -31,6 +31,10 @@ function loadScript(file, sandbox) {
     }]
   });
 
+  assert.strictEqual(gateway.verifyMetaWebhookChallenge('subscribe', 'verify-123', 'verify-123', 'challenge-abc'), true);
+  assert.strictEqual(gateway.verifyMetaWebhookChallenge('subscribe', 'wrong', 'verify-123', 'challenge-abc'), false);
+  assert.strictEqual(gateway.verifyMetaWebhookChallenge('unsubscribe', 'verify-123', 'verify-123', 'challenge-abc'), false);
+
   const signature = 'sha256=' + gateway.hexHmacSha256(secret, body);
   assert.strictEqual(gateway.verifyMetaSignature(body, signature, secret), true);
   assert.strictEqual(gateway.verifyMetaSignature(body, signature + '0', secret), false);
@@ -53,7 +57,12 @@ function loadScript(file, sandbox) {
     envelope.signature,
     gateway.signNormalizedEvent(events.messages[0], 'gateway-secret')
   );
-  console.log('PASS: P0 gateway signature, normalization, and envelope');
+  const statusPayload = { entry: [{ changes: [{ value: { statuses: [{ id: 'wamid.status-1', status: 'delivered', recipient_id: '9647001234567', timestamp: '1779000001' }] } }] }] };
+  const statusEvents = gateway.collectNormalizedEvents(statusPayload);
+  assert.strictEqual(statusEvents.statuses.length, 1);
+  assert.strictEqual(statusEvents.messages.length, 0);
+
+  console.log('PASS: P0 gateway verification, signature, normalization, status isolation, and envelope');
 })();
 
 (function messagingPolicyTests() {
