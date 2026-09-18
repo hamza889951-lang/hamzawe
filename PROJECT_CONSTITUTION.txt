@@ -93,7 +93,7 @@ ADR
 	الفشل الجزئي بين Slot و Calendar يُسجَّل ولا يُرجع تلقائياً (ذرية مستقبلية)
 	✅ ثابت
 	ADR-007
-	WhatsAppAdapter يغلّف Meta Cloud API؛ inbound security/normalization خارج HAMZAWE، وأي تبديل مزود مستقبلي يبقى عند حدود النقل
+	WhatsAppAdapter يغلّف Meta Cloud API؛ inbound security/normalization خارج HAMZAWE، وMessagingPolicyService يملك سياسة الردود/الإشعارات، وأي تبديل مزود مستقبلي يبقى عند حدود النقل
 	✅ ثابت
 	ADR-008
 	في v1، Slot يمثل حالة التوفر فقط. CancelAppointment → FREE مباشرة
@@ -176,7 +176,7 @@ Utils/
 Infrastructure/
   GoogleSheets.gs          # + updateBatch (تحسين الأداء)
   GoogleCalendar.gs
-  WhatsAppAdapter.gs       # + استخراج messageId
+  WhatsAppAdapter.gs       # Meta Cloud transport adapter
   Lock.gs
 
 
@@ -256,7 +256,7 @@ ManualRunners.gs           # دوال اختبار يدوية
 **التفاصيل:**
 - يستخدم `PropertiesService` لتخزين بصمة الرسالة مع الطابع الزمني.
 - نافذة 5 دقائق (قابلة للتكوين عبر `DUPLICATE_WINDOW_MS`).
-- عند وجود `messageId` من UltraMsg، يُستخدم مباشرة.
+- عند وجود `messageId` من normalized inbound transport event (مثل Meta `wamid`)، يُستخدم مباشرة.
 - عند غيابه، يُبنى بصمة من `phone + message + الدقيقة` (دقة دقيقة) لتجنب رفض الرسائل المتطابقة في أوقات مختلفة.
 
 
@@ -389,9 +389,15 @@ Scheduler.main()
 - [ ] التأكد من وجود جميع الأوراق في Spreadsheet: `Availability`, `Conversations`, `Settings`, `SYSTEM_LOG`.
 - [ ] التأكد من وجود جميع Script Properties:
   - `SPREADSHEET_ID`
-  - `ULTRAMSG_INSTANCE_ID`
-  - `ULTRAMSG_TOKEN`
+  - `META_GRAPH_API_VERSION`
+  - `META_PHONE_NUMBER_ID`
+  - `META_ACCESS_TOKEN`
+  - `WHATSAPP_GATEWAY_SECRET`
   - `ADMIN_PHONE`
+- [ ] التأكد من وجود عمودي `last_inbound_at_ms` و`last_inbound_message_id` في `Conversations`.
+- [ ] التأكد من إعداد Meta App Secret / Verify Token و`HAMZAWE_GATEWAY_SECRET` في Gateway environment.
+- [ ] التأكد من نشر Gateway قبل تفعيل Meta Webhook.
+- [ ] لا تُفعّل الرسائل الاستباقية خارج نافذة الخدمة دون Templates معتمدة ومهيأة.
 - [ ] تشغيل `RUN_healthCheck()` والتأكد من ظهور `✅ SYSTEM READY`.
 - [ ] تشغيل `RUN_previewHorizon()` ومعاينة خطة التوليد.
 - [ ] تشغيل `RUN_ensureHorizon()` وتأكيد كتابة الفتحات.
