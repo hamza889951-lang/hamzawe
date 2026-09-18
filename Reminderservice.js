@@ -32,7 +32,8 @@ const ReminderService = {
       return {
         slotId: slot.slot_id,
         phone: slot.phone,
-        message: ReminderService._buildReminderMessage(slot)
+        message: ReminderService._buildReminderMessage(slot),
+        deliveryOptions: ReminderService._buildReminderDeliveryOptions(slot)
       };
     });
 
@@ -46,7 +47,7 @@ const ReminderService = {
     var sent = 0;
     for (var i = 0; i < jobs.length; i++) {
       var job = jobs[i];
-      var sendResult = sendFn(job.phone, job.message);
+      var sendResult = sendFn(job.phone, job.message, job.deliveryOptions);
       if (sendResult.ok) {
         var markResult = ReminderService.markReminderSent(job.slotId);
         if (markResult.ok) sent++;

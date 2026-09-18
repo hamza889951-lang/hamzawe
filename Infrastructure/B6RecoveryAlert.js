@@ -22,7 +22,7 @@ const B6RecoveryAlert = {
         'Case: ' + (payload.recoveryCaseId || '') + '\n' +
         'Reason: ' + (payload.reason || 'UNRESOLVED');
 
-      return WhatsAppAdapter.sendMessage(adminPhone, message);
+      return MessagingPolicyService.sendProactive(adminPhone, message, { kind: MessagingPolicyService.KINDS.B6_RECOVERY });
     } catch (e) {
       return Result.fail('B6_RECOVERY_ALERT_FAILED', e.message, e.stack);
     }
