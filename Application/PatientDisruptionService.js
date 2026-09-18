@@ -684,12 +684,12 @@ const PatientDisruptionService = {
   // ═════════════════════════════════════════════════════════════════════
 
   _notifyProposal: function(phone, proposal, candidate, sendFn) {
-    return this._sendAndRecord(phone, proposal.disruption_proposal_id, this._proposalMessage(candidate), sendFn);
+    return this._sendAndRecord(phone, proposal.disruption_proposal_id, this._proposalMessage(candidate), sendFn, {\n      kind: MessagingPolicyService.KINDS.DISRUPTION_PROPOSAL,\n      templateParameters: [this._slotDisplay(candidate) || 'غير محدد']\n    });
   },
 
   _notifyNoAlternative: function(phone, sendFn) {
     try {
-      const result = sendFn(phone, this._noAlternativeMessage());
+      const result = sendFn(phone, this._noAlternativeMessage(), {\n        kind: MessagingPolicyService.KINDS.DISRUPTION_NO_ALTERNATIVE,\n        templateParameters: []\n      });
       return { status: (result && result.ok) ? 'SENT' : 'FAILED', send: result, persisted: null };
     } catch (e) {
       return { status: 'FAILED', send: Result.fail('M4F_NOTIFICATION_FAILED', e.message, e.stack), persisted: null };
@@ -759,10 +759,10 @@ const PatientDisruptionService = {
     };
   },
 
-  _sendAndRecord: function(phone, proposalId, text, sendFn) {
+  _sendAndRecord: function(phone, proposalId, text, sendFn, deliveryOptions) {
     let sendResult;
     try {
-      sendResult = sendFn(phone, text);
+      sendResult = sendFn(phone, text, deliveryOptions);
     } catch (e) {
       sendResult = Result.fail('M4F_NOTIFICATION_FAILED', e.message, e.stack);
     }

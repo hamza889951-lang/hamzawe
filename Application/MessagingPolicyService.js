@@ -55,7 +55,7 @@ const MessagingPolicyService = {
       return WhatsAppAdapter.sendText(phone, text);
     }
 
-    var templateResult = this._resolveTemplate(kind, options);
+    var templateResult = WhatsAppTemplateRepository.getTemplate(kind, options);
     if (!templateResult.ok) return templateResult;
 
     return WhatsAppAdapter.sendTemplate(
@@ -66,34 +66,4 @@ const MessagingPolicyService = {
     );
   },
 
-  _resolveTemplate: function(kind, options) {
-    var props = PropertiesService.getScriptProperties();
-    var suffix = String(kind).toUpperCase().replace(/[^A-Z0-9_]/g, '_');
-
-    var name = options.templateName ||
-      props.getProperty('WHATSAPP_TEMPLATE_' + suffix + '_NAME');
-    var language = options.templateLanguage ||
-      props.getProperty('WHATSAPP_TEMPLATE_' + suffix + '_LANGUAGE') ||
-      'ar';
-
-    if (!name) {
-      return Result.fail(
-        'WHATSAPP_TEMPLATE_REQUIRED',
-        'A WhatsApp template is required for proactive messaging outside the service window',
-        { kind: kind }
-      );
-    }
-
-    var parameters = Array.isArray(options.templateParameters)
-      ? options.templateParameters.map(function(value) {
-          return value === null || value === undefined ? '' : String(value);
-        })
-      : [];
-
-    return Result.ok({
-      name: name,
-      language: language,
-      parameters: parameters
-    });
-  }
 };
