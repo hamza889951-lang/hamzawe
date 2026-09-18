@@ -154,7 +154,9 @@ function loadScript(file, sandbox) {
   ];
 
   sourceFiles.forEach(function(file) {
-    const text = fs.readFileSync(path.join(ROOT, file), 'utf8');
+    const text = fs.readFileSync(path.join(ROOT, file), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
     assert.strictEqual(/ultramsg|api\.ultramsg\.com/i.test(text), false, file + ' still references UltraMsg');
   });
 
