@@ -707,7 +707,9 @@ test('B6-28 — structural: dedicated stores, operation tag, and no public recov
   assert.strictEqual(alertRepositorySource.indexOf('PropertiesService'), -1);
   assert.strictEqual(alertRepositorySource.indexOf('WhatsAppAdapter'), -1);
   assert.ok(alertInfrastructureSource.indexOf('PropertiesService') !== -1);
-  assert.ok(alertInfrastructureSource.indexOf('MessagingPolicyService') !== -1);
+  assert.strictEqual(alertInfrastructureSource.indexOf('MessagingPolicyService'), -1);
+  assert.ok(alertInfrastructureSource.indexOf('sendFn') !== -1);
+  assert.ok(serviceSource.indexOf('MessagingPolicyService.sendProactive') !== -1);
   assert.strictEqual(webhookSource.indexOf('recoverRecoveryCase'), -1);
 });
 
