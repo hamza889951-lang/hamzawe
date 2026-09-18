@@ -1,3 +1,4 @@
+try {
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
@@ -164,3 +165,8 @@ function loadScript(file, sandbox) {
 })();
 
 console.log('WhatsApp Cloud migration targeted tests: 3/3 PASS');
+
+} catch (error) {
+  console.error('FAIL: WhatsApp Cloud migration suite — ' + (error && error.stack ? error.stack : error));
+  throw error;
+}
