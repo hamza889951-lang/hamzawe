@@ -57,6 +57,7 @@ function loadScript(file, sandbox) {
 
 (function messagingPolicyTests() {
   let now = 1800000000000;
+  let lastInboundMs = now - 60 * 60 * 1000;
   let sentText = 0;
   let sentTemplate = 0;
   let lastTemplate = null;
@@ -71,7 +72,7 @@ function loadScript(file, sandbox) {
     Clock: { now: function() { return new Date(now); } },
     ConversationRepository: {
       findByPhone: function() {
-        return { last_inbound_at_ms: String(now - 60 * 60 * 1000), updated_at: new Date(now) };
+        return { last_inbound_at_ms: String(lastInboundMs), updated_at: new Date(now) };
       }
     },
     WhatsAppAdapter: {
@@ -102,7 +103,7 @@ function loadScript(file, sandbox) {
   assert.strictEqual(sentText, 1);
   assert.strictEqual(sentTemplate, 0);
 
-  now += 24 * 60 * 60 * 1000;
+  now = lastInboundMs + 24 * 60 * 60 * 1000;
   result = sandbox.MessagingPolicyService.sendProactive('9647', 'hello', {
     kind: sandbox.MessagingPolicyService.KINDS.REMINDER,
     templateParameters: ['date', 'bus']
