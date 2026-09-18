@@ -96,16 +96,17 @@ function loadScript(file, sandbox) {
   };
 
   loadScript('Application/MessagingPolicyService.js', sandbox);
+  const policy = vm.runInNewContext('MessagingPolicyService', sandbox);
 
-  let result = sandbox.MessagingPolicyService.sendProactive('9647', 'hello', {
-    kind: sandbox.MessagingPolicyService.KINDS.REMINDER
+  let result = policy.sendProactive('9647', 'hello', {
+    kind: policy.KINDS.REMINDER
   });
   assert.strictEqual(result.ok, true);
   assert.strictEqual(sentText, 1);
   assert.strictEqual(sentTemplate, 0);
 
   now = lastInboundMs + 24 * 60 * 60 * 1000;
-  result = sandbox.MessagingPolicyService.sendProactive('9647', 'hello', {
+  result = policy.sendProactive('9647', 'hello', {
     kind: sandbox.MessagingPolicyService.KINDS.REMINDER,
     templateParameters: ['date', 'bus']
   });
