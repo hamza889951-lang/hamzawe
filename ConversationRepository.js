@@ -33,7 +33,9 @@ const ConversationRepository = {
       state: Config.VOCABULARY.CONVERSATION_STATE.MENU_MAIN,
       temp_name: '',
       slot_id: '',
-      updated_at: Clock.now()
+      updated_at: Clock.now(),
+      last_inbound_at_ms: '',
+      last_inbound_message_id: ''
     };
     GoogleSheets.appendRow(Config.VOCABULARY.SHEETS.CONVERSATIONS, record);
     return record;
@@ -79,6 +81,74 @@ const ConversationRepository = {
     GoogleSheets.updateRowByColumn(
       Config.VOCABULARY.SHEETS.CONVERSATIONS, 'phone', phone, fields
     );
+  },
+
+  INBOUND_MESSAGE_FIELDS: [
+    'last_inbound_at_ms',
+    'last_inbound_message_id'
+  ],
+
+  recordInboundMessage(phone, messageId, timestampMs) {
+    const ts = Number(timestampMs);
+    if (!isFinite(ts) || ts <= 0 || !messageId) {
+      return Result.fail('INVALID_INBOUND_MESSAGE_METADATA', 'Verified inbound message metadata is incomplete');
+    }
+
+    return Lock.runExclusive('conversation-inbound:' + phone, function() {
+      try {
+        const headers = GoogleSheets.getHeaders(Config.VOCABULARY.SHEETS.CONVERSATIONS);
+        const missing = ConversationRepository.INBOUND_MESSAGE_FIELDS.filter(function(field) {
+          return headers.indexOf(field) === -1;
+        });
+        if (missing.length > 0) {
+          return Result.fail(
+            'INBOUND_MESSAGE_SCHEMA_MISSING',
+            'Conversations sheet is missing inbound-message metadata columns: ' + missing.join(', '),
+            { missing: missing }
+          );
+        }
+
+        const existing = ConversationRepository.findByPhone(phone);
+        if (!existing) {
+          return Result.fail('CONVERSATION_NOT_FOUND', 'No Conversation row exists for the verified inbound message phone');
+        }
+
+        const existingTs = existing.last_inbound_at_ms === ''
+          ? NaN
+          : Number(existing.last_inbound_at_ms);
+
+        if (isFinite(existingTs) && existingTs >= ts) {
+          return Result.ok({
+            phone: phone,
+            lastInboundAtMs: existingTs,
+            lastInboundMessageId: existing.last_inbound_message_id || null,
+            ignoredOlderEvent: existingTs > ts
+          });
+        }
+
+        const updated = GoogleSheets.updateRowByColumn(
+          Config.VOCABULARY.SHEETS.CONVERSATIONS,
+          'phone',
+          phone,
+          {
+            last_inbound_at_ms: String(ts),
+            last_inbound_message_id: String(messageId)
+          }
+        );
+        if (!updated) {
+          return Result.fail('CONVERSATION_NOT_FOUND', 'Conversation row disappeared during inbound metadata update');
+        }
+
+        return Result.ok({
+          phone: phone,
+          lastInboundAtMs: ts,
+          lastInboundMessageId: String(messageId),
+          ignoredOlderEvent: false
+        });
+      } catch (e) {
+        return Result.fail('INBOUND_MESSAGE_METADATA_WRITE_FAILED', e.message, e.stack);
+      }
+    }, 5000);
   },
 
   // ═══════════════════════════════════════════════════════════

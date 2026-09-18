@@ -54,7 +54,7 @@ const HealthCheckService = {
             PropertiesService.getScriptProperties().setProperty('LAST_LIVENESS_ALERT_MS', String(nowMs));
             try {
               var adminPhone = PropertiesService.getScriptProperties().getProperty('ADMIN_PHONE');
-              if (adminPhone) { WhatsAppAdapter.sendMessage(adminPhone, warningMsg); }
+              if (adminPhone) { MessagingPolicyService.sendProactive(adminPhone, warningMsg, { kind: MessagingPolicyService.KINDS.OPS_LIVENESS }); }
             } catch (e2) { /* best effort */ }
           }
         }

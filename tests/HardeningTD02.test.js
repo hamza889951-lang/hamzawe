@@ -33,7 +33,8 @@ function stripComments(source) {
     .replace(/^\s*\/\/.*$/gm, '');
 }
 
-const SKIP_DIRS = { tests: true, '.git': true, node_modules: true };
+// Apps Script production files remain under CAS-009. The Node webhook gateway is an external runtime and owns its own wall-clock semantics.
+const SKIP_DIRS = { tests: true, '.git': true, node_modules: true, gateway: true };
 
 function productionFiles() {
   const out = [];

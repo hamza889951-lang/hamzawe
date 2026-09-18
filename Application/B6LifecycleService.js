@@ -192,6 +192,8 @@ const B6LifecycleService = {
       operationId: ctx.operationId,
       recoveryCaseId: ctx.recoveryCaseId,
       reason: reason
+    }, function(phone, message, options) {
+      return MessagingPolicyService.sendProactive(phone, message, options);
     });
 
     this._diagnostic('B6_RECOVERY_REQUIRED', ctx.phone, ctx.oldSlotId, {
@@ -343,6 +345,8 @@ const B6LifecycleService = {
         operationId: ctx.operationId,
         recoveryCaseId: ctx.recoveryCaseId,
         reason: 'RELEASE_CHECKPOINT_PERSISTENCE_UNKNOWN'
+      }, function(phone, message, options) {
+        return MessagingPolicyService.sendProactive(phone, message, options);
       });
       this._diagnostic('B6_RELEASE_CHECKPOINT_UNKNOWN', ctx.phone, ctx.oldSlotId, released.error);
       return Result.ok({

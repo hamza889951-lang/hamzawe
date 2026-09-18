@@ -32,7 +32,8 @@ const ReminderService = {
       return {
         slotId: slot.slot_id,
         phone: slot.phone,
-        message: ReminderService._buildReminderMessage(slot)
+        message: ReminderService._buildReminderMessage(slot),
+        deliveryOptions: ReminderService._buildReminderDeliveryOptions(slot)
       };
     });
 
@@ -46,7 +47,7 @@ const ReminderService = {
     var sent = 0;
     for (var i = 0; i < jobs.length; i++) {
       var job = jobs[i];
-      var sendResult = sendFn(job.phone, job.message);
+      var sendResult = sendFn(job.phone, job.message, job.deliveryOptions);
       if (sendResult.ok) {
         var markResult = ReminderService.markReminderSent(job.slotId);
         if (markResult.ok) sent++;
@@ -65,6 +66,24 @@ const ReminderService = {
     if (value === true) return true;
     if (typeof value === 'string' && value.trim().toUpperCase() === 'TRUE') return true;
     return false;
+  },
+
+  _buildReminderDeliveryOptions: function(slot) {
+    var busResult = BusNumberCalculator.fromSlot(slot);
+    var workStartResult = ReminderService._getClinicWorkStartDisplay();
+    var dateDisplay = DateUtils.formatDateDisplay(slot.date);
+
+    if (busResult.ok && workStartResult.ok) {
+      return {
+        kind: 'REMINDER',
+        templateParameters: [dateDisplay, busResult.data.busNumber, workStartResult.data]
+      };
+    }
+
+    return {
+      kind: 'REMINDER_NO_BUS',
+      templateParameters: [dateDisplay]
+    };
   },
 
   _buildReminderMessage: function(slot) {

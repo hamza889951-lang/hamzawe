@@ -78,10 +78,10 @@ Repositories/AttendanceAuditRepository.js M0 append-only attendance decision evi
 Infrastructure/GoogleSheets.js    ONLY SpreadsheetApp access (getAllRows, updateBatch, appendRow, ...)
 Infrastructure/GoogleCalendar.js  ONLY CalendarApp access (createEvent/deleteEvent)
 Infrastructure/Lock.js            Lock.runExclusive(key, fn) — ScriptLock wrapper; "the only file knowing LockService"
-Infrastructure/WhatsAppAdapter.js ONLY ultramsg knowledge (send + parseIncomingPayload)
+Infrastructure/WhatsAppAdapter.js Meta Cloud transport boundary (send + normalized inbound envelope verification)
 Utils/ULID.js                     ULID generation (Math.random — not cryptographic, ID only)
 Utils/IdGenerator.js              generateSlotId/ConversationId/AppointmentId
-Utils/PhoneUtils.js               normalize(): strip @c.us, +, spaces
+Utils/PhoneUtils.js               normalize(): strip legacy JID suffixes, +, spaces
 Utils/DateUtils.js                Date math + display formatting + generator storage formats
 Utils/LegacySlotTimeParser.js     sort_key → comparable ms (TEMPORARY — ADR-016, dies with generator rebuild)
 Utils/Validators.js               validatePhone/validatePatientName/validateTransition (accept/reject only)
@@ -157,25 +157,24 @@ COMPLETED / NO_SHOW / EXPIRED / CANCELLED = terminal (no transitions)
 
 | Dependency | File | Details |
 |---|---|---|
-| WhatsApp (UltraMsg) | `Infrastructure/WhatsAppAdapter.js` | POST `https://api.ultramsg.com/{instance}/messages/chat` (form-encoded: token, to, body). Incoming webhook payload: `{ data: { from, body, id } }`. |
+| WhatsApp Cloud | `Infrastructure/WhatsAppAdapter.js` + external Meta gateway | Outbound Meta Graph messages; inbound Meta webhook is verified/normalized by the gateway and authenticated again by HAMZAWE. |
 | Google Calendar | `Infrastructure/GoogleCalendar.js` | `CalendarApp.getDefaultCalendar()` (no calendarId set in app code). `createEvent`, `getEventById/deleteEvent`. |
 | Google Sheets | `Infrastructure/GoogleSheets.js` | `SpreadsheetApp.openById(SPREADSHEET_ID)` or `getActiveSpreadsheet()` (both routed through `_openSpreadsheet()`; `SPREADSHEET_ID` wins when set). Generics: `getAllRows`, `getHeaders`, `appendRows`, `updateBatch`, `appendRow`, `getOrCreateSheet`, `deleteRowsByNumbers`. |
-| Script Properties | many | `SPREADSHEET_ID`, `ULTRAMSG_INSTANCE_ID`, `ULTRAMSG_TOKEN`, `ADMIN_PHONE` (owner/ops notification), `DOCTOR_PHONE` (M4-A doctor identity); runtime: `LAST_SCHEDULER_SUCCESS_MS`, `LAST_LIVENESS_ALERT_MS`. |
+| Script Properties | many | `SPREADSHEET_ID`, `META_GRAPH_API_VERSION`, `META_PHONE_NUMBER_ID`, `META_ACCESS_TOKEN`, `WHATSAPP_GATEWAY_SECRET`, `ADMIN_PHONE` (owner/ops notification), `DOCTOR_PHONE` (M4-A doctor identity); runtime: `LAST_SCHEDULER_SUCCESS_MS`, `LAST_LIVENESS_ALERT_MS`. |
 
-**Auth flow:** Web app deployment `executeAs: USER_DEPLOYING`, `access: ANYONE_ANONYMOUS` (ultramsg POSTs to the webapp URL with no auth). WhatsApp replies use the ultramsg token. No OAuth is handled in code (Google services run as the deploying user).
+**Auth flow:** Web app deployment `executeAs: USER_DEPLOYING`, `access: ANYONE_ANONYMOUS` (Meta authenticates the external gateway; the gateway signs normalized events for HAMZAWE; the Apps Script web app verifies the gateway envelope. Meta outbound calls use the configured Graph API access token. No OAuth is handled in code (Google services run as the deploying user).
 
 **Webhook flow (Webhook.js → Core/Router.js):**
 ```
 doPost(e)
-  → WhatsAppAdapter.parseIncomingPayload(e) → {phone, message, messageId} | null
-  → ProcessedMessagesService.isDuplicate()? → OK (skip)
-  → markProcessed()
+  → WhatsAppAdapter.parseIncomingPayload(e) → verified normalized {phone, message, messageId, timestampMs} | null
+  → ProcessedMessagesService.claim() → OK (duplicate skip)
   → Router.dispatch({phone, message}) → Result (patient services reply /
     DoctorControlEntry control context)
-  → WhatsAppAdapter.sendMessage(phone, reply) (failure logged only)
+  → MessagingPolicyService.sendReply(phone, reply) → WhatsAppAdapter.sendText(phone, reply) (failure logged only)
 ```
 M4-A: inside `Router.dispatch`, after `PhoneUtils.normalize`, the actor is checked via `DoctorAuthorizationService.authorizeDoctor`; only an authorized doctor reaches `DoctorControlEntry`. Every other actor continues through the existing patient routing.
-Idempotency window: 5 min (`DUPLICATE_WINDOW_MS`); key = `msg_<messageId>` if present, else hash of `phone|message|minute`.
+Idempotency window: 5 min (`DUPLICATE_WINDOW_MS`); key = `msg_<messageId>` if present, else hash of `phone|message|minute`. Meta `wamid` is passed unchanged as `messageId`.
 
 ## 6. Main Workflows
 
@@ -308,7 +307,7 @@ Ranked by severity (P0=worst). All confirmed by code inspection.
 - **`atomicUpdate(slotId, decisionFn)` pattern** — lock + fresh re-read + transition validation + owner check. This is the core double-booking defense; do not bypass it.
 - **Bus-number presentation** (ADR-021) — patient sees bus number + date; doctor controls how many slots per day.
 - **Patient-retention-first** in reschedule — once the new appointment is confirmed, cleanup failures never surface to the patient.
-- **Webhook idempotency** (ADR-023) — 5-min dedup to survive ultramsg retries.
+- **Webhook idempotency** (ADR-023) — 5-min dedup to survive provider webhook retries.
 - **Result-only returns** (CAS-008) — uniform success/failure signaling; no silent true/false.
 - **`LogRepository` append-only** — diagnostic log; never a read/delete API (archived reads/deletes live in `LogArchiveRepository`).
 - **Archive identity safety (Phase A)** — no stable unique ID in SYSTEM_LOG; delete only on exactly-one full-content match, never on row number alone. Simple, safe, no schema change; a future `log_id` column would improve it (not needed now).
@@ -318,10 +317,10 @@ Ranked by severity (P0=worst). All confirmed by code inspection.
 
 ## 13. Dependencies & Configuration Requirements
 
-- **Script Properties (required):** `SPREADSHEET_ID`, `ULTRAMSG_INSTANCE_ID`, `ULTRAMSG_TOKEN`, `ADMIN_PHONE` (owner/ops notification). M4-A additionally requires `DOCTOR_PHONE` for the doctor identity/authorization boundary; `ADMIN_PHONE` never grants doctor access.
+- **Script Properties (required):** `SPREADSHEET_ID`, `META_GRAPH_API_VERSION`, `META_PHONE_NUMBER_ID`, `META_ACCESS_TOKEN`, `WHATSAPP_GATEWAY_SECRET`, `ADMIN_PHONE` (owner/ops notification). M4-A additionally requires `DOCTOR_PHONE` for the doctor identity/authorization boundary; `ADMIN_PHONE` never grants doctor access.
 - **Sheets required:** `Availability`, `Conversations`, `Settings`, `SYSTEM_LOG` (archive sheet auto-created). M4-C additionally requires `ScheduleChanges` (append-only schedule intent). M4-C Continuation additionally requires 7 doctor-session columns on `Conversations` (`doctor_draft_kind`, `doctor_draft_command_id`, `doctor_draft_days`, `doctor_draft_window`, `doctor_draft_effective_from`, `doctor_draft_effective_to`, `doctor_draft_target_change_id`) — missing columns fail closed (`DOCTOR_CONTROL_SCHEMA_MISSING`); Doctor Control won't operate until they exist, patient flows unaffected.
 - **Google services enabled:** Spreadsheet, Calendar, UrlFetch, Properties. Web app deployed as USER_DEPLOYING/ANYONE_ANONYMOUS.
-- **External:** ultramsg WhatsApp instance + webhook pointing at the deployed webapp URL.
+- **External:** Meta WhatsApp Cloud API + deployed Node.js webhook gateway + HAMZAWE Apps Script web app.
 - **Settings row must contain:** work_start, work_end, day flags, `Slot Duration (min)`, `slot_generation_days`. HealthCheck flags incomplete settings as unhealthy.
 - Go-live checklist in `PROJECT_CONSTITUTION.txt` §9.1.
 
@@ -344,7 +343,7 @@ Ranked by severity (P0=worst). All confirmed by code inspection.
   - **Final state (live-verified on a separate TEST Apps Script project, owner-executed; production NOT deployed):** manifest = `currentEventAccess: READ` + `calendar.addons.current.event.read` (demonstrated necessity: METADATA does not deliver the event context); runtime delivers the documented Calendar-event fields flattened under top-level `e.calendar` where `calendar.id` = opened EVENT id (decisively verified via CalendarApp.getEventById) and `calendar.calendarId` = parent calendar. Four live experiments (MARK COMPLETED / duplicate / MARK NO-SHOW / negative path) returned expected results on the TEST spreadsheet only.
   - Architecture: correlation by slot-row `calendar_event_id` (stable id, exactly-one rule); transitions only via StateMachine inside `SlotRepository.atomicUpdate` (duplicate = deterministic no-op `ALREADY_APPLIED`, zero cell writes; conflicting concurrent decisions cannot both win — `INVALID_TRANSITION` on fresh re-read or `LOCK_TIMEOUT`); operator authorization is a DERIVED trust boundary (identity from Session + `ATTENDANCE_OPERATOR_EMAIL` deployment policy; service derives DOCTOR on exact match; entry layer never claims authority); ADD-ON NEVER CALLS CalendarApp; attendance state lives in Availability only (T5 closed, no event mutation).
   - Activation boundary for M1: `ATTENDANCE_ACTIVATION_AT` = timestamp of the first APPLIED audit row (no permanent setting); PENDING ATTENDANCE stays derived (CONFIRMED + no APPLIED record); ATTENDANCE_AUDIT is evidence, not source of truth. Attendance correction (COMPLETED↔NO_SHOW editing) = future Attendance Correction Contract.
-  - Production status: v7 / PRE-BASELINE continues to run; the Calendar Add-on exists in `main` but is NOT deployed to production (no add-on deployment, no UltraMsg change, no v7 modification).
+  - Production status: current migration branch is review-only; no production deployment, Meta cutover, gateway deployment, or old-channel shutdown is authorized by this branch.
 - **Stable v1.0**; constitution v3.2; hardening roadmap officially complete. Post-v1 program milestones M0, M1-A…M1C, M2, M3, B1–B6, M4-A…M4-F are implemented and merged on `main` (M4-F merged via PR #24 on 2026-09-03). M4-F remains production-gated: no deployment/migration/live Sheets provisioning is authorized by this document.
 - **Recently completed:** ArchiveService for SYSTEM_LOG (last commits); Scheduler archive stage; Liveness fix; HealthCheck; horizon maintainer; webhook idempotency.
 - **Implemented (Phase A — decouple ArchiveService from storage):** `LogArchiveRepository` created (findOlderThan / appendToArchive with read-back verify / deleteRecords with identity rule); `ArchiveService` is now policy-only (no `SpreadsheetApp`, no sheet names, no row numbers, no delete logic, no `_rowNumber`); `GoogleSheets` gained generic `getOrCreateSheet`, `deleteRowsByNumbers`, and `_openSpreadsheet`. Batch delete (merged ranges, no `deleteRow` loop). No Scheduler/LogRepository/Config/Result changes.

@@ -14,7 +14,7 @@
   },
 
   "urlFetchWhitelist": [
-    "https://api.ultramsg.com/"
+    "https://graph.facebook.com/"
   ],
 
   "webapp": {

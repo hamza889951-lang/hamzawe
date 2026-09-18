@@ -118,6 +118,12 @@ sandbox.WhatsAppAdapter = {
   }
 };
 
+sandbox.MessagingPolicyService = {
+  sendReply: function(phone, text) {
+    return sandbox.WhatsAppAdapter.sendMessage(phone, text);
+  }
+};
+
 // ── ContentService mock ──
 var lastContentOutput = null;
 sandbox.ContentService = {

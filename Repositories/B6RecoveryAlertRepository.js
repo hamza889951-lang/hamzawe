@@ -5,7 +5,7 @@
  * details remain inside Infrastructure/B6RecoveryAlert.
  */
 const B6RecoveryAlertRepository = {
-  notifyRecoveryRequired: function(payload) {
-    return B6RecoveryAlert.notifyRecoveryRequired(payload);
+  notifyRecoveryRequired: function(payload, sendFn) {
+    return B6RecoveryAlert.notifyRecoveryRequired(payload, sendFn);
   }
 };

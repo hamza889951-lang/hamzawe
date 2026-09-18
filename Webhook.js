@@ -1,12 +1,5 @@
 /**
- * Webhook.gs — ADR-023 / B2
- * استقبال ← تحليل ← claim ذري ← توجيه ← إرسال
- *
- * B2 — Atomic Webhook Idempotency:
- *   المسار الحرج يستخدم ProcessedMessagesService.claim() بدلاً من
- *   isDuplicate() + markProcessed() المنفصلتين.
- *   الـclaim عملية ذرية داخل Lock.runExclusive() — لا يمكن لتكرارين
- *   متزامنين لنفس messageId الدخول إلى Router معًا.
+ * Webhook.gs — Meta Cloud / B2 trusted ingress.
  */
 function doPost(e) {
   try {
@@ -26,13 +19,40 @@ function doPost(e) {
       return ContentService.createTextOutput('IGNORED');
     }
 
-    // ─────────────────────────────────────────────────────────
-    // B2: Atomic claim — idempotency ownership before Router
-    // ─────────────────────────────────────────────────────────
-    var msgId = parsed.messageId || null;
-    var claimResult = ProcessedMessagesService.claim(msgId, parsed.phone, parsed.message);
+    if (parsed.eventType === 'STATUS') {
+      LogRepository.write({
+        timestamp: Clock.now(),
+        command: 'WEBHOOK_STATUS_IGNORED',
+        phone: '',
+        slotId: '',
+        stage: 'END',
+        success: true,
+        durationMs: null,
+        error: null
+      });
+      return ContentService.createTextOutput('OK');
+    }
 
-    // فشلClaim (lock timeout / persistence failure) → لا تدخل business processing
+    if (parsed.messageType && parsed.messageType !== 'TEXT') {
+      LogRepository.write({
+        timestamp: Clock.now(),
+        command: 'WEBHOOK_UNSUPPORTED_MESSAGE',
+        phone: parsed.phone || '',
+        slotId: '',
+        stage: 'END',
+        success: true,
+        durationMs: null,
+        error: JSON.stringify({ messageType: parsed.messageType })
+      });
+      return ContentService.createTextOutput('OK');
+    }
+
+    var claimResult = ProcessedMessagesService.claim(
+      parsed.messageId || null,
+      parsed.phone,
+      parsed.message
+    );
+
     if (!claimResult.ok) {
       LogRepository.write({
         timestamp: Clock.now(),
@@ -47,16 +67,37 @@ function doPost(e) {
       return ContentService.createTextOutput('OK');
     }
 
-    // duplicate → أوقف فورًا، لا تدخل Router
     if (claimResult.data && claimResult.data.status === 'DUPLICATE') {
       return ContentService.createTextOutput('OK');
     }
 
-    // ACQUIRED — امضِ إلى business processing
     const result = Router.dispatch({
       phone: parsed.phone,
-      message: parsed.message
+      message: parsed.message,
+      messageId: parsed.messageId,
+      timestampMs: parsed.timestampMs
     });
+
+    if (typeof ConversationRepository !== 'undefined' &&
+        typeof ConversationRepository.recordInboundMessage === 'function') {
+      var inboundRecorded = ConversationRepository.recordInboundMessage(
+        parsed.phone,
+        parsed.messageId,
+        parsed.timestampMs
+      );
+      if (!inboundRecorded.ok) {
+        LogRepository.write({
+          timestamp: Clock.now(),
+          command: 'WEBHOOK_INBOUND_METADATA_FAILED',
+          phone: parsed.phone,
+          slotId: '',
+          stage: 'METADATA',
+          success: false,
+          durationMs: null,
+          error: JSON.stringify(inboundRecorded.error)
+        });
+      }
+    }
 
     if (!result.ok) {
       LogRepository.write({
@@ -73,11 +114,7 @@ function doPost(e) {
     }
 
     if (result.data && result.data.reply) {
-      const sendResult = WhatsAppAdapter.sendMessage(
-        parsed.phone,
-        result.data.reply
-      );
-
+      const sendResult = MessagingPolicyService.sendReply(parsed.phone, result.data.reply);
       if (!sendResult.ok) {
         LogRepository.write({
           timestamp: Clock.now(),
@@ -93,7 +130,6 @@ function doPost(e) {
     }
 
     return ContentService.createTextOutput('OK');
-
   } catch (err) {
     try {
       LogRepository.write({
@@ -106,9 +142,7 @@ function doPost(e) {
         durationMs: null,
         error: err.message || 'Unknown error in doPost'
       });
-    } catch (logErr) {
-      // لا نرمي
-    }
+    } catch (logErr) {}
     return ContentService.createTextOutput('ERROR_LOGGED');
   }
 }

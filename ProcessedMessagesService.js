@@ -51,7 +51,7 @@ const ProcessedMessagesService = {
    * Atomic claim — يملك رسالة inbound ذريًا قبل دخول Router.
    * يفوّض العملية الذرية بالكامل إلى ProcessedMessagesRepository.
    *
-   * @param {string|null} messageId - من UltraMsg payload (data.id)
+   * @param {string|null} messageId - from the normalized inbound transport event
    * @param {string} phone
    * @param {string} message
    * @returns {Result}
