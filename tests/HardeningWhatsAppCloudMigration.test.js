@@ -115,7 +115,7 @@ function loadScript(file, sandbox) {
 
   now = lastInboundMs + 24 * 60 * 60 * 1000;
   result = policy.sendProactive('9647', 'hello', {
-    kind: sandbox.MessagingPolicyService.KINDS.REMINDER,
+    kind: policy.KINDS.REMINDER,
     templateParameters: ['date', 'bus']
   });
   assert.strictEqual(result.ok, true);
@@ -125,8 +125,8 @@ function loadScript(file, sandbox) {
   sandbox.WhatsAppTemplateRepository.getTemplate = function() {
     return sandbox.Result.fail('WHATSAPP_TEMPLATE_REQUIRED', 'missing');
   };
-  result = sandbox.MessagingPolicyService.sendProactive('9647', 'hello', {
-    kind: sandbox.MessagingPolicyService.KINDS.REMINDER
+  result = policy.sendProactive('9647', 'hello', {
+    kind: policy.KINDS.REMINDER
   });
   assert.strictEqual(result.ok, false);
   assert.strictEqual(result.error.code, 'WHATSAPP_TEMPLATE_REQUIRED');
