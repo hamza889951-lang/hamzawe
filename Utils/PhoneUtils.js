@@ -21,7 +21,7 @@ const PhoneUtils = {
     if (!rawPhone || typeof rawPhone !== 'string') return rawPhone;
     let result = rawPhone.trim();
     // Accept legacy WhatsApp JIDs without coupling callers to one provider.
-    result = result.replace(/@[^@\\s]+$/, '');
+    result = result.replace(/@[^@\s]+$/, '');
     result = result.replace(/^\+/, '');
     result = result.replace(/\s+/g, '');
     return result;
