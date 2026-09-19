@@ -1,0 +1,7 @@
+{
+  "private": true,
+  "scripts": {
+    "gateway:cloudflare:test": "node gateway/cloudflare-worker.test.js",
+    "gateway:cloudflare:check": "node --check gateway/cloudflare-worker.mjs"
+  }
+}
