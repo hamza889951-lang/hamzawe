@@ -7,13 +7,15 @@ This document deploys the existing P0 gateway contract without changing the Apps
 Create a Worker from the GitHub repository:
 
 - Repository: hamza889951-lang/hamzawe
-- Branch: feat/cloudflare-whatsapp-gateway for validation; main after merge/approval
-- Wrangler configuration: gateway/wrangler.jsonc
+- Branch: main for the production Worker
+- Wrangler configuration: wrangler.jsonc
 - Worker entry: gateway/cloudflare-worker.mjs
 
 Cloudflare Workers Builds can connect a GitHub repository and automatically deploy on push. The Cloudflare dashboard path is:
 
 Workers & Pages → Create application → Get started → Import a repository.
+
+Use the repository root as the project/root directory because wrangler.jsonc is at the repository root.
 
 ## 2. Required secrets
 
