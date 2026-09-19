@@ -1,0 +1,14 @@
+{
+  "$schema": "https://developers.cloudflare.com/workers/wrangler/config-schema.json",
+  "name": "hamzawe-whatsapp-gateway",
+  "main": "gateway/cloudflare-worker.mjs",
+  "compatibility_date": "2026-09-19",
+  "secrets": {
+    "required": [
+      "META_APP_SECRET",
+      "META_WEBHOOK_VERIFY_TOKEN",
+      "HAMZAWE_WEBHOOK_URL",
+      "HAMZAWE_GATEWAY_SECRET"
+    ]
+  }
+}

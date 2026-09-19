@@ -7,7 +7,7 @@ The gateway is the P0 security boundary between Meta WhatsApp Cloud API and the 
 The production deployment target is **Cloudflare Workers**:
 
 - Worker entry: gateway/cloudflare-worker.mjs
-- Wrangler config: gateway/wrangler.jsonc
+- Wrangler config: wrangler.jsonc
 - Cloudflare deployment guide: gateway/CLOUDFLARE_DEPLOYMENT.md
 
 Request flow:
