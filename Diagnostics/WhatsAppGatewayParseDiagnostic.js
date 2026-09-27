@@ -3,28 +3,25 @@
  *
  * PURPOSE
  * -------
- * Diagnose the last WEBHOOK_PARSE_FAILED envelope without changing the
+ * Diagnose the latest WEBHOOK_PARSE_FAILED envelope without changing the
  * production webhook path and without exposing secrets/signatures.
  *
- * This function is intentionally standalone so it can be synchronized to
- * Apps Script with clasp and executed manually from the Apps Script editor.
+ * IMPORTANT
+ * ---------
+ * Historical validation uses the SYSTEM_LOG row timestamp as the observed
+ * execution time. It must NOT use Clock.now(), because the diagnostic is
+ * normally run minutes after the original failed webhook and that would make
+ * an originally-fresh gateway timestamp appear stale.
  *
  * SAFE OUTPUT
  * -----------
- * The diagnostic reports only boolean/structural facts:
- *   - whether a parse-failure row was found
- *   - envelope/version/timestamp validity
- *   - whether the gateway secret exists
- *   - whether a signature exists and matches HMAC-SHA256
- *   - basic non-sensitive event metadata
+ * Reports only boolean/structural facts. Never prints:
+ * - WHATSAPP_GATEWAY_SECRET
+ * - received signature
+ * - computed/expected HMAC
+ * - access tokens or other credentials
  *
- * It NEVER logs:
- *   - WHATSAPP_GATEWAY_SECRET
- *   - the computed/expected HMAC
- *   - the received HMAC
- *   - access tokens or other credentials
- *
- * It does NOT write to SYSTEM_LOG, Conversations, or any business sheet.
+ * It does not write to SYSTEM_LOG, Conversations, or any business sheet.
  *
  * RUN:
  * ----
@@ -56,9 +53,7 @@ function runWhatsAppGatewayParseDiagnostic() {
         : 'SYSTEM_LOG'
     );
 
-    if (!sheet) {
-      throw new Error('SYSTEM_LOG sheet not found');
-    }
+    if (!sheet) throw new Error('SYSTEM_LOG sheet not found');
 
     var values = sheet.getDataRange().getValues();
     if (!values || values.length < 2) {
@@ -70,8 +65,8 @@ function runWhatsAppGatewayParseDiagnostic() {
     var errorIndex = headers.indexOf('error');
     var timestampIndex = headers.indexOf('timestamp');
 
-    if (commandIndex === -1 || errorIndex === -1) {
-      throw new Error('SYSTEM_LOG is missing command/error columns');
+    if (commandIndex === -1 || errorIndex === -1 || timestampIndex === -1) {
+      throw new Error('SYSTEM_LOG is missing command/error/timestamp columns');
     }
 
     var failureRow = null;
@@ -79,16 +74,27 @@ function runWhatsAppGatewayParseDiagnostic() {
     for (var i = values.length - 1; i >= 1; i--) {
       if (String(values[i][commandIndex] || '') === 'WEBHOOK_PARSE_FAILED') {
         failureRow = values[i];
-        result.source = {
-          rowNumber: i + 1,
-          timestamp: timestampIndex === -1 ? null : String(failureRow[timestampIndex] || '')
-        };
         break;
       }
     }
 
     if (!failureRow) {
       result.error = 'No WEBHOOK_PARSE_FAILED row found in SYSTEM_LOG';
+      console.log(JSON.stringify(result));
+      return result;
+    }
+
+    var sourceTimestamp = String(failureRow[timestampIndex] || '');
+    var observedAtMs = new Date(sourceTimestamp).getTime();
+
+    result.source = {
+      rowNumber: values.indexOf(failureRow) + 1,
+      timestamp: sourceTimestamp,
+      observedAtMs: isFinite(observedAtMs) ? observedAtMs : null
+    };
+
+    if (!isFinite(observedAtMs)) {
+      result.error = 'SYSTEM_LOG timestamp could not be parsed';
       console.log(JSON.stringify(result));
       return result;
     }
@@ -111,21 +117,19 @@ function runWhatsAppGatewayParseDiagnostic() {
       ? String(envelope.signature)
       : '';
 
-    var nowMs = (typeof Clock !== 'undefined' &&
-                 Clock &&
-                 typeof Clock.now === 'function')
-      ? Clock.now().getTime()
-      : new Date().getTime();
-
     var maxAgeMs = (typeof WhatsAppAdapter !== 'undefined' &&
                     WhatsAppAdapter &&
                     isFinite(Number(WhatsAppAdapter.GATEWAY_MAX_AGE_MS)))
       ? Number(WhatsAppAdapter.GATEWAY_MAX_AGE_MS)
       : 5 * 60 * 1000;
 
+    var ageMs = isFinite(gatewayTimestampMs)
+      ? observedAtMs - gatewayTimestampMs
+      : NaN;
+
     var timestampValid =
       isFinite(gatewayTimestampMs) &&
-      Math.abs(nowMs - gatewayTimestampMs) <= maxAgeMs;
+      Math.abs(ageMs) <= maxAgeMs;
 
     var secret = props.getProperty('WHATSAPP_GATEWAY_SECRET') || '';
 
@@ -133,7 +137,9 @@ function runWhatsAppGatewayParseDiagnostic() {
       envelopePresent: !!envelope,
       gatewayVersionValid: gatewayVersion === 'v1',
       timestampPresent: isFinite(gatewayTimestampMs),
-      timestampValid: timestampValid,
+      timestampValidAtLoggedFailure: timestampValid,
+      gatewayTimestampAgeMsAtLoggedFailure: isFinite(ageMs) ? ageMs : null,
+      acceptedMaxAgeMs: maxAgeMs,
       secretPresent: secret.length > 0,
       signaturePresent: signature.length > 0,
       signatureShapeValid: /^([0-9a-f]{64})$/i.test(signature)
@@ -163,10 +169,7 @@ function runWhatsAppGatewayParseDiagnostic() {
         return h.length === 1 ? '0' + h : h;
       }).join('');
 
-      signatureMatches = constantTimeEqualForDiagnostic(
-        expected,
-        signature
-      );
+      signatureMatches = constantTimeEqualForDiagnostic(expected, signature);
     }
 
     result.checks.hmacSignatureMatches = signatureMatches;
@@ -174,7 +177,7 @@ function runWhatsAppGatewayParseDiagnostic() {
     result.ok =
       result.checks.envelopePresent &&
       result.checks.gatewayVersionValid &&
-      result.checks.timestampValid &&
+      result.checks.timestampValidAtLoggedFailure &&
       result.checks.secretPresent &&
       result.checks.signaturePresent &&
       result.checks.signatureShapeValid &&
