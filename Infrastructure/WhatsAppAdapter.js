@@ -1,9 +1,16 @@
 /**
  * WhatsAppAdapter — Meta WhatsApp Cloud API transport boundary.
+ *
+ * DIAGNOSTIC REVISION
+ * -------------------
+ * This branch temporarily emits safe parse diagnostics on failures/success.
+ * It never logs secrets, signatures, tokens, message text, or raw payloads.
+ * Diagnostic revision: WHATSAPP_PARSE_DIAGNOSTIC_V1
  */
 const WhatsAppAdapter = {
   GATEWAY_VERSION: 'v1',
   GATEWAY_MAX_AGE_MS: 5 * 60 * 1000,
+  PARSE_DIAGNOSTIC_VERSION: 'WHATSAPP_PARSE_DIAGNOSTIC_V1',
 
   PROPERTY_KEYS: {
     GRAPH_API_VERSION: 'META_GRAPH_API_VERSION',
@@ -14,26 +21,84 @@ const WhatsAppAdapter = {
 
   MESSAGE_TYPES: { TEXT: 'TEXT' },
 
+  _parseDiagnosticLog: function(payload) {
+    try {
+      console.log(JSON.stringify(Object.assign({
+        event: 'WHATSAPP_PARSE_DIAGNOSTIC',
+        revision: this.PARSE_DIAGNOSTIC_VERSION
+      }, payload || {})));
+    } catch (e) {
+      // Diagnostics must never affect webhook processing.
+    }
+  },
+
   parseIncomingPayload: function(e) {
     try {
+      this._parseDiagnosticLog({ stage: 'START' });
+
       const payload = JSON.parse(e.postData.contents || '');
+      this._parseDiagnosticLog({
+        stage: 'JSON_PARSED',
+        envelopePresent: !!(payload && payload.event)
+      });
+
       const envelope = payload && payload.event ? payload : null;
-      if (!envelope) return null;
+      if (!envelope) {
+        this._parseDiagnosticLog({
+          stage: 'REJECT_ENVELOPE_MISSING'
+        });
+        return null;
+      }
 
       const verify = this._verifyGatewayEnvelope(envelope);
-      if (!verify.ok) return null;
+      if (!verify.ok) {
+        this._parseDiagnosticLog({
+          stage: 'REJECT_GATEWAY_VERIFY',
+          code: verify.error && verify.error.code
+            ? String(verify.error.code)
+            : 'UNKNOWN_GATEWAY_VERIFY_FAILURE'
+        });
+        return null;
+      }
+
+      this._parseDiagnosticLog({
+        stage: 'GATEWAY_VERIFY_OK'
+      });
 
       const event = envelope.event;
       if (!event || event.eventType !== 'MESSAGE') {
-        return event && event.eventType === 'STATUS'
-          ? { eventType: 'STATUS', status: event.status || null }
-          : null;
+        if (event && event.eventType === 'STATUS') {
+          this._parseDiagnosticLog({
+            stage: 'STATUS_IGNORED'
+          });
+          return { eventType: 'STATUS', status: event.status || null };
+        }
+
+        this._parseDiagnosticLog({
+          stage: 'REJECT_EVENT_TYPE',
+          eventType: event && event.eventType
+            ? String(event.eventType)
+            : null
+        });
+        return null;
       }
 
       const phone = PhoneUtils.normalize(event.phone);
-      if (!phone || !event.messageId) return null;
+      if (!phone) {
+        this._parseDiagnosticLog({
+          stage: 'REJECT_PHONE'
+        });
+        return null;
+      }
 
-      return {
+      if (!event.messageId) {
+        this._parseDiagnosticLog({
+          stage: 'REJECT_MESSAGE_ID'
+        });
+        return null;
+      }
+
+      const parsed = {
         eventType: 'MESSAGE',
         channel: event.channel || 'WHATSAPP',
         provider: event.provider || 'META_CLOUD',
@@ -45,7 +110,24 @@ const WhatsAppAdapter = {
         messageId: event.messageId,
         timestampMs: Number(event.timestampMs)
       };
+
+      this._parseDiagnosticLog({
+        stage: 'SUCCESS',
+        messageType: parsed.messageType,
+        messageIdPresent: !!parsed.messageId,
+        phonePresent: !!parsed.phone,
+        timestampMsValid: isFinite(parsed.timestampMs)
+      });
+
+      return parsed;
     } catch (err) {
+      this._parseDiagnosticLog({
+        stage: 'EXCEPTION',
+        errorName: err && err.name ? String(err.name) : 'UNKNOWN',
+        errorMessage: err && err.message
+          ? String(err.message).slice(0, 300)
+          : 'Unknown parse exception'
+      });
       return null;
     }
   },
