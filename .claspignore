@@ -1,0 +1,7 @@
+# Apps Script receives only the Apps Script source tree.
+# Cloudflare/Node gateway and Node-based tests must never be pushed
+# into the Apps Script project: they use Node-only runtime APIs such as
+# require(), process, http, crypto, and module.exports.
+
+gateway/**
+tests/**
