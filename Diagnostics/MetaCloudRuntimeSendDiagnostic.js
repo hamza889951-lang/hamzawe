@@ -1,48 +1,45 @@
 /**
- * Meta Cloud Runtime Send Diagnostic — credential/runtime isolation audit.
+ * Meta Cloud Runtime Send Diagnostic — Meta authorization isolation audit.
  *
- * PURPOSE
- * -------
- * Isolate the current Meta HTTP 400 / OAuthException code 100 by testing:
- *   1) the raw Script Property token;
- *   2) the same token after trim();
- *   3) GET access to the configured Phone Number object;
- *   4) POST /messages using the raw token;
- *   5) POST /messages using the trimmed token ONLY if raw POST fails.
+ * Controlled recipient: 9647824134670
  *
- * The diagnostic recipient is intentionally fixed to the controlled test
- * recipient supplied for this investigation.
+ * V4 PURPOSE
+ * ----------
+ * We already proved:
+ * - the Apps Script token authenticates GET /{PHONE_NUMBER_ID};
+ * - raw and trimmed tokens are identical;
+ * - POST /messages fails with OAuthException code 100;
+ * - the production adapter and independent UrlFetchApp path fail identically.
+ *
+ * V4 therefore isolates the remaining request-level variables:
+ *   A) exact minimal Graph API Explorer-style JSON body;
+ *   B) production body with recipient_type;
+ *   C) Authorization: Bearer header;
+ *   D) access_token query parameter (diagnostic only);
+ *   E) GET /debug_token using the same token;
+ *   F) full OAuth error fields, including subcode and trace id.
  *
  * SAFE OUTPUT
  * -----------
- * Never logs:
- * - META_ACCESS_TOKEN
- * - WHATSAPP_GATEWAY_SECRET
- * - Authorization header
- * - message text
- * - raw provider response
+ * Never logs the access token, Authorization header, raw response body,
+ * message text, or gateway secret.
  *
- * It logs only non-secret token shape metadata, HTTP status, and provider
- * error code/type/message.
- *
- * IMPORTANT
- * ---------
- * This diagnostic can send at most one successful test message from the
- * direct POST probe, plus the production WhatsAppAdapter probe. The adapter
- * probe is performed only after credential probes complete.
+ * This diagnostic sends test messages only when a POST probe is accepted.
+ * It stops trying POST variants after the first successful POST to avoid
+ * duplicate successful messages.
  */
 
 var META_RUNTIME_DIAGNOSTIC_RECIPIENT = '9647824134670';
 
 function runMetaCloudRuntimeSendDiagnostic() {
   var result = {
-    diagnostic: 'META_CLOUD_RUNTIME_SEND_AUDIT_V3',
+    diagnostic: 'META_CLOUD_RUNTIME_SEND_AUDIT_V4',
     ok: false,
     config: {},
     tokenShape: {},
+    tokenDebug: {},
     phoneAccess: {},
-    directRawPath: {},
-    directTrimmedPath: {},
+    postProbes: {},
     runtimeAdapter: {},
     adapterPath: {},
     comparison: {},
@@ -73,98 +70,142 @@ function runMetaCloudRuntimeSendDiagnostic() {
       '/' +
       phoneNumberId;
 
-    var testText = 'HAMZAWE Meta runtime audit V3';
+    var debugTokenUrl =
+      'https://graph.facebook.com/' +
+      version +
+      '/debug_token?input_token=' +
+      encodeURIComponent(trimmedToken);
 
-    var body = {
+    /*
+     * Body A deliberately matches the previously successful Graph API
+     * Explorer request: no recipient_type field.
+     */
+    var minimalBody = {
+      messaging_product: 'whatsapp',
+      to: META_RUNTIME_DIAGNOSTIC_RECIPIENT,
+      type: 'text',
+      text: {
+        preview_url: false,
+        body: 'HAMZAWE Meta runtime audit V4'
+      }
+    };
+
+    /*
+     * Body B is the current production adapter shape.
+     */
+    var adapterBody = {
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
       to: META_RUNTIME_DIAGNOSTIC_RECIPIENT,
       type: 'text',
       text: {
         preview_url: false,
-        body: testText
+        body: 'HAMZAWE Meta runtime audit V4'
       }
     };
 
     result.config = {
       graphApiVersion: version,
       phoneNumberIdPresent: !!phoneNumberId,
-      endpointSuffix: '/messages',
+      messagesEndpoint: '/messages',
+      debugTokenEndpoint: '/debug_token',
       method: 'post',
       contentType: 'application/json',
-      recipientConfigured: META_RUNTIME_DIAGNOSTIC_RECIPIENT === '9647824134670'
+      recipientConfigured:
+        META_RUNTIME_DIAGNOSTIC_RECIPIENT === '9647824134670'
     };
 
     result.tokenShape = {
       rawLength: rawToken.length,
       trimmedLength: trimmedToken.length,
-      leadingWhitespacePresent: rawToken.length !== rawToken.replace(/^\\s+/, '').length,
-      trailingWhitespacePresent: rawToken.length !== rawToken.replace(/\\s+$/, '').length,
+      leadingWhitespacePresent:
+        rawToken.length !== rawToken.replace(/^\s+/, '').length,
+      trailingWhitespacePresent:
+        rawToken.length !== rawToken.replace(/\s+$/, '').length,
       changedByTrim: rawToken !== trimmedToken
     };
 
     /*
-     * PROBE A/B — token validity from inside Apps Script.
-     *
-     * If GET with raw token fails but trimmed succeeds, the Script Property
-     * contains leading/trailing whitespace and that is the immediate cause.
+     * PROBE 1 — GET phone object with the same Bearer token.
+     * This is the already-proven authentication control.
      */
-    result.phoneAccess.raw = summarizeProviderResponse(
-      fetchPhoneObject(phoneUrl, rawToken)
-    );
-
-    result.phoneAccess.trimmed = summarizeProviderResponse(
-      fetchPhoneObject(phoneUrl, trimmedToken)
+    result.phoneAccess = summarizeProviderResponse(
+      UrlFetchApp.fetch(phoneUrl, {
+        method: 'get',
+        headers: {
+          Authorization: 'Bearer ' + rawToken
+        },
+        muteHttpExceptions: true
+      })
     );
 
     /*
-     * PROBE C — POST with the exact stored token.
+     * PROBE 2 — Meta debug_token using the same token as both input token
+     * and access token. We expose only safe metadata.
      */
-    var rawPostResponse = UrlFetchApp.fetch(messagesUrl, {
-      method: 'post',
-      contentType: 'application/json',
+    var debugResponse = UrlFetchApp.fetch(debugTokenUrl, {
+      method: 'get',
       headers: {
         Authorization: 'Bearer ' + rawToken
       },
-      payload: JSON.stringify(body),
       muteHttpExceptions: true
     });
 
-    result.directRawPath = summarizeProviderResponse(
-      rawPostResponse
+    result.tokenDebug = summarizeDebugTokenResponse(debugResponse);
+
+    /*
+     * POST PROBE A — exact minimal body used by the known successful
+     * Graph API Explorer test, with Authorization header.
+     */
+    result.postProbes.minimalBearer = postProbe(
+      messagesUrl,
+      minimalBody,
+      rawToken,
+      'bearer_header_minimal_body'
     );
 
     /*
-     * PROBE D — only if raw POST failed, retry with trim() and the SAME body.
-     * This avoids an unnecessary second successful message when raw already
-     * works.
+     * Only continue with further POST variants if no message was accepted.
      */
-    if (!result.directRawPath.success) {
-      var trimmedPostResponse = UrlFetchApp.fetch(messagesUrl, {
-        method: 'post',
-        contentType: 'application/json',
-        headers: {
-          Authorization: 'Bearer ' + trimmedToken
-        },
-        payload: JSON.stringify(body),
-        muteHttpExceptions: true
-      });
-
-      result.directTrimmedPath = summarizeProviderResponse(
-        trimmedPostResponse
+    if (!result.postProbes.minimalBearer.success) {
+      /*
+       * POST PROBE B — production adapter body, Authorization header.
+       */
+      result.postProbes.adapterBearer = postProbe(
+        messagesUrl,
+        adapterBody,
+        rawToken,
+        'bearer_header_adapter_body'
       );
     } else {
-      result.directTrimmedPath = {
+      result.postProbes.adapterBearer = {
         skipped: true,
-        reason: 'rawPostSucceeded'
+        reason: 'minimalBearerSucceeded'
+      };
+    }
+
+    if (!result.postProbes.minimalBearer.success &&
+        (!result.postProbes.adapterBearer ||
+         result.postProbes.adapterBearer.success !== true)) {
+      /*
+       * POST PROBE C — minimal body with access_token query parameter.
+       * This is diagnostic only. It is NOT proposed as production code.
+       */
+      result.postProbes.queryToken = postProbeWithQueryToken(
+        messagesUrl,
+        minimalBody,
+        rawToken
+      );
+    } else {
+      result.postProbes.queryToken = {
+        skipped: true,
+        reason: 'previousPostProbeSucceeded'
       };
     }
 
     /*
-     * PROBE E — production adapter runtime.
-     *
-     * This remains after the credential probes so the result can be correlated
-     * with the exact runtime token behavior.
+     * Runtime adapter is tested last and only if all independent probes fail.
+     * This preserves the causal comparison and avoids extra duplicate sends.
      */
     result.runtimeAdapter = {
       defined: typeof WhatsAppAdapter !== 'undefined',
@@ -180,12 +221,18 @@ function runMetaCloudRuntimeSendDiagnostic() {
 
     if (result.runtimeAdapter.defined &&
         result.runtimeAdapter.sendTextFunction &&
-        result.runtimeAdapter.postMessageFunction) {
+        result.runtimeAdapter.postMessageFunction &&
+        !anyPostProbeSucceeded(result.postProbes)) {
       var adapterResult = WhatsAppAdapter.sendText(
         META_RUNTIME_DIAGNOSTIC_RECIPIENT,
-        testText
+        'HAMZAWE Meta runtime audit V4'
       );
       result.adapterPath = summarizeAdapterResult(adapterResult);
+    } else if (anyPostProbeSucceeded(result.postProbes)) {
+      result.adapterPath = {
+        skipped: true,
+        reason: 'independentPostProbeSucceeded'
+      };
     } else {
       result.adapterPath = {
         skipped: true,
@@ -194,42 +241,37 @@ function runMetaCloudRuntimeSendDiagnostic() {
     }
 
     result.comparison = {
-      rawTokenPhoneGetAccepted:
-        result.phoneAccess.raw.success === true,
-      trimmedTokenPhoneGetAccepted:
-        result.phoneAccess.trimmed.success === true,
-      rawTokenPostAccepted:
-        result.directRawPath.success === true,
-      trimmedTokenPostAccepted:
-        result.directTrimmedPath.success === true ||
-        result.directTrimmedPath.skipped === true &&
-        result.directRawPath.success === true,
-      adapterAccepted:
+      phoneGetAccepted: result.phoneAccess.success === true,
+      debugTokenAccepted: result.tokenDebug.httpCode === 200,
+      minimalBearerAccepted:
+        result.postProbes.minimalBearer.success === true,
+      adapterBearerAccepted:
+        result.postProbes.adapterBearer &&
+        result.postProbes.adapterBearer.success === true,
+      queryTokenAccepted:
+        result.postProbes.queryToken &&
+        result.postProbes.queryToken.success === true,
+      adapterRuntimeAccepted:
         result.adapterPath.success === true,
-      trimChangedToken:
+      bodyShapeMatters:
+        result.postProbes.minimalBearer.success === true &&
+        result.postProbes.adapterBearer &&
+        result.postProbes.adapterBearer.success === false,
+      bearerVsQueryMatters:
+        result.postProbes.minimalBearer.success === false &&
+        result.postProbes.queryToken &&
+        result.postProbes.queryToken.success === true,
+      allPostFormsRejected:
+        !anyPostProbeSucceeded(result.postProbes),
+      tokenTrimChanged:
         result.tokenShape.changedByTrim,
-      likelyWhitespaceIssue:
-        result.tokenShape.changedByTrim === true &&
-        result.phoneAccess.raw.success === false &&
-        result.phoneAccess.trimmed.success === true,
-      likelyHeaderOrRawTokenIssue:
-        result.directRawPath.success === false &&
-        result.directTrimmedPath.success === true,
-      likelySharedRuntimeCredentialIssue:
-        result.phoneAccess.raw.success === false &&
-        result.phoneAccess.trimmed.success === false &&
-        result.directRawPath.success === false,
-      likelyAdapterSpecificIssue:
-        result.directTrimmedPath.success === true &&
-        result.adapterPath.success === false
+      diagnosticConclusion:
+        deriveConclusion(result)
     };
 
     result.ok =
-      result.phoneAccess.trimmed.success === true &&
-      (
-        result.directRawPath.success === true ||
-        result.directTrimmedPath.success === true
-      );
+      result.phoneAccess.success === true &&
+      anyPostProbeSucceeded(result.postProbes);
 
     console.log(JSON.stringify(result));
     return result;
@@ -240,14 +282,44 @@ function runMetaCloudRuntimeSendDiagnostic() {
   }
 }
 
-function fetchPhoneObject(url, token) {
-  return UrlFetchApp.fetch(url, {
-    method: 'get',
+function postProbe(url, body, token, label) {
+  var response = UrlFetchApp.fetch(url, {
+    method: 'post',
+    contentType: 'application/json',
     headers: {
       Authorization: 'Bearer ' + token
     },
+    payload: JSON.stringify(body),
     muteHttpExceptions: true
   });
+
+  var summary = summarizeProviderResponse(response);
+  summary.probe = label;
+  summary.requestBodyProfile =
+    label === 'bearer_header_minimal_body'
+      ? 'minimal_graph_api_explorer_shape'
+      : 'production_adapter_shape';
+  summary.authorizationTransport = 'bearer_header';
+  return summary;
+}
+
+function postProbeWithQueryToken(url, body, token) {
+  var separator = url.indexOf('?') === -1 ? '?' : '&';
+  var response = UrlFetchApp.fetch(
+    url + separator + 'access_token=' + encodeURIComponent(token),
+    {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify(body),
+      muteHttpExceptions: true
+    }
+  );
+
+  var summary = summarizeProviderResponse(response);
+  summary.probe = 'query_token_minimal_body';
+  summary.requestBodyProfile = 'minimal_graph_api_explorer_shape';
+  summary.authorizationTransport = 'access_token_query_parameter';
+  return summary;
 }
 
 function summarizeProviderResponse(response) {
@@ -265,6 +337,10 @@ function summarizeProviderResponse(response) {
       providerError && providerError.code !== undefined
         ? Number(providerError.code) || null
         : null,
+    providerResponseErrorSubcode:
+      providerError && providerError.error_subcode !== undefined
+        ? Number(providerError.error_subcode) || null
+        : null,
     providerResponseErrorType:
       providerError && providerError.type
         ? String(providerError.type)
@@ -272,8 +348,87 @@ function summarizeProviderResponse(response) {
     providerResponseErrorMessage:
       providerError && providerError.message
         ? String(providerError.message)
-        : null
+        : null,
+    providerTraceId:
+      providerError && providerError.fbtrace_id
+        ? String(providerError.fbtrace_id)
+        : null,
+    errorIsTransient:
+      providerError && providerError.is_transient !== undefined
+        ? providerError.is_transient === true
+        : null,
+    errorUserTitlePresent:
+      !!(providerError && providerError.error_user_title),
+    errorUserMessagePresent:
+      !!(providerError && providerError.error_user_msg)
   };
+}
+
+function summarizeDebugTokenResponse(response) {
+  var summary = summarizeProviderResponse(response);
+  var raw = response.getContentText() || '';
+  var parsed = safeParseJsonForDiagnostic(raw);
+  var data = parsed && parsed.data ? parsed.data : null;
+
+  summary.tokenDataPresent = !!data;
+
+  if (data) {
+    summary.tokenIsValid =
+      data.is_valid !== undefined ? data.is_valid === true : null;
+    summary.tokenAppIdPresent = !!data.app_id;
+    summary.tokenType =
+      data.type ? String(data.type) : null;
+    summary.tokenExpiresAtPresent =
+      data.expires_at !== undefined && data.expires_at !== null;
+    summary.tokenDataAccessExpiresAtPresent =
+      data.data_access_expiration_time !== undefined &&
+      data.data_access_expiration_time !== null;
+    summary.permissionsPresent =
+      Array.isArray(data.scopes) && data.scopes.length > 0;
+    summary.granularPermissionsPresent =
+      Array.isArray(data.granular_scopes) && data.granular_scopes.length > 0;
+  }
+
+  return summary;
+}
+
+function anyPostProbeSucceeded(postProbes) {
+  return !!(
+    (postProbes.minimalBearer &&
+      postProbes.minimalBearer.success === true) ||
+    (postProbes.adapterBearer &&
+      postProbes.adapterBearer.success === true) ||
+    (postProbes.queryToken &&
+      postProbes.queryToken.success === true)
+  );
+}
+
+function deriveConclusion(result) {
+  if (result.postProbes.minimalBearer &&
+      result.postProbes.minimalBearer.success === true) {
+    return 'MINIMAL_BEARER_ACCEPTED';
+  }
+
+  if (result.postProbes.adapterBearer &&
+      result.postProbes.adapterBearer.success === true) {
+    return 'ADAPTER_BODY_ACCEPTED';
+  }
+
+  if (result.postProbes.queryToken &&
+      result.postProbes.queryToken.success === true) {
+    return 'QUERY_TOKEN_ACCEPTED_BEARER_REJECTED';
+  }
+
+  if (result.phoneAccess.success === true &&
+      result.tokenDebug.httpCode === 200) {
+    return 'TOKEN_AUTHENTICATES_BUT_ALL_MESSAGES_POST_FORMS_REJECTED';
+  }
+
+  if (result.phoneAccess.success === true) {
+    return 'PHONE_GET_ACCEPTS_TOKEN_BUT_TOKEN_DEBUG_OR_POST_FAILED';
+  }
+
+  return 'META_AUTHENTICATION_FAILED_AT_PHONE_GET';
 }
 
 function summarizeAdapterResult(result) {
@@ -284,8 +439,10 @@ function summarizeAdapterResult(result) {
     httpCode: null,
     providerMessageIdPresent: false,
     providerResponseErrorCode: null,
+    providerResponseErrorSubcode: null,
     providerResponseErrorType: null,
-    providerResponseErrorMessage: null
+    providerResponseErrorMessage: null,
+    providerTraceId: null
   };
 
   if (!result) return output;
@@ -311,10 +468,16 @@ function summarizeAdapterResult(result) {
         providerError.code !== undefined
           ? Number(providerError.code) || null
           : null;
+      output.providerResponseErrorSubcode =
+        providerError.error_subcode !== undefined
+          ? Number(providerError.error_subcode) || null
+          : null;
       output.providerResponseErrorType =
         providerError.type ? String(providerError.type) : null;
       output.providerResponseErrorMessage =
         providerError.message ? String(providerError.message) : null;
+      output.providerTraceId =
+        providerError.fbtrace_id ? String(providerError.fbtrace_id) : null;
     }
   }
 
