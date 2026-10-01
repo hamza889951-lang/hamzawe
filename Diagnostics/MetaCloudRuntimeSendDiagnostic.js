@@ -1,70 +1,84 @@
 /**
- * Meta Cloud Runtime Send Diagnostic — controlled transport audit.
+ * Meta Cloud Runtime Send Diagnostic — credential/runtime isolation audit.
  *
  * PURPOSE
  * -------
- * Compare the production WhatsAppAdapter.sendText() runtime path with an
- * independent UrlFetchApp request built from the same Script Properties.
+ * Isolate the current Meta HTTP 400 / OAuthException code 100 by testing:
+ *   1) the raw Script Property token;
+ *   2) the same token after trim();
+ *   3) GET access to the configured Phone Number object;
+ *   4) POST /messages using the raw token;
+ *   5) POST /messages using the trimmed token ONLY if raw POST fails.
  *
- * This diagnostic is NOT part of the webhook/business path.
- * It performs two outbound test sends when explicitly run:
- *   1) WhatsAppAdapter.sendText()
- *   2) direct UrlFetchApp.fetch() using the same endpoint/auth/body contract
+ * The diagnostic recipient is intentionally fixed to the controlled test
+ * recipient supplied for this investigation.
  *
  * SAFE OUTPUT
  * -----------
  * Never logs:
  * - META_ACCESS_TOKEN
  * - WHATSAPP_GATEWAY_SECRET
- * - message text
  * - Authorization header
+ * - message text
+ * - raw provider response
  *
- * It logs only endpoint/version metadata, request-shape facts, HTTP status,
- * and provider response status/error code/message (without token material).
+ * It logs only non-secret token shape metadata, HTTP status, and provider
+ * error code/type/message.
  *
- * RUN:
- *   runMetaCloudRuntimeSendDiagnostic('+964XXXXXXXXXX')
- *
- * The recipient must be a controlled test recipient.
+ * IMPORTANT
+ * ---------
+ * This diagnostic can send at most one successful test message from the
+ * direct POST probe, plus the production WhatsAppAdapter probe. The adapter
+ * probe is performed only after credential probes complete.
  */
-function runMetaCloudRuntimeSendDiagnostic(recipient) {
+
+var META_RUNTIME_DIAGNOSTIC_RECIPIENT = '9647824134670';
+
+function runMetaCloudRuntimeSendDiagnostic() {
   var result = {
-    diagnostic: 'META_CLOUD_RUNTIME_SEND_AUDIT_V2',
+    diagnostic: 'META_CLOUD_RUNTIME_SEND_AUDIT_V3',
     ok: false,
     config: {},
+    tokenShape: {},
+    phoneAccess: {},
+    directRawPath: {},
+    directTrimmedPath: {},
     runtimeAdapter: {},
     adapterPath: {},
-    directPath: {},
     comparison: {},
     error: null
   };
 
   try {
-    if (!recipient || typeof recipient !== 'string') {
-      throw new Error('A controlled test recipient is required');
-    }
-
     var props = PropertiesService.getScriptProperties();
     var version = props.getProperty('META_GRAPH_API_VERSION') || '';
     var phoneNumberId = props.getProperty('META_PHONE_NUMBER_ID') || '';
-    var accessToken = props.getProperty('META_ACCESS_TOKEN') || '';
+    var rawToken = props.getProperty('META_ACCESS_TOKEN') || '';
+    var trimmedToken = rawToken.trim();
 
-    if (!version || !phoneNumberId || !accessToken) {
+    if (!version || !phoneNumberId || !rawToken) {
       throw new Error('Meta Cloud API Script Properties are incomplete');
     }
 
-    var url =
+    var messagesUrl =
       'https://graph.facebook.com/' +
       version +
       '/' +
       phoneNumberId +
       '/messages';
 
-    var testText = 'HAMZAWE Meta runtime audit V2';
+    var phoneUrl =
+      'https://graph.facebook.com/' +
+      version +
+      '/' +
+      phoneNumberId;
+
+    var testText = 'HAMZAWE Meta runtime audit V3';
+
     var body = {
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
-      to: recipient,
+      to: META_RUNTIME_DIAGNOSTIC_RECIPIENT,
       type: 'text',
       text: {
         preview_url: false,
@@ -77,9 +91,81 @@ function runMetaCloudRuntimeSendDiagnostic(recipient) {
       phoneNumberIdPresent: !!phoneNumberId,
       endpointSuffix: '/messages',
       method: 'post',
-      contentType: 'application/json'
+      contentType: 'application/json',
+      recipientConfigured: META_RUNTIME_DIAGNOSTIC_RECIPIENT === '9647824134670'
     };
 
+    result.tokenShape = {
+      rawLength: rawToken.length,
+      trimmedLength: trimmedToken.length,
+      leadingWhitespacePresent: rawToken.length !== rawToken.replace(/^\\s+/, '').length,
+      trailingWhitespacePresent: rawToken.length !== rawToken.replace(/\\s+$/, '').length,
+      changedByTrim: rawToken !== trimmedToken
+    };
+
+    /*
+     * PROBE A/B — token validity from inside Apps Script.
+     *
+     * If GET with raw token fails but trimmed succeeds, the Script Property
+     * contains leading/trailing whitespace and that is the immediate cause.
+     */
+    result.phoneAccess.raw = summarizeProviderResponse(
+      fetchPhoneObject(phoneUrl, rawToken)
+    );
+
+    result.phoneAccess.trimmed = summarizeProviderResponse(
+      fetchPhoneObject(phoneUrl, trimmedToken)
+    );
+
+    /*
+     * PROBE C — POST with the exact stored token.
+     */
+    var rawPostResponse = UrlFetchApp.fetch(messagesUrl, {
+      method: 'post',
+      contentType: 'application/json',
+      headers: {
+        Authorization: 'Bearer ' + rawToken
+      },
+      payload: JSON.stringify(body),
+      muteHttpExceptions: true
+    });
+
+    result.directRawPath = summarizeProviderResponse(
+      rawPostResponse
+    );
+
+    /*
+     * PROBE D — only if raw POST failed, retry with trim() and the SAME body.
+     * This avoids an unnecessary second successful message when raw already
+     * works.
+     */
+    if (!result.directRawPath.success) {
+      var trimmedPostResponse = UrlFetchApp.fetch(messagesUrl, {
+        method: 'post',
+        contentType: 'application/json',
+        headers: {
+          Authorization: 'Bearer ' + trimmedToken
+        },
+        payload: JSON.stringify(body),
+        muteHttpExceptions: true
+      });
+
+      result.directTrimmedPath = summarizeProviderResponse(
+        trimmedPostResponse
+      );
+    } else {
+      result.directTrimmedPath = {
+        skipped: true,
+        reason: 'rawPostSucceeded'
+      };
+    }
+
+    /*
+     * PROBE E — production adapter runtime.
+     *
+     * This remains after the credential probes so the result can be correlated
+     * with the exact runtime token behavior.
+     */
     result.runtimeAdapter = {
       defined: typeof WhatsAppAdapter !== 'undefined',
       sendTextFunction: typeof WhatsAppAdapter !== 'undefined' &&
@@ -92,55 +178,58 @@ function runMetaCloudRuntimeSendDiagnostic(recipient) {
         !!WhatsAppAdapter.MESSAGE_TYPES
     };
 
-    if (!result.runtimeAdapter.defined ||
-        !result.runtimeAdapter.sendTextFunction ||
-        !result.runtimeAdapter.postMessageFunction) {
-      throw new Error('Expected WhatsAppAdapter runtime definition is unavailable');
+    if (result.runtimeAdapter.defined &&
+        result.runtimeAdapter.sendTextFunction &&
+        result.runtimeAdapter.postMessageFunction) {
+      var adapterResult = WhatsAppAdapter.sendText(
+        META_RUNTIME_DIAGNOSTIC_RECIPIENT,
+        testText
+      );
+      result.adapterPath = summarizeAdapterResult(adapterResult);
+    } else {
+      result.adapterPath = {
+        skipped: true,
+        reason: 'WhatsAppAdapter runtime definition unavailable'
+      };
     }
 
-    /*
-     * PATH A — exact production adapter entry point.
-     * Result is captured without printing message text or token material.
-     */
-    var adapterResult = WhatsAppAdapter.sendText(recipient, testText);
-
-    result.adapterPath = summarizeAdapterResult(adapterResult);
-
-    /*
-     * PATH B — independent direct request using the same Script Properties
-     * and the same documented Meta Cloud API request shape.
-     */
-    var directResponse = UrlFetchApp.fetch(url, {
-      method: 'post',
-      contentType: 'application/json',
-      headers: {
-        Authorization: 'Bearer ' + accessToken
-      },
-      payload: JSON.stringify(body),
-      muteHttpExceptions: true
-    });
-
-    result.directPath = summarizeProviderResponse(
-      directResponse.getResponseCode(),
-      directResponse.getContentText() || ''
-    );
-
     result.comparison = {
-      adapterHttpCode: result.adapterPath.httpCode,
-      directHttpCode: result.directPath.httpCode,
-      adapterSuccess: result.adapterPath.success,
-      directSuccess: result.directPath.success,
-      sameHttpOutcome: result.adapterPath.httpCode === result.directPath.httpCode,
-      directProviderAcceptedRequest:
-        result.directPath.httpCode >= 200 &&
-        result.directPath.httpCode < 300
+      rawTokenPhoneGetAccepted:
+        result.phoneAccess.raw.success === true,
+      trimmedTokenPhoneGetAccepted:
+        result.phoneAccess.trimmed.success === true,
+      rawTokenPostAccepted:
+        result.directRawPath.success === true,
+      trimmedTokenPostAccepted:
+        result.directTrimmedPath.success === true ||
+        result.directTrimmedPath.skipped === true &&
+        result.directRawPath.success === true,
+      adapterAccepted:
+        result.adapterPath.success === true,
+      trimChangedToken:
+        result.tokenShape.changedByTrim,
+      likelyWhitespaceIssue:
+        result.tokenShape.changedByTrim === true &&
+        result.phoneAccess.raw.success === false &&
+        result.phoneAccess.trimmed.success === true,
+      likelyHeaderOrRawTokenIssue:
+        result.directRawPath.success === false &&
+        result.directTrimmedPath.success === true,
+      likelySharedRuntimeCredentialIssue:
+        result.phoneAccess.raw.success === false &&
+        result.phoneAccess.trimmed.success === false &&
+        result.directRawPath.success === false,
+      likelyAdapterSpecificIssue:
+        result.directTrimmedPath.success === true &&
+        result.adapterPath.success === false
     };
 
     result.ok =
-      result.runtimeAdapter.defined &&
-      result.runtimeAdapter.sendTextFunction &&
-      result.runtimeAdapter.postMessageFunction &&
-      result.directPath.success === true;
+      result.phoneAccess.trimmed.success === true &&
+      (
+        result.directRawPath.success === true ||
+        result.directTrimmedPath.success === true
+      );
 
     console.log(JSON.stringify(result));
     return result;
@@ -149,6 +238,42 @@ function runMetaCloudRuntimeSendDiagnostic(recipient) {
     console.log(JSON.stringify(result));
     return result;
   }
+}
+
+function fetchPhoneObject(url, token) {
+  return UrlFetchApp.fetch(url, {
+    method: 'get',
+    headers: {
+      Authorization: 'Bearer ' + token
+    },
+    muteHttpExceptions: true
+  });
+}
+
+function summarizeProviderResponse(response) {
+  var httpCode = Number(response.getResponseCode()) || null;
+  var raw = response.getContentText() || '';
+  var parsed = safeParseJsonForDiagnostic(raw);
+  var providerError = parsed && parsed.error ? parsed.error : null;
+
+  return {
+    httpCode: httpCode,
+    success: httpCode >= 200 && httpCode < 300,
+    providerMessageIdPresent:
+      !!(parsed && parsed.messages && parsed.messages[0] && parsed.messages[0].id),
+    providerResponseErrorCode:
+      providerError && providerError.code !== undefined
+        ? Number(providerError.code) || null
+        : null,
+    providerResponseErrorType:
+      providerError && providerError.type
+        ? String(providerError.type)
+        : null,
+    providerResponseErrorMessage:
+      providerError && providerError.message
+        ? String(providerError.message)
+        : null
+  };
 }
 
 function summarizeAdapterResult(result) {
@@ -198,30 +323,6 @@ function summarizeAdapterResult(result) {
   }
 
   return output;
-}
-
-function summarizeProviderResponse(httpCode, raw) {
-  var parsed = safeParseJsonForDiagnostic(raw);
-  var providerError = parsed && parsed.error ? parsed.error : null;
-
-  return {
-    httpCode: Number(httpCode) || null,
-    success: Number(httpCode) >= 200 && Number(httpCode) < 300,
-    providerMessageIdPresent:
-      !!(parsed && parsed.messages && parsed.messages[0] && parsed.messages[0].id),
-    providerResponseErrorCode:
-      providerError && providerError.code !== undefined
-        ? Number(providerError.code) || null
-        : null,
-    providerResponseErrorType:
-      providerError && providerError.type
-        ? String(providerError.type)
-        : null,
-    providerResponseErrorMessage:
-      providerError && providerError.message
-        ? String(providerError.message)
-        : null
-  };
 }
 
 function safeParseJsonForDiagnostic(raw) {
