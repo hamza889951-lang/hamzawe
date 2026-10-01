@@ -3,21 +3,28 @@
  *
  * Controlled recipient: 9647824134670
  *
- * V4 PURPOSE
+ * V5 PURPOSE
  * ----------
- * We already proved:
- * - the Apps Script token authenticates GET /{PHONE_NUMBER_ID};
- * - raw and trimmed tokens are identical;
- * - POST /messages fails with OAuthException code 100;
- * - the production adapter and independent UrlFetchApp path fail identically.
+ * V4 proved that:
+ * - the System User token is valid;
+ * - GET /{PHONE_NUMBER_ID} succeeds;
+ * - debug_token succeeds;
+ * - three materially different POST authorization/body forms all fail
+ *   with OAuthException code 100 from Apps Script;
+ * - the same token/phone/recipient previously succeeded from Graph API
+ *   Explorer.
  *
- * V4 therefore isolates the remaining request-level variables:
- *   A) exact minimal Graph API Explorer-style JSON body;
- *   B) production body with recipient_type;
- *   C) Authorization: Bearer header;
- *   D) access_token query parameter (diagnostic only);
- *   E) GET /debug_token using the same token;
- *   F) full OAuth error fields, including subcode and trace id.
+ * V5 is the final request-context differential audit. It does NOT rotate
+ * credentials and does NOT modify production behavior.
+ *
+ * It inspects the exact request object Apps Script constructs via
+ * UrlFetchApp.getRequest(), with Authorization values redacted, and compares
+ * safe fingerprints of payload serialization, Content-Type construction,
+ * Authorization header construction, endpoint construction, and request
+ * options.
+ *
+ * It then performs only the minimum controlled POST variants required to
+ * determine whether the failure is caused by UrlFetch request construction.
  *
  * SAFE OUTPUT
  * -----------
@@ -25,21 +32,22 @@
  * message text, or gateway secret.
  *
  * This diagnostic sends test messages only when a POST probe is accepted.
- * It stops trying POST variants after the first successful POST to avoid
- * duplicate successful messages.
+ * It stops after the first successful POST to avoid duplicate successful
+ * messages.
  */
 
 var META_RUNTIME_DIAGNOSTIC_RECIPIENT = '9647824134670';
 
 function runMetaCloudRuntimeSendDiagnostic() {
   var result = {
-    diagnostic: 'META_CLOUD_RUNTIME_SEND_AUDIT_V4',
+    diagnostic: 'META_CLOUD_RUNTIME_SEND_AUDIT_V5',
     ok: false,
     config: {},
     tokenShape: {},
     tokenDebug: {},
     phoneAccess: {},
     postProbes: {},
+    requestAudit: {},
     runtimeAdapter: {},
     adapterPath: {},
     comparison: {},
@@ -157,6 +165,8 @@ function runMetaCloudRuntimeSendDiagnostic() {
      * POST PROBE A — exact minimal body used by the known successful
      * Graph API Explorer test, with Authorization header.
      */
+    result.requestAudit = buildRequestAudit(messagesUrl, minimalBody, rawToken);
+
     result.postProbes.minimalBearer = postProbe(
       messagesUrl,
       minimalBody,
@@ -187,10 +197,32 @@ function runMetaCloudRuntimeSendDiagnostic() {
     if (!result.postProbes.minimalBearer.success &&
         (!result.postProbes.adapterBearer ||
          result.postProbes.adapterBearer.success !== true)) {
-      /*
-       * POST PROBE C — minimal body with access_token query parameter.
-       * This is diagnostic only. It is NOT proposed as production code.
-       */
+      result.postProbes.explicitContentType = postProbeExplicitContentType(
+        messagesUrl,
+        minimalBody,
+        rawToken
+      );
+    } else {
+      result.postProbes.explicitContentType = {
+        skipped: true,
+        reason: 'previousPostProbeSucceeded'
+      };
+    }
+
+    if (!anyPostProbeSucceeded(result.postProbes)) {
+      result.postProbes.blobPayload = postProbeBlobPayload(
+        messagesUrl,
+        minimalBody,
+        rawToken
+      );
+    } else {
+      result.postProbes.blobPayload = {
+        skipped: true,
+        reason: 'previousPostProbeSucceeded'
+      };
+    }
+
+    if (!anyPostProbeSucceeded(result.postProbes)) {
       result.postProbes.queryToken = postProbeWithQueryToken(
         messagesUrl,
         minimalBody,
@@ -251,6 +283,12 @@ function runMetaCloudRuntimeSendDiagnostic() {
       queryTokenAccepted:
         result.postProbes.queryToken &&
         result.postProbes.queryToken.success === true,
+      explicitContentTypeAccepted:
+        result.postProbes.explicitContentType &&
+        result.postProbes.explicitContentType.success === true,
+      blobPayloadAccepted:
+        result.postProbes.blobPayload &&
+        result.postProbes.blobPayload.success === true,
       adapterRuntimeAccepted:
         result.adapterPath.success === true,
       bodyShapeMatters:
@@ -282,6 +320,107 @@ function runMetaCloudRuntimeSendDiagnostic() {
   }
 }
 
+function buildRequestAudit(url, body, token) {
+  var payload = JSON.stringify(body);
+
+  var paramsViaContentType = {
+    method: 'post',
+    contentType: 'application/json',
+    headers: {
+      Authorization: 'Bearer ' + token
+    },
+    payload: payload,
+    muteHttpExceptions: true,
+    followRedirects: false,
+    escaping: false
+  };
+
+  var paramsViaExplicitHeader = {
+    method: 'post',
+    headers: {
+      Authorization: 'Bearer ' + token,
+      'Content-Type': 'application/json'
+    },
+    payload: payload,
+    muteHttpExceptions: true,
+    followRedirects: false,
+    escaping: false
+  };
+
+  return {
+    payload: {
+      byteLength: Utilities.newBlob(payload).getBytes().length,
+      charLength: payload.length,
+      sha256Present: true,
+      sha256: sha256Hex(payload)
+    },
+    endpoint: {
+      urlLength: url.length,
+      urlSha256: sha256Hex(url),
+      expectedSuffixPresent: /\/messages$/.test(url)
+    },
+    contentTypeOption: sanitizeRequest(
+      UrlFetchApp.getRequest(url, paramsViaContentType)
+    ),
+    explicitHeaderOption: sanitizeRequest(
+      UrlFetchApp.getRequest(url, paramsViaExplicitHeader)
+    ),
+    equivalence: {
+      payloadSame: payload === paramsViaExplicitHeader.payload,
+      endpointSame: true,
+      methodSame: true
+    }
+  };
+}
+
+function sanitizeRequest(request) {
+  var safe = {};
+  Object.keys(request || {}).forEach(function(key) {
+    if (key === 'headers') {
+      safe.headers = summarizeHeaders(request.headers || {});
+      return;
+    }
+    if (key === 'payload') {
+      var payloadText = typeof request.payload === 'string'
+        ? request.payload
+        : String(request.payload || '');
+      safe.payload = {
+        type: typeof request.payload,
+        byteLength: Utilities.newBlob(payloadText).getBytes().length,
+        sha256: sha256Hex(payloadText)
+      };
+      return;
+    }
+    safe[key] = request[key];
+  });
+  return safe;
+}
+
+function summarizeHeaders(headers) {
+  var result = {};
+  Object.keys(headers || {}).forEach(function(key) {
+    var lower = String(key).toLowerCase();
+    if (lower === 'authorization') {
+      result[key] = 'REDACTED';
+    } else {
+      result[key] = String(headers[key]);
+    }
+  });
+  return result;
+}
+
+function sha256Hex(value) {
+  var bytes = Utilities.computeDigest(
+    Utilities.DigestAlgorithm.SHA_256,
+    String(value),
+    Utilities.Charset.UTF_8
+  );
+  return bytes.map(function(b) {
+    var v = (b < 0 ? b + 256 : b).toString(16);
+    return v.length === 1 ? '0' + v : v;
+  }).join('');
+}
+
 function postProbe(url, body, token, label) {
   var response = UrlFetchApp.fetch(url, {
     method: 'post',
@@ -300,6 +439,50 @@ function postProbe(url, body, token, label) {
       ? 'minimal_graph_api_explorer_shape'
       : 'production_adapter_shape';
   summary.authorizationTransport = 'bearer_header';
+  return summary;
+}
+
+function postProbeExplicitContentType(url, body, token) {
+  var payload = JSON.stringify(body);
+  var response = UrlFetchApp.fetch(url, {
+    method: 'post',
+    headers: {
+      Authorization: 'Bearer ' + token,
+      'Content-Type': 'application/json'
+    },
+    payload: payload,
+    muteHttpExceptions: true,
+    followRedirects: false,
+    escaping: false
+  });
+
+  var summary = summarizeProviderResponse(response);
+  summary.probe = 'bearer_header_explicit_content_type';
+  summary.requestBodyProfile = 'minimal_graph_api_explorer_shape';
+  summary.authorizationTransport = 'bearer_header';
+  summary.contentTypeConstruction = 'explicit_header';
+  return summary;
+}
+
+function postProbeBlobPayload(url, body, token) {
+  var payload = JSON.stringify(body);
+  var blob = Utilities.newBlob(payload, 'application/json', 'payload.json');
+  var response = UrlFetchApp.fetch(url, {
+    method: 'post',
+    headers: {
+      Authorization: 'Bearer ' + token
+    },
+    payload: blob,
+    muteHttpExceptions: true,
+    followRedirects: false,
+    escaping: false
+  });
+
+  var summary = summarizeProviderResponse(response);
+  summary.probe = 'bearer_header_blob_payload';
+  summary.requestBodyProfile = 'minimal_graph_api_explorer_shape';
+  summary.authorizationTransport = 'bearer_header';
+  summary.payloadConstruction = 'blob';
   return summary;
 }
 
@@ -398,6 +581,10 @@ function anyPostProbeSucceeded(postProbes) {
       postProbes.minimalBearer.success === true) ||
     (postProbes.adapterBearer &&
       postProbes.adapterBearer.success === true) ||
+    (postProbes.explicitContentType &&
+      postProbes.explicitContentType.success === true) ||
+    (postProbes.blobPayload &&
+      postProbes.blobPayload.success === true) ||
     (postProbes.queryToken &&
       postProbes.queryToken.success === true)
   );
@@ -414,6 +601,16 @@ function deriveConclusion(result) {
     return 'ADAPTER_BODY_ACCEPTED';
   }
 
+  if (result.postProbes.explicitContentType &&
+      result.postProbes.explicitContentType.success === true) {
+    return 'EXPLICIT_CONTENT_TYPE_ACCEPTED';
+  }
+
+  if (result.postProbes.blobPayload &&
+      result.postProbes.blobPayload.success === true) {
+    return 'BLOB_PAYLOAD_ACCEPTED';
+  }
+
   if (result.postProbes.queryToken &&
       result.postProbes.queryToken.success === true) {
     return 'QUERY_TOKEN_ACCEPTED_BEARER_REJECTED';
@@ -421,7 +618,7 @@ function deriveConclusion(result) {
 
   if (result.phoneAccess.success === true &&
       result.tokenDebug.httpCode === 200) {
-    return 'TOKEN_AUTHENTICATES_BUT_ALL_MESSAGES_POST_FORMS_REJECTED';
+    return 'REQUEST_REACHES_META_BUT_MESSAGES_OPERATION_REJECTED';
   }
 
   if (result.phoneAccess.success === true) {
