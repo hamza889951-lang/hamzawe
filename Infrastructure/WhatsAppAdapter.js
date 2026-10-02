@@ -37,9 +37,15 @@ const WhatsAppAdapter = {
       if (event.messageType === this.MESSAGE_TYPES.TEXT) {
         canonicalMessage = event.text || '';
       } else if (event.messageType === 'BUTTON') {
-        if (!Config || !Config.VOCABULARY || !Config.VOCABULARY.WHATSAPP) return null;
-        canonicalMessage = Config.VOCABULARY.WHATSAPP.toCanonicalMessage(event.buttonPayload);
-        if (canonicalMessage === null) return null;
+        var buttonMap = {
+          HAMZAWE_CONFIRM: '1',
+          HAMZAWE_CHANGE: '2',
+          HAMZAWE_CANCEL: '3',
+          HAMZAWE_DECLINE: '2',
+          HAMZAWE_START_BOOKING: 'START_BOOKING'
+        };
+        canonicalMessage = buttonMap[String(event.buttonPayload || '')];
+        if (canonicalMessage === undefined) return null;
       }
 
       return {
