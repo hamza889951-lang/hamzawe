@@ -37,8 +37,8 @@ const WhatsAppAdapter = {
       if (event.messageType === this.MESSAGE_TYPES.TEXT) {
         canonicalMessage = event.text || '';
       } else if (event.messageType === 'BUTTON') {
-        if (typeof WhatsAppTemplateCatalog === 'undefined') return null;
-        canonicalMessage = WhatsAppTemplateCatalog.toCanonicalMessage(event.buttonPayload);
+        if (!Config || !Config.VOCABULARY || !Config.VOCABULARY.WHATSAPP) return null;
+        canonicalMessage = Config.VOCABULARY.WHATSAPP.toCanonicalMessage(event.buttonPayload);
         if (canonicalMessage === null) return null;
       }
 
