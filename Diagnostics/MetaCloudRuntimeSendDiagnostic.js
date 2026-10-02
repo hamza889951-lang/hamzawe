@@ -692,3 +692,212 @@ function safeParseJsonForDiagnostic(raw) {
     return null;
   }
 }
+
+
+/**
+ * Read-only audit of current WEBHOOK_PARSE_FAILED rows.
+ * Never prints secrets, signatures, message text, or raw log payloads.
+ */
+function runWhatsAppGatewayParseFailureDiagnostic() {
+  var out = {
+    diagnostic: 'WHATSAPP_GATEWAY_PARSE_FAILURE_AUDIT_V1',
+    ok: false,
+    source: { sheet: 'SYSTEM_LOG', matchingRows: 0, rowsInspected: 0 },
+    recent: [],
+    error: null
+  };
+  try {
+    if (typeof GoogleSheets === 'undefined' ||
+        typeof GoogleSheets.getAllRows !== 'function') {
+      throw new Error('GoogleSheets runtime is unavailable');
+    }
+    var rows = GoogleSheets.getAllRows('SYSTEM_LOG').filter(function(row) {
+      return String(row.command || '') === 'WEBHOOK_PARSE_FAILED';
+    });
+    out.source.matchingRows = rows.length;
+    rows.sort(function(a, b) {
+      return Number(b._rowNumber || 0) - Number(a._rowNumber || 0);
+    });
+    rows.slice(0, 5).forEach(function(row) {
+      out.recent.push(auditWebhookParseFailureRow(row));
+    });
+    out.source.rowsInspected = out.recent.length;
+    out.ok = true;
+    console.log(JSON.stringify(out));
+    return out;
+  } catch (err) {
+    out.error = err && err.message ? String(err.message) : String(err);
+    console.log(JSON.stringify(out));
+    return out;
+  }
+}
+
+function auditWebhookParseFailureRow(row) {
+  var r = {
+    rowNumber: Number(row._rowNumber) || null,
+    jsonValid: false,
+    gatewayVersion: null,
+    gatewayVersionValid: false,
+    gatewayTimestampValid: false,
+    gatewayAgeMs: null,
+    gatewayAgeWithinFiveMinutes: false,
+    signaturePresent: false,
+    signatureLength: null,
+    signatureFormatValid: false,
+    gatewaySecretPresent: false,
+    hmacMatches: false,
+    eventType: null,
+    messageIdPresent: false,
+    phonePresent: false,
+    phoneNormalized: null,
+    messageType: null,
+    eventTimestampValid: false,
+    likelyFailureStage: null
+  };
+
+  var raw = row.error;
+  if (raw === null || raw === undefined || raw === '') {
+    r.likelyFailureStage = 'NO_PAYLOAD_IN_LOG_ROW';
+    return r;
+  }
+
+  var envelope;
+  try {
+    envelope = JSON.parse(String(raw));
+    r.jsonValid = true;
+  } catch (e) {
+    r.likelyFailureStage = 'JSON_PARSE';
+    return r;
+  }
+
+  if (!envelope || typeof envelope !== 'object') {
+    r.likelyFailureStage = 'ROOT_NOT_OBJECT';
+    return r;
+  }
+  if (!envelope.event) {
+    r.likelyFailureStage = 'EVENT_MISSING';
+    return r;
+  }
+
+  r.gatewayVersion = envelope.gatewayVersion === undefined
+    ? null : String(envelope.gatewayVersion);
+  r.gatewayVersionValid = envelope.gatewayVersion === 'v1';
+  if (!r.gatewayVersionValid) {
+    r.likelyFailureStage = 'GATEWAY_VERSION';
+    return r;
+  }
+
+  var gatewayTimestampMs = Number(envelope.gatewayTimestampMs);
+  r.gatewayTimestampValid = isFinite(gatewayTimestampMs);
+  if (!r.gatewayTimestampValid) {
+    r.likelyFailureStage = 'GATEWAY_TIMESTAMP_INVALID';
+    return r;
+  }
+
+  r.gatewayAgeMs = new Date().getTime() - gatewayTimestampMs;
+  r.gatewayAgeWithinFiveMinutes =
+    Math.abs(r.gatewayAgeMs) <= 5 * 60 * 1000;
+  if (!r.gatewayAgeWithinFiveMinutes) {
+    r.likelyFailureStage = 'GATEWAY_TIMESTAMP_STALE';
+    return r;
+  }
+
+  var signature = String(envelope.signature || '');
+  r.signaturePresent = signature.length > 0;
+  r.signatureLength = signature.length;
+  r.signatureFormatValid = /^[0-9a-f]{64}$/i.test(signature);
+  if (!r.signaturePresent || !r.signatureFormatValid) {
+    r.likelyFailureStage = 'SIGNATURE_MISSING_OR_MALFORMED';
+    return r;
+  }
+
+  var secret = '';
+  try {
+    secret = PropertiesService.getScriptProperties()
+      .getProperty('WHATSAPP_GATEWAY_SECRET') || '';
+  } catch (e) {
+    r.likelyFailureStage = 'SECRET_PROPERTY_READ_EXCEPTION';
+    return r;
+  }
+  r.gatewaySecretPresent = secret.length > 0;
+  if (!secret) {
+    r.likelyFailureStage = 'GATEWAY_SECRET_MISSING';
+    return r;
+  }
+
+  try {
+    var canonical = JSON.stringify(envelope.event);
+    var digest = Utilities.computeHmacSha256Signature(canonical, secret);
+    var expected = digest.map(function(byte) {
+      var n = (byte + 256) % 256;
+      var h = n.toString(16);
+      return h.length === 1 ? '0' + h : h;
+    }).join('');
+    r.hmacMatches = diagnosticConstantTimeEqual(expected, signature);
+  } catch (e) {
+    r.likelyFailureStage = 'HMAC_COMPUTATION_EXCEPTION';
+    return r;
+  }
+
+  if (!r.hmacMatches) {
+    r.likelyFailureStage = 'GATEWAY_SIGNATURE_MISMATCH';
+    return r;
+  }
+
+  var event = envelope.event;
+  r.eventType = event.eventType === undefined ? null : String(event.eventType);
+  r.messageIdPresent = !!(event.messageId !== undefined &&
+    event.messageId !== null && String(event.messageId) !== '');
+  r.phonePresent = !!(event.phone !== undefined &&
+    event.phone !== null && String(event.phone) !== '');
+  r.messageType = event.messageType === undefined ? null : String(event.messageType);
+  r.eventTimestampValid = isFinite(Number(event.timestampMs));
+
+  if (typeof PhoneUtils === 'undefined' ||
+      typeof PhoneUtils.normalize !== 'function') {
+    r.likelyFailureStage = 'PHONE_UTILS_UNAVAILABLE';
+    return r;
+  }
+
+  try {
+    var rawPhone = event.phone;
+    var normalized = PhoneUtils.normalize(rawPhone);
+    r.phoneNormalized = normalized === undefined || normalized === null
+      ? null : String(normalized);
+    if (!normalized) {
+      r.likelyFailureStage = 'PHONE_NORMALIZATION';
+      return r;
+    }
+  } catch (e) {
+    r.likelyFailureStage = 'PHONE_NORMALIZATION_EXCEPTION';
+    return r;
+  }
+
+  if (event.eventType === 'MESSAGE' && !r.messageIdPresent) {
+    r.likelyFailureStage = 'MESSAGE_ID_MISSING';
+    return r;
+  }
+  if (event.eventType !== 'MESSAGE' && event.eventType !== 'STATUS') {
+    r.likelyFailureStage = 'UNSUPPORTED_EVENT_TYPE';
+    return r;
+  }
+
+  /*
+   * All visible rejection gates in current main's parseIncomingPayload()
+   * passed. If this row was nevertheless logged as WEBHOOK_PARSE_FAILED,
+   * the strongest remaining hypothesis is Apps Script runtime source
+   * mismatch/stale deployment or a runtime-only exception not reproduced here.
+   */
+  r.likelyFailureStage = 'NO_VISIBLE_PARSE_FAILURE_IN_CURRENT_MAIN_CODE';
+  return r;
+}
+
+function diagnosticConstantTimeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' ||
+      a.length !== b.length) return false;
+  var different = 0;
+  for (var i = 0; i < a.length; i++) {
+    different |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return different === 0;
+}
