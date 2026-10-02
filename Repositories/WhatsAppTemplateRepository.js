@@ -29,10 +29,25 @@ const WhatsAppTemplateRepository = {
         })
       : [];
 
+    var buttonPayloads = Array.isArray(options.buttonPayloads)
+      ? options.buttonPayloads.map(function(value) {
+          return value === null || value === undefined ? '' : String(value);
+        })
+      : [];
+
+    if (buttonPayloads.length > 2) {
+      return Result.fail(
+        'WHATSAPP_TEMPLATE_INVALID',
+        'At most two Quick Reply payloads are supported',
+        { kind: kind, count: buttonPayloads.length }
+      );
+    }
+
     return Result.ok({
       name: name,
       language: language,
-      parameters: parameters
+      parameters: parameters,
+      buttonPayloads: buttonPayloads
     });
   }
 };
