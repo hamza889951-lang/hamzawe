@@ -278,23 +278,18 @@ const WhatsAppAdapter = {
 
     const canonical = JSON.stringify(envelope.event);
 
-    // Explicit UTF-8 verification is required because the gateway signs
-    // the normalized event using Web Crypto/TextEncoder (UTF-8).
-    // Keep the legacy path first for backward compatibility with already
-    // deployed gateway envelopes, then accept the explicit UTF-8 form.
-    const digestLegacy = Utilities.computeHmacSha256Signature(canonical, secret);
+    // Cloudflare Worker TextEncoder uses UTF-8. Select UTF-8 explicitly
+    // so non-ASCII message text is handled identically by Apps Script.
     const digestUtf8 = Utilities.computeHmacSha256Signature(
       canonical,
       secret,
       Utilities.Charset.UTF_8
     );
 
-    const expectedLegacy = this._bytesToHex(digestLegacy);
     const expectedUtf8 = this._bytesToHex(digestUtf8);
     const supplied = String(envelope.signature);
 
-    if (this._constantTimeEqual(expectedLegacy, supplied) ||
-        this._constantTimeEqual(expectedUtf8, supplied)) {
+    if (this._constantTimeEqual(expectedUtf8, supplied)) {
       return Result.ok({ verified: true });
     }
 
