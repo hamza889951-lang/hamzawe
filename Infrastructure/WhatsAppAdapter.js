@@ -206,7 +206,11 @@ const WhatsAppAdapter = {
     }
 
     const canonical = JSON.stringify(envelope.event);
-    const digest = Utilities.computeHmacSha256Signature(canonical, secret);
+    const digest = Utilities.computeHmacSha256Signature(
+      canonical,
+      secret,
+      Utilities.Charset.UTF_8
+    );
     const expected = digest.map(function(byte) {
       const n = (byte + 256) % 256;
       const h = n.toString(16);
