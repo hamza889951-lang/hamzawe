@@ -688,8 +688,8 @@ const PatientDisruptionService = {
       kind: 'DISRUPTION_PROPOSAL',
       templateParameters: [this._slotDisplay(candidate) || 'غير محدد'],
       buttonPayloads: [
-        Config.VOCABULARY.WHATSAPP.BUTTON_PAYLOADS.CONFIRM,
-        Config.VOCABULARY.WHATSAPP.BUTTON_PAYLOADS.DECLINE
+        'HAMZAWE_CONFIRM',
+        'HAMZAWE_DECLINE'
       ]
     });
   },
