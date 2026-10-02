@@ -60,6 +60,16 @@ const Config = {
         CANCEL: 'HAMZAWE_CANCEL',
         DECLINE: 'HAMZAWE_DECLINE',
         START_BOOKING: 'HAMZAWE_START_BOOKING'
+      },
+      toCanonicalMessage: function(payload) {
+        switch (String(payload || '')) {
+          case this.BUTTON_PAYLOADS.CONFIRM: return '1';
+          case this.BUTTON_PAYLOADS.CHANGE: return '2';
+          case this.BUTTON_PAYLOADS.CANCEL: return '3';
+          case this.BUTTON_PAYLOADS.DECLINE: return '2';
+          case this.BUTTON_PAYLOADS.START_BOOKING: return 'START_BOOKING';
+          default: return null;
+        }
       }
     },
     CONVERSATION_STATE: {
