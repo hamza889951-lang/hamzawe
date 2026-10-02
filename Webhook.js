@@ -33,7 +33,9 @@ function doPost(e) {
       return ContentService.createTextOutput('OK');
     }
 
-    if (parsed.messageType && parsed.messageType !== 'TEXT') {
+    if (parsed.messageType &&
+        parsed.messageType !== 'TEXT' &&
+        parsed.messageType !== 'BUTTON') {
       LogRepository.write({
         timestamp: Clock.now(),
         command: 'WEBHOOK_UNSUPPORTED_MESSAGE',
@@ -114,7 +116,11 @@ function doPost(e) {
     }
 
     if (result.data && result.data.reply) {
-      const sendResult = MessagingPolicyService.sendReply(parsed.phone, result.data.reply);
+      const sendResult = MessagingPolicyService.sendReply(
+        parsed.phone,
+        result.data.reply,
+        result.data.deliveryOptions || null
+      );
       if (!sendResult.ok) {
         LogRepository.write({
           timestamp: Clock.now(),
