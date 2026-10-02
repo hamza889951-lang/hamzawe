@@ -68,7 +68,26 @@ The current deployment uses:
 - Meta System User access token
 - Gateway HMAC between Cloudflare and Apps Script
 
-The current architecture is **single-tenant**. It is not yet a true multi-clinic architecture.
+**Current production state:** HAMZAWE is still single-tenant. This runbook does not authorize a multi-tenant code change.
+
+**Planned clinic model:** the intended future deployment is *not* one new Meta App/project per clinic. The intended model is:
+
+```
+One Meta Business Portfolio / Meta App / WABA
+        ├── Clinic A phone → Phone Number ID A
+        ├── Clinic B phone → Phone Number ID B
+        └── Clinic C phone → Phone Number ID C
+
+Clinic A → own email → own Apps Script → own Sheet → own Calendar
+Clinic B → own email → own Apps Script → own Sheet → own Calendar
+Clinic C → own email → own Apps Script → own Sheet → own Calendar
+```
+
+The HAMZAWE code may be copied for each clinic. **Code reuse is not identity reuse:** every clinic gets its own phone identity, Phone Number ID, Apps Script deployment, Sheet, Calendar, and secret/config values.
+
+Meta's current documentation explicitly describes the hierarchy in which one Meta business portfolio can contain WABAs and a WABA can contain multiple phone numbers. citeturn2search25turn2search5
+
+This establishes that a separate Meta App/project per phone number is **not inherently required**. It does not, by itself, authorize placing unrelated client businesses under one WABA; ownership, authorization, and Meta's onboarding model must also be satisfied.
 
 ---
 
@@ -149,10 +168,10 @@ For each clinic, record these values in a private deployment sheet:
 
 | Item | Required | Example/reference |
 |---|---|---|
-| Meta Business Portfolio ID | Yes | clinic-specific |
-| WABA ID | Yes | clinic-specific |
+| Meta Business Portfolio ID | Yes | shared or clinic-specific by approved ownership model |
+| WABA ID | Yes | shared WABA is possible; verify account/ownership model |
 | Phone Number ID | Yes | clinic-specific |
-| Meta App ID | Yes | clinic-specific or deliberately shared |
+| Meta App ID | Yes | deliberately shared in the planned model |
 | Graph API version | Yes | current approved version |
 | System User | Yes | clinic-specific owner/access |
 | Access Token | Yes | secret; never commit |
@@ -177,20 +196,61 @@ A major failure during the migration came from using the wrong phone-number ID. 
 
 ---
 
-# 6. Meta WABA subscription
+# 6. Meta WABA subscription and multi-number boundary
 
-The WABA must have the HAMZAWE Meta application subscribed to its webhook events.
+A WABA can contain multiple phone numbers. Meta's current 2026 documentation explicitly shows multiple phone numbers beneath a WABA. citeturn2search25
 
-Verification sequence:
+For the planned HAMZAWE model, the intended Meta layer is therefore:
 
-1. Identify the WABA ID.
-2. Identify the Meta App ID.
-3. Verify that the application is subscribed to the WABA.
-4. Verify that the phone number is attached to the intended WABA.
-5. Verify the webhook callback URL.
-6. Only then perform message delivery tests.
+```
+Meta Business Portfolio
+        ↓
+HAMZAWE Meta App
+        ↓
+WABA
+   ├── Clinic A Phone Number ID
+   ├── Clinic B Phone Number ID
+   └── Clinic C Phone Number ID
+```
 
-The reference deployment passed this gate before final runtime testing.
+### 6.1 What has been verified
+
+The architectural fact **WABA → multiple phone numbers** is verified from current Meta material. citeturn2search25turn2search5
+
+### 6.2 What has NOT been established for the current account
+
+Do not record the following as guaranteed:
+
+- that the current unverified business can add a third number;
+- that the current WABA will accept unlimited clinic numbers;
+- that separate clinics can be treated as one business merely because the API technically supports multiple numbers.
+
+Current third-party documentation consistently reports a **2-phone-number ceiling for an unverified Meta Business Manager/business portfolio**, with higher limits associated with verification and/or Meta-approved exceptions. citeturn0search1turn0search2
+
+Therefore, because full Business Verification is currently unavailable, the clinic rollout must treat **2 active production numbers as the current planning ceiling unless Meta itself exposes a different limit for this account**.
+
+### 6.3 Required verification before clinic #2 / #3
+
+Before onboarding another clinic, verify in the actual Meta account:
+
+1. Current phone-number limit/capability.
+2. Current WABA phone-number list.
+3. Whether **Add phone number** is available.
+4. Whether the new clinic number can be attached to the intended WABA.
+5. Whether Meta requires business verification at that exact step.
+6. Whether the clinic is actually owned/authorized under the business represented by the Meta portfolio.
+
+Only after these checks PASS may a second/third-number onboarding procedure be frozen.
+
+### 6.4 Ownership boundary — critical
+
+If Clinic A, Clinic B, and Clinic C are genuinely separate businesses/entities, do **not** assume that placing all their numbers under one WABA is compliant simply because the WABA supports multiple numbers.
+
+WhatsApp's current policy requires accurate business identity and prohibits impersonation or misleading customers about the nature/affiliation of the business. citeturn2search2
+
+WhatsApp's current FAQ also states that direct API access is for a developer's own business, while offering API access to other businesses requires the appropriate partner path. citeturn2search11turn2search13
+
+**Governance rule:** if the clinics are separate legal businesses, ownership/partner onboarding must be resolved before production onboarding. Do not solve that boundary by falsifying business documents or identities.
 
 ---
 
@@ -238,6 +298,8 @@ hamzawe-whatsapp-gateway
 ```
 
 The Worker is the public Meta webhook boundary.
+
+**Important multi-clinic correction:** the current Worker is single-tenant. Its configuration contains one `HAMZAWE_WEBHOOK_URL` and one `HAMZAWE_GATEWAY_SECRET`, and the current normalized event does not yet preserve `metadata.phone_number_id` as a tenant-routing field. Therefore the current Worker cannot safely fan out one shared Meta webhook stream to multiple independent clinic Apps Script projects.
 
 It performs:
 
@@ -706,15 +768,21 @@ Code can be copied.
 
 ---
 
-# 17. Business verification caveat
+# 17. Business verification and document-integrity gate
 
 The reference deployment reached functional testing without completing full Meta Business Verification.
 
-That does **not** establish that verification will never be required.
+For the current project, **do not treat falsified documents as an operational workaround**. Meta's current policy requires accurate business identity information and prohibits impersonation or misleading affiliation. citeturn2search2
 
-Treat verification as a Meta account/production-readiness gate that may become necessary depending on the account, usage, limits, review requirements, or Meta's current policies.
+If verification is unavailable, the runbook remains valid for the currently permitted/tested scope, but clinic-count expansion must stop at the account's actual Meta limit rather than being achieved through fabricated identity/documentation.
 
-Do not design the future clinic onboarding process around the assumption that every clinic will remain permanently exempt.
+Legitimate fallback paths to evaluate later are:
+
+1. operate within the number limit Meta currently grants this account;
+2. have a genuinely separate clinic/business onboard its own Meta business assets where appropriate;
+3. use Meta's supported partner/solution-provider onboarding path if HAMZAWE is later offered as a service to independent businesses. WhatsApp's current FAQ distinguishes direct API access for one's own business from providing API access to other businesses. citeturn2search11
+
+This is a **governance boundary**, not a coding limitation.
 
 ---
 
@@ -845,6 +913,9 @@ When onboarding a new clinic:
 ### Meta
 
 - [ ] Clinic number confirmed
+- [ ] Confirm clinic ownership/authorization model
+- [ ] Confirm current account phone-number limit
+- [ ] Confirm whether the number can be added to the intended WABA
 - [ ] Number migrated/registered appropriately
 - [ ] WhatsApp Business registration complete
 - [ ] Meta Business Portfolio identified
@@ -852,6 +923,8 @@ When onboarding a new clinic:
 - [ ] Phone Number ID verified
 - [ ] Meta App identified
 - [ ] WABA subscribed to app
+- [ ] If Meta App/WABA is shared, record the clinic Phone Number ID explicitly
+- [ ] Confirm webhook routing model before production
 - [ ] System User configured
 - [ ] Access token generated
 - [ ] Direct phone GET succeeds
@@ -859,6 +932,7 @@ When onboarding a new clinic:
 
 ### Cloudflare
 
+- [ ] Worker/gateway model selected: isolated or approved shared router
 - [ ] Worker created/deployed
 - [ ] META_APP_SECRET configured
 - [ ] META_WEBHOOK_VERIFY_TOKEN configured
@@ -943,15 +1017,17 @@ The UTF-8 HMAC change should be retained as part of the production code path bec
 
 # 25. Source references
 
-Cloudflare:
-
-- Workers Secrets documentation
-- Wrangler secret management
-- Worker routing / production domain guidance
-
 Meta / WhatsApp:
 
-- WhatsApp Business Messaging Policy
-- Current Meta WhatsApp Cloud API documentation should be checked again at the time of each future clinic onboarding because Meta's account, verification, messaging, and policy requirements can change.
+- Meta's 2026 WhatsApp account-model material: a WABA can contain multiple phone numbers. citeturn2search25
+- Meta's 2026 WhatsApp Account Model Evolution material. citeturn2search5
+- WhatsApp Business Messaging Policy, updated September 23, 2026. citeturn2search2
+- WhatsApp Business FAQ covering direct API access and partner onboarding. citeturn2search11
+
+Operational limit note:
+
+- Current third-party documentation reports a 2-number ceiling for unverified Meta business accounts and higher limits after verification/approval; this limit must be rechecked against the actual Meta account at each onboarding event. citeturn0search1turn0search2
+
+The runbook intentionally does not store any credential values. Meta account limits and onboarding rules are subject to change and must be verified against the live account before each new clinic.
 
 This runbook intentionally does not store any credential values.
