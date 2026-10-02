@@ -688,8 +688,8 @@ const PatientDisruptionService = {
       kind: 'DISRUPTION_PROPOSAL',
       templateParameters: [this._slotDisplay(candidate) || 'غير محدد'],
       buttonPayloads: [
-        WhatsAppTemplateCatalog.PAYLOADS.CONFIRM,
-        WhatsAppTemplateCatalog.PAYLOADS.DECLINE
+        Config.VOCABULARY.WHATSAPP.BUTTON_PAYLOADS.CONFIRM,
+        Config.VOCABULARY.WHATSAPP.BUTTON_PAYLOADS.DECLINE
       ]
     });
   },
