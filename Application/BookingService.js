@@ -241,19 +241,14 @@ const BookingService = {
 
   _handleWaitingConfirmation(phone, rawMessage, conversation) {
     if (!this._isConfirmationKeyword(rawMessage)) {
+      var deliveryOptions = this._getWaitingConfirmationDeliveryOptions(conversation);
       return Result.ok({
         reply: 'تم إيجاد موعد لك.\n' +
                '١️⃣ تأكيد الحجز\n' +
                '٢️⃣ تغيير الموعد\n' +
                'أرسل رقم الخيار المطلوب.',
         conversationState: Config.VOCABULARY.CONVERSATION_STATE.WAITING_CONFIRMATION,
-        deliveryOptions: {
-          templateKind: WhatsAppTemplateCatalog.KINDS.BOOKING_CONFIRMATION,
-          buttonPayloads: [
-            WhatsAppTemplateCatalog.PAYLOADS.CONFIRM,
-            WhatsAppTemplateCatalog.PAYLOADS.CHANGE
-          ]
-        }
+        deliveryOptions: deliveryOptions
       });
     }
 
@@ -308,6 +303,30 @@ const BookingService = {
    * @param {string} slotId
    * @returns {Result} ok({ slotId, calendarEventId, date, time, busNumber })
    */
+  _getWaitingConfirmationDeliveryOptions(conversation) {
+    if (!conversation || !conversation.slot_id) return null;
+
+    var slot = SlotRepository.findById(conversation.slot_id);
+    if (!slot) return null;
+
+    var busResult = BusNumberCalculator.fromSlot(slot);
+    var workStartResult = this._getClinicWorkStartDisplay();
+    if (!busResult.ok || !workStartResult.ok) return null;
+
+    return {
+      templateKind: WhatsAppTemplateCatalog.KINDS.BOOKING_CONFIRMATION,
+      templateParameters: [
+        DateUtils.formatDateDisplay(slot.date),
+        busResult.data.busNumber,
+        workStartResult.data
+      ],
+      buttonPayloads: [
+        WhatsAppTemplateCatalog.PAYLOADS.CONFIRM,
+        WhatsAppTemplateCatalog.PAYLOADS.CHANGE
+      ]
+    };
+  },
+
   confirmReservedSlot(phone, slotId) {
     // ── ADR-014: تنفيذ Command مباشر هنا، مؤقتًا، بموافقة المشرف ──
     return CommandExecutor.execute(
