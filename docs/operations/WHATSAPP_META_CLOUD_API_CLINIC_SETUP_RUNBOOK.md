@@ -85,7 +85,7 @@ Clinic C → own email → own Apps Script → own Sheet → own Calendar
 
 The HAMZAWE code may be copied for each clinic. **Code reuse is not identity reuse:** every clinic gets its own phone identity, Phone Number ID, Apps Script deployment, Sheet, Calendar, and secret/config values.
 
-Meta's current documentation explicitly describes the hierarchy in which one Meta business portfolio can contain WABAs and a WABA can contain multiple phone numbers. citeturn2search25turn2search5
+Meta's current documentation explicitly describes the hierarchy in which one Meta business portfolio can contain WABAs and a WABA can contain multiple phone numbers. [Source: Meta — WhatsApp Business account model / WhatsApp Account Model Evolution]
 
 This establishes that a separate Meta App/project per phone number is **not inherently required**. It does not, by itself, authorize placing unrelated client businesses under one WABA; ownership, authorization, and Meta's onboarding model must also be satisfied.
 
@@ -198,7 +198,7 @@ A major failure during the migration came from using the wrong phone-number ID. 
 
 # 6. Meta WABA subscription and multi-number boundary
 
-A WABA can contain multiple phone numbers. Meta's current 2026 documentation explicitly shows multiple phone numbers beneath a WABA. citeturn2search25
+A WABA can contain multiple phone numbers. Meta's current 2026 documentation explicitly shows multiple phone numbers beneath a WABA. [Source: Meta — WhatsApp Business account model]
 
 For the planned HAMZAWE model, the intended Meta layer is therefore:
 
@@ -215,7 +215,7 @@ WABA
 
 ### 6.1 What has been verified
 
-The architectural fact **WABA → multiple phone numbers** is verified from current Meta material. citeturn2search25turn2search5
+The architectural fact **WABA → multiple phone numbers** is verified from current Meta material. [Source: Meta — WhatsApp Business account model / WhatsApp Account Model Evolution]
 
 ### 6.2 What has NOT been established for the current account
 
@@ -225,7 +225,7 @@ Do not record the following as guaranteed:
 - that the current WABA will accept unlimited clinic numbers;
 - that separate clinics can be treated as one business merely because the API technically supports multiple numbers.
 
-Current third-party documentation consistently reports a **2-phone-number ceiling for an unverified Meta Business Manager/business portfolio**, with higher limits associated with verification and/or Meta-approved exceptions. citeturn0search1turn0search2
+Current third-party documentation consistently reports a **2-phone-number ceiling for an unverified Meta Business Manager/business portfolio**, with higher limits associated with verification and/or Meta-approved exceptions. [Operational limit references: Sinch and Twilio documentation; verify live Meta account limit before onboarding]
 
 Therefore, because full Business Verification is currently unavailable, the clinic rollout must treat **2 active production numbers as the current planning ceiling unless Meta itself exposes a different limit for this account**.
 
@@ -246,9 +246,9 @@ Only after these checks PASS may a second/third-number onboarding procedure be f
 
 If Clinic A, Clinic B, and Clinic C are genuinely separate businesses/entities, do **not** assume that placing all their numbers under one WABA is compliant simply because the WABA supports multiple numbers.
 
-WhatsApp's current policy requires accurate business identity and prohibits impersonation or misleading customers about the nature/affiliation of the business. citeturn2search2
+WhatsApp's current policy requires accurate business identity and prohibits impersonation or misleading customers about the nature/affiliation of the business. [Source: WhatsApp Business Messaging Policy, updated September 23, 2026]
 
-WhatsApp's current FAQ also states that direct API access is for a developer's own business, while offering API access to other businesses requires the appropriate partner path. citeturn2search11turn2search13
+WhatsApp's current FAQ also states that direct API access is for a developer's own business, while offering API access to other businesses requires the appropriate partner path. [Source: WhatsApp Business FAQ — direct API access / partner onboarding]
 
 **Governance rule:** if the clinics are separate legal businesses, ownership/partner onboarding must be resolved before production onboarding. Do not solve that boundary by falsifying business documents or identities.
 
@@ -332,7 +332,7 @@ HAMZAWE_GATEWAY_SECRET
 
 **Never store these values in GitHub.**
 
-Cloudflare explicitly recommends Worker Secrets for sensitive values rather than ordinary variables/configuration. citeturn0search3turn0search7
+Cloudflare explicitly recommends Worker Secrets for sensitive values rather than ordinary variables/configuration.
 
 ## 8.2 Worker deployment
 
@@ -345,7 +345,7 @@ After configuring the secrets:
 5. Send one inbound WhatsApp message.
 6. Verify that Apps Script receives the event.
 
-Cloudflare currently documents `wrangler secret put` as the mechanism for creating/updating Worker secrets; it creates a new Worker version and deploys it. citeturn0search1turn0search3
+Cloudflare currently documents `wrangler secret put` as the mechanism for creating/updating Worker secrets; it creates a new Worker version and deploys it.
 
 ---
 
@@ -772,7 +772,7 @@ Code can be copied.
 
 The reference deployment reached functional testing without completing full Meta Business Verification.
 
-For the current project, **do not treat falsified documents as an operational workaround**. Meta's current policy requires accurate business identity information and prohibits impersonation or misleading affiliation. citeturn2search2
+For the current project, **do not treat falsified documents as an operational workaround**. Meta's current policy requires accurate business identity information and prohibits impersonation or misleading affiliation. [Source: WhatsApp Business Messaging Policy, updated September 23, 2026]
 
 If verification is unavailable, the runbook remains valid for the currently permitted/tested scope, but clinic-count expansion must stop at the account's actual Meta limit rather than being achieved through fabricated identity/documentation.
 
@@ -780,7 +780,7 @@ Legitimate fallback paths to evaluate later are:
 
 1. operate within the number limit Meta currently grants this account;
 2. have a genuinely separate clinic/business onboard its own Meta business assets where appropriate;
-3. use Meta's supported partner/solution-provider onboarding path if HAMZAWE is later offered as a service to independent businesses. WhatsApp's current FAQ distinguishes direct API access for one's own business from providing API access to other businesses. citeturn2search11
+3. use Meta's supported partner/solution-provider onboarding path if HAMZAWE is later offered as a service to independent businesses. WhatsApp's current FAQ distinguishes direct API access for one's own business from providing API access to other businesses. [Source: WhatsApp Business FAQ — direct API access / partner onboarding]
 
 This is a **governance boundary**, not a coding limitation.
 
@@ -796,9 +796,9 @@ Current WhatsApp Business policy states, among other things:
 - user-initiated conversations can be answered without a template during the applicable 24-hour customer-service window;
 - automated responses are permitted during that window, but an appropriate human escalation path is expected;
 - businesses must obtain required consent/opt-in and respect opt-out requests;
-- applicable privacy and data-protection obligations remain the business's responsibility. citeturn1search0turn1search2
+- applicable privacy and data-protection obligations remain the business's responsibility.
 
-For clinic deployments, there is an additional important healthcare-data consideration: WhatsApp's policy restricts certain healthcare/telemedicine uses where applicable regulations prohibit the use of systems that do not meet the required health-information protections. citeturn1search0
+For clinic deployments, there is an additional important healthcare-data consideration: WhatsApp's policy restricts certain healthcare/telemedicine uses where applicable regulations prohibit the use of systems that do not meet the required health-information protections.
 
 This must be reviewed before moving from technical testing into real patient-data operation.
 
@@ -808,7 +808,7 @@ This must be reviewed before moving from technical testing into real patient-dat
 
 The current `workers.dev` endpoint works for the current deployment.
 
-Cloudflare currently recommends Workers routes or Custom Domains for production applications rather than relying on a `workers.dev` subdomain for business-critical workloads. citeturn0search2turn0search8
+Cloudflare currently recommends Workers routes or Custom Domains for production applications rather than relying on a `workers.dev` subdomain for business-critical workloads.
 
 For the current controlled phase, do not change the public endpoint merely for aesthetics.
 
@@ -822,7 +822,7 @@ When production hardening begins, evaluate:
 - deployment/version control;
 - rollback procedure.
 
-Cloudflare Custom Domains can create the required DNS record and certificate automatically when the Worker is the origin. citeturn0search0
+Cloudflare Custom Domains can create the required DNS record and certificate automatically when the Worker is the origin.
 
 ---
 
@@ -1019,14 +1019,14 @@ The UTF-8 HMAC change should be retained as part of the production code path bec
 
 Meta / WhatsApp:
 
-- Meta's 2026 WhatsApp account-model material: a WABA can contain multiple phone numbers. citeturn2search25
-- Meta's 2026 WhatsApp Account Model Evolution material. citeturn2search5
-- WhatsApp Business Messaging Policy, updated September 23, 2026. citeturn2search2
-- WhatsApp Business FAQ covering direct API access and partner onboarding. citeturn2search11
+- Meta's 2026 WhatsApp account-model material: a WABA can contain multiple phone numbers. [Source: Meta — WhatsApp Business account model]
+- Meta's 2026 WhatsApp Account Model Evolution material. [Source: Meta — WhatsApp Account Model Evolution]
+- WhatsApp Business Messaging Policy, updated September 23, 2026. [Source: WhatsApp Business Messaging Policy, updated September 23, 2026]
+- WhatsApp Business FAQ covering direct API access and partner onboarding. [Source: WhatsApp Business FAQ — direct API access / partner onboarding]
 
 Operational limit note:
 
-- Current third-party documentation reports a 2-number ceiling for unverified Meta business accounts and higher limits after verification/approval; this limit must be rechecked against the actual Meta account at each onboarding event. citeturn0search1turn0search2
+- Current third-party documentation reports a 2-number ceiling for unverified Meta business accounts and higher limits after verification/approval; this limit must be rechecked against the actual Meta account at each onboarding event. [Operational limit references: Sinch and Twilio documentation; verify live Meta account limit before onboarding]
 
 The runbook intentionally does not store any credential values. Meta account limits and onboarding rules are subject to change and must be verified against the live account before each new clinic.
 
