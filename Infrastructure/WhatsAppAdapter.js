@@ -277,18 +277,36 @@ const WhatsAppAdapter = {
     }
 
     const canonical = JSON.stringify(envelope.event);
-    const digest = Utilities.computeHmacSha256Signature(canonical, secret);
-    const expected = digest.map(function(byte) {
+
+    // Explicit UTF-8 verification is required because the gateway signs
+    // the normalized event using Web Crypto/TextEncoder (UTF-8).
+    // Keep the legacy path first for backward compatibility with already
+    // deployed gateway envelopes, then accept the explicit UTF-8 form.
+    const digestLegacy = Utilities.computeHmacSha256Signature(canonical, secret);
+    const digestUtf8 = Utilities.computeHmacSha256Signature(
+      canonical,
+      secret,
+      Utilities.Charset.UTF_8
+    );
+
+    const expectedLegacy = this._bytesToHex(digestLegacy);
+    const expectedUtf8 = this._bytesToHex(digestUtf8);
+    const supplied = String(envelope.signature);
+
+    if (this._constantTimeEqual(expectedLegacy, supplied) ||
+        this._constantTimeEqual(expectedUtf8, supplied)) {
+      return Result.ok({ verified: true });
+    }
+
+    return Result.fail('INVALID_GATEWAY_SIGNATURE', 'Gateway signature verification failed');
+  },
+
+  _bytesToHex: function(bytes) {
+    return bytes.map(function(byte) {
       const n = (byte + 256) % 256;
       const h = n.toString(16);
       return h.length === 1 ? '0' + h : h;
     }).join('');
-
-    if (!this._constantTimeEqual(expected, String(envelope.signature))) {
-      return Result.fail('INVALID_GATEWAY_SIGNATURE', 'Gateway signature verification failed');
-    }
-
-    return Result.ok({ verified: true });
   },
 
   _constantTimeEqual: function(a, b) {
