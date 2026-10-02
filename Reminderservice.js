@@ -76,13 +76,21 @@ const ReminderService = {
     if (busResult.ok && workStartResult.ok) {
       return {
         kind: 'REMINDER',
-        templateParameters: [dateDisplay, busResult.data.busNumber, workStartResult.data]
+        templateParameters: [dateDisplay, busResult.data.busNumber, workStartResult.data],
+        buttonPayloads: [
+          WhatsAppTemplateCatalog.PAYLOADS.CHANGE,
+          WhatsAppTemplateCatalog.PAYLOADS.CANCEL
+        ]
       };
     }
 
     return {
       kind: 'REMINDER_NO_BUS',
-      templateParameters: [dateDisplay]
+      templateParameters: [dateDisplay],
+      buttonPayloads: [
+        WhatsAppTemplateCatalog.PAYLOADS.CHANGE,
+        WhatsAppTemplateCatalog.PAYLOADS.CANCEL
+      ]
     };
   },
 
