@@ -20,17 +20,14 @@ function loadObject(path, name) {
   return context.__exported;
 }
 
-const catalog = loadObject(
-  'Infrastructure/WhatsAppTemplateCatalog.js',
-  'WhatsAppTemplateCatalog'
-);
+const config = loadObject('Config.js', 'Config');
 
-assert.strictEqual(catalog.toCanonicalMessage('HAMZAWE_CONFIRM'), '1');
-assert.strictEqual(catalog.toCanonicalMessage('HAMZAWE_CHANGE'), '2');
-assert.strictEqual(catalog.toCanonicalMessage('HAMZAWE_CANCEL'), '3');
-assert.strictEqual(catalog.toCanonicalMessage('HAMZAWE_DECLINE'), '2');
-assert.strictEqual(catalog.toCanonicalMessage('HAMZAWE_START_BOOKING'), 'START_BOOKING');
-assert.strictEqual(catalog.toCanonicalMessage('UNKNOWN'), null);
+assert.strictEqual(config.VOCABULARY.WHATSAPP.toCanonicalMessage('HAMZAWE_CONFIRM'), '1');
+assert.strictEqual(config.VOCABULARY.WHATSAPP.toCanonicalMessage('HAMZAWE_CHANGE'), '2');
+assert.strictEqual(config.VOCABULARY.WHATSAPP.toCanonicalMessage('HAMZAWE_CANCEL'), '3');
+assert.strictEqual(config.VOCABULARY.WHATSAPP.toCanonicalMessage('HAMZAWE_DECLINE'), '2');
+assert.strictEqual(config.VOCABULARY.WHATSAPP.toCanonicalMessage('HAMZAWE_START_BOOKING'), 'START_BOOKING');
+assert.strictEqual(config.VOCABULARY.WHATSAPP.toCanonicalMessage('UNKNOWN'), null);
 
 const adapterContext = {
   console,
