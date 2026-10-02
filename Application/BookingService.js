@@ -138,8 +138,8 @@ const BookingService = {
       reply: text,
       conversationState: Config.VOCABULARY.CONVERSATION_STATE.MENU_MAIN,
       deliveryOptions: {
-        templateKind: Config.VOCABULARY.WHATSAPP.TEMPLATE_KINDS.WELCOME,
-        buttonPayloads: [Config.VOCABULARY.WHATSAPP.BUTTON_PAYLOADS.START_BOOKING]
+        templateKind: 'WELCOME',
+        buttonPayloads: ['HAMZAWE_START_BOOKING']
       }
     });
   },
@@ -225,15 +225,15 @@ const BookingService = {
              'أرسل رقم الخيار المطلوب.',
       conversationState: Config.VOCABULARY.CONVERSATION_STATE.WAITING_CONFIRMATION,
       deliveryOptions: {
-        templateKind: Config.VOCABULARY.WHATSAPP.TEMPLATE_KINDS.BOOKING_CONFIRMATION,
+        templateKind: 'BOOKING_CONFIRMATION',
         templateParameters: [
           DateUtils.formatDateDisplay(commandResult.data.date),
           commandResult.data.busNumber,
           commandResult.data.clinicWorkStartDisplay
         ],
         buttonPayloads: [
-          Config.VOCABULARY.WHATSAPP.BUTTON_PAYLOADS.CONFIRM,
-          Config.VOCABULARY.WHATSAPP.BUTTON_PAYLOADS.CHANGE
+          'HAMZAWE_CONFIRM',
+          'HAMZAWE_CHANGE'
         ]
       }
     });
@@ -314,15 +314,15 @@ const BookingService = {
     if (!busResult.ok || !workStartResult.ok) return null;
 
     return {
-      templateKind: Config.VOCABULARY.WHATSAPP.TEMPLATE_KINDS.BOOKING_CONFIRMATION,
+      templateKind: 'BOOKING_CONFIRMATION',
       templateParameters: [
         DateUtils.formatDateDisplay(slot.date),
         busResult.data.busNumber,
         workStartResult.data
       ],
       buttonPayloads: [
-        Config.VOCABULARY.WHATSAPP.BUTTON_PAYLOADS.CONFIRM,
-        Config.VOCABULARY.WHATSAPP.BUTTON_PAYLOADS.CHANGE
+        'HAMZAWE_CONFIRM',
+        'HAMZAWE_CHANGE'
       ]
     };
   },
@@ -428,10 +428,10 @@ const BookingService = {
              'أرسل رقم الخيار المطلوب.',
       conversationState: Config.VOCABULARY.CONVERSATION_STATE.BOOKED,
       deliveryOptions: {
-        templateKind: Config.VOCABULARY.WHATSAPP.TEMPLATE_KINDS.BOOKED_ACTIONS,
+        templateKind: 'BOOKED_ACTIONS',
         buttonPayloads: [
-          Config.VOCABULARY.WHATSAPP.BUTTON_PAYLOADS.CHANGE,
-          Config.VOCABULARY.WHATSAPP.BUTTON_PAYLOADS.CANCEL
+          'HAMZAWE_CHANGE',
+          'HAMZAWE_CANCEL'
         ]
       }
     });
