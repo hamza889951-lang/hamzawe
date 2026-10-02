@@ -127,6 +127,18 @@ function mapMetaMessage(message) {
       message.text &&
       typeof message.text.body === 'string'
     ? message.text.body
+    : message &&
+      message.type === 'button' &&
+      message.button &&
+      typeof message.button.text === 'string'
+    ? message.button.text
+    : null;
+
+  const buttonPayload = message &&
+      message.type === 'button' &&
+      message.button &&
+      typeof message.button.payload === 'string'
+    ? message.button.payload
     : null;
 
   const timestampSeconds = message && message.timestamp !== undefined
@@ -143,7 +155,8 @@ function mapMetaMessage(message) {
       ? Math.round(timestampSeconds * 1000)
       : Date.now(),
     messageType: type,
-    text: text
+    text: text,
+    buttonPayload: buttonPayload
   };
 }
 
