@@ -33,15 +33,23 @@ const WhatsAppAdapter = {
       const phone = PhoneUtils.normalize(event.phone);
       if (!phone || !event.messageId) return null;
 
+      var canonicalMessage = '';
+      if (event.messageType === this.MESSAGE_TYPES.TEXT) {
+        canonicalMessage = event.text || '';
+      } else if (event.messageType === 'BUTTON') {
+        if (typeof WhatsAppTemplateCatalog === 'undefined') return null;
+        canonicalMessage = WhatsAppTemplateCatalog.toCanonicalMessage(event.buttonPayload);
+        if (canonicalMessage === null) return null;
+      }
+
       return {
         eventType: 'MESSAGE',
         channel: event.channel || 'WHATSAPP',
         provider: event.provider || 'META_CLOUD',
         phone: phone,
-        message: event.messageType === this.MESSAGE_TYPES.TEXT
-          ? (event.text || '')
-          : '',
+        message: canonicalMessage,
         messageType: event.messageType || 'UNKNOWN',
+        buttonPayload: event.buttonPayload || null,
         messageId: event.messageId,
         timestampMs: Number(event.timestampMs)
       };
@@ -71,7 +79,7 @@ const WhatsAppAdapter = {
     });
   },
 
-  sendTemplate: function(phone, name, languageCode, parameters) {
+  sendTemplate: function(phone, name, languageCode, parameters, buttonPayloads) {
     if (!phone || typeof phone !== 'string') {
       return Result.fail('WHATSAPP_RECIPIENT_INVALID', 'A recipient phone is required');
     }
@@ -91,6 +99,21 @@ const WhatsAppAdapter = {
           return { type: 'text', text: String(value) };
         })
       }];
+    }
+
+    if (Array.isArray(buttonPayloads) && buttonPayloads.length > 0) {
+      template.components = template.components || [];
+      buttonPayloads.forEach(function(payload, index) {
+        template.components.push({
+          type: 'button',
+          sub_type: 'quick_reply',
+          index: String(index),
+          parameters: [{
+            type: 'payload',
+            payload: String(payload)
+          }]
+        });
+      });
     }
 
     return this._postMessage({
