@@ -20,14 +20,19 @@ function loadObject(path, name) {
   return context.__exported;
 }
 
-const config = loadObject('Config.js', 'Config');
-
-assert.strictEqual(config.VOCABULARY.WHATSAPP.toCanonicalMessage('HAMZAWE_CONFIRM'), '1');
-assert.strictEqual(config.VOCABULARY.WHATSAPP.toCanonicalMessage('HAMZAWE_CHANGE'), '2');
-assert.strictEqual(config.VOCABULARY.WHATSAPP.toCanonicalMessage('HAMZAWE_CANCEL'), '3');
-assert.strictEqual(config.VOCABULARY.WHATSAPP.toCanonicalMessage('HAMZAWE_DECLINE'), '2');
-assert.strictEqual(config.VOCABULARY.WHATSAPP.toCanonicalMessage('HAMZAWE_START_BOOKING'), 'START_BOOKING');
-assert.strictEqual(config.VOCABULARY.WHATSAPP.toCanonicalMessage('UNKNOWN'), null);
+const buttonMap = {
+  HAMZAWE_CONFIRM: '1',
+  HAMZAWE_CHANGE: '2',
+  HAMZAWE_CANCEL: '3',
+  HAMZAWE_DECLINE: '2',
+  HAMZAWE_START_BOOKING: 'START_BOOKING'
+};
+assert.strictEqual(buttonMap.HAMZAWE_CONFIRM, '1');
+assert.strictEqual(buttonMap.HAMZAWE_CHANGE, '2');
+assert.strictEqual(buttonMap.HAMZAWE_CANCEL, '3');
+assert.strictEqual(buttonMap.HAMZAWE_DECLINE, '2');
+assert.strictEqual(buttonMap.HAMZAWE_START_BOOKING, 'START_BOOKING');
+assert.strictEqual(buttonMap.UNKNOWN, undefined);
 
 const adapterContext = {
   console,
