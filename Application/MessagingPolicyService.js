@@ -109,7 +109,11 @@ const MessagingPolicyService = {
       ? Number(conversation.last_inbound_at_ms)
       : NaN;
 
-    if (isFinite(lastInboundMs) &&
+    var forceTemplate = Array.isArray(options.buttonPayloads) &&
+      options.buttonPayloads.length > 0;
+
+    if (!forceTemplate &&
+        isFinite(lastInboundMs) &&
         lastInboundMs > 0 &&
         lastInboundMs <= nowMs &&
         nowMs - lastInboundMs < this.WINDOW_MS) {
