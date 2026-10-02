@@ -138,8 +138,8 @@ const BookingService = {
       reply: text,
       conversationState: Config.VOCABULARY.CONVERSATION_STATE.MENU_MAIN,
       deliveryOptions: {
-        templateKind: WhatsAppTemplateCatalog.KINDS.WELCOME,
-        buttonPayloads: [WhatsAppTemplateCatalog.PAYLOADS.START_BOOKING]
+        templateKind: Config.VOCABULARY.WHATSAPP.TEMPLATE_KINDS.WELCOME,
+        buttonPayloads: [Config.VOCABULARY.WHATSAPP.BUTTON_PAYLOADS.START_BOOKING]
       }
     });
   },
@@ -225,15 +225,15 @@ const BookingService = {
              'أرسل رقم الخيار المطلوب.',
       conversationState: Config.VOCABULARY.CONVERSATION_STATE.WAITING_CONFIRMATION,
       deliveryOptions: {
-        templateKind: WhatsAppTemplateCatalog.KINDS.BOOKING_CONFIRMATION,
+        templateKind: Config.VOCABULARY.WHATSAPP.TEMPLATE_KINDS.BOOKING_CONFIRMATION,
         templateParameters: [
           DateUtils.formatDateDisplay(commandResult.data.date),
           commandResult.data.busNumber,
           commandResult.data.clinicWorkStartDisplay
         ],
         buttonPayloads: [
-          WhatsAppTemplateCatalog.PAYLOADS.CONFIRM,
-          WhatsAppTemplateCatalog.PAYLOADS.CHANGE
+          Config.VOCABULARY.WHATSAPP.BUTTON_PAYLOADS.CONFIRM,
+          Config.VOCABULARY.WHATSAPP.BUTTON_PAYLOADS.CHANGE
         ]
       }
     });
@@ -314,15 +314,15 @@ const BookingService = {
     if (!busResult.ok || !workStartResult.ok) return null;
 
     return {
-      templateKind: WhatsAppTemplateCatalog.KINDS.BOOKING_CONFIRMATION,
+      templateKind: Config.VOCABULARY.WHATSAPP.TEMPLATE_KINDS.BOOKING_CONFIRMATION,
       templateParameters: [
         DateUtils.formatDateDisplay(slot.date),
         busResult.data.busNumber,
         workStartResult.data
       ],
       buttonPayloads: [
-        WhatsAppTemplateCatalog.PAYLOADS.CONFIRM,
-        WhatsAppTemplateCatalog.PAYLOADS.CHANGE
+        Config.VOCABULARY.WHATSAPP.BUTTON_PAYLOADS.CONFIRM,
+        Config.VOCABULARY.WHATSAPP.BUTTON_PAYLOADS.CHANGE
       ]
     };
   },
@@ -428,10 +428,10 @@ const BookingService = {
              'أرسل رقم الخيار المطلوب.',
       conversationState: Config.VOCABULARY.CONVERSATION_STATE.BOOKED,
       deliveryOptions: {
-        templateKind: WhatsAppTemplateCatalog.KINDS.BOOKED_ACTIONS,
+        templateKind: Config.VOCABULARY.WHATSAPP.TEMPLATE_KINDS.BOOKED_ACTIONS,
         buttonPayloads: [
-          WhatsAppTemplateCatalog.PAYLOADS.CHANGE,
-          WhatsAppTemplateCatalog.PAYLOADS.CANCEL
+          Config.VOCABULARY.WHATSAPP.BUTTON_PAYLOADS.CHANGE,
+          Config.VOCABULARY.WHATSAPP.BUTTON_PAYLOADS.CANCEL
         ]
       }
     });
