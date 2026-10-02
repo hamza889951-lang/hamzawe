@@ -183,14 +183,14 @@ const ChangeService = {
         '. أرسل "1" لتأكيد الحجز.',
       conversationState: Config.VOCABULARY.CONVERSATION_STATE.WAITING_CONFIRMATION,
       deliveryOptions: {
-        templateKind: Config.VOCABULARY.WHATSAPP.TEMPLATE_KINDS.CHANGE_CONFIRMATION,
+        templateKind: 'CHANGE_CONFIRMATION',
         templateParameters: [
           DateUtils.formatDateDisplay(commandResult.data.date),
           commandResult.data.busNumber,
           commandResult.data.clinicWorkStartDisplay
         ],
         buttonPayloads: [
-          Config.VOCABULARY.WHATSAPP.BUTTON_PAYLOADS.CONFIRM
+          'HAMZAWE_CONFIRM'
         ]
       }
     });
