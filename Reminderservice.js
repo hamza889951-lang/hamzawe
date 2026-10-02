@@ -78,8 +78,8 @@ const ReminderService = {
         kind: 'REMINDER',
         templateParameters: [dateDisplay, busResult.data.busNumber, workStartResult.data],
         buttonPayloads: [
-          Config.VOCABULARY.WHATSAPP.BUTTON_PAYLOADS.CHANGE,
-          Config.VOCABULARY.WHATSAPP.BUTTON_PAYLOADS.CANCEL
+          'HAMZAWE_CHANGE',
+          'HAMZAWE_CANCEL'
         ]
       };
     }
@@ -88,8 +88,8 @@ const ReminderService = {
       kind: 'REMINDER_NO_BUS',
       templateParameters: [dateDisplay],
       buttonPayloads: [
-        Config.VOCABULARY.WHATSAPP.BUTTON_PAYLOADS.CHANGE,
-        Config.VOCABULARY.WHATSAPP.BUTTON_PAYLOADS.CANCEL
+        'HAMZAWE_CHANGE',
+        'HAMZAWE_CANCEL'
       ]
     };
   },
