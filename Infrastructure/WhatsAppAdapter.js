@@ -112,6 +112,7 @@ const WhatsAppAdapter = {
       return Result.fail('WHATSAPP_CONFIG_MISSING', 'Meta WhatsApp Cloud API configuration is incomplete');
     }
 
+    const payload = JSON.stringify(body);
     const url = 'https://graph.facebook.com/' + version + '/' + phoneNumberId + '/messages';
 
     try {
@@ -119,7 +120,7 @@ const WhatsAppAdapter = {
         method: 'post',
         contentType: 'application/json',
         headers: { Authorization: 'Bearer ' + accessToken },
-        payload: JSON.stringify(body),
+        payload: payload,
         muteHttpExceptions: true
       });
 
@@ -139,14 +140,107 @@ const WhatsAppAdapter = {
         });
       }
 
+      const mappedCode = this._mapSendErrorCode(code, raw);
+      const diagnostic = this._buildSendDiagnostic({
+        body: body,
+        payload: payload,
+        url: url,
+        version: version,
+        phoneNumberId: phoneNumberId,
+        accessToken: accessToken,
+        httpCode: code,
+        raw: raw,
+        parsed: parsed,
+        mappedCode: mappedCode
+      });
+
       return Result.fail(
-        this._mapSendErrorCode(code, raw),
+        mappedCode,
         'Meta WhatsApp send failed with HTTP ' + code,
-        { httpCode: code, providerResponse: raw.slice(0, 2000) }
+        {
+          httpCode: code,
+          providerResponse: raw.slice(0, 2000),
+          diagnostic: diagnostic
+        }
       );
     } catch (e) {
-      return Result.fail('WHATSAPP_PROVIDER_UNAVAILABLE', e.message, e.stack);
+      return Result.fail('WHATSAPP_PROVIDER_UNAVAILABLE', e.message, {
+        diagnostic: {
+          classification: 'PROVIDER_REQUEST_EXCEPTION',
+          exceptionType: e && e.name ? e.name : 'UNKNOWN',
+          message: e && e.message ? String(e.message).slice(0, 500) : 'Unknown provider request exception'
+        }
+      });
     }
+  },
+
+  _buildSendDiagnostic: function(args) {
+    const error = args.parsed && args.parsed.error ? args.parsed.error : null;
+    const errorData = error && error.error_data ? error.error_data : null;
+
+    return {
+      diagnosticVersion: 'SEND-FAILURE-v1',
+      classification: this._classifySendFailure(args.httpCode, error),
+      request: {
+        graphApiVersion: args.version,
+        phoneNumberIdFingerprint: this._sha256(args.phoneNumberId),
+        endpointFingerprint: this._sha256(args.url),
+        method: 'post',
+        contentType: 'application/json',
+        bodyFingerprint: this._sha256(args.payload),
+        bodyByteLength: args.payload.length,
+        recipientFingerprint: this._sha256(args.body && args.body.to ? String(args.body.to) : ''),
+        messageType: args.body && args.body.type ? args.body.type : null
+      },
+      runtime: {
+        adapter: 'WhatsAppAdapter._postMessage',
+        tokenLength: String(args.accessToken || '').length,
+        tokenFingerprint: this._sha256(args.accessToken)
+      },
+      provider: {
+        httpCode: args.httpCode,
+        errorCode: error && error.code != null ? error.code : null,
+        errorSubcode: error && error.error_subcode != null ? error.error_subcode : null,
+        errorType: error && error.type ? error.type : null,
+        errorMessage: error && error.message ? String(error.message).slice(0, 1000) : null,
+        errorDataDetails: errorData && errorData.details
+          ? String(errorData.details).slice(0, 1000)
+          : null,
+        traceId: error && error.fbtrace_id ? error.fbtrace_id : null
+      },
+      mapping: {
+        mappedErrorCode: args.mappedCode
+      }
+    };
+  },
+
+  _classifySendFailure: function(httpCode, error) {
+    const code = error && error.code != null ? Number(error.code) : null;
+    const subcode = error && error.error_subcode != null ? Number(error.error_subcode) : null;
+
+    if (httpCode === 401 || httpCode === 403) return 'AUTHORIZATION_HTTP_REJECTION';
+    if (httpCode === 429) return 'RATE_LIMIT_HTTP_REJECTION';
+    if (code === 130429) return 'RATE_LIMIT_OR_THROUGHPUT_REJECTION';
+    if (code === 131056) return 'PAIR_RATE_LIMIT_REJECTION';
+    if (code === 131047) return 'OUTSIDE_CUSTOMER_SERVICE_WINDOW';
+    if (code === 131026) return 'MESSAGE_UNDELIVERABLE';
+    if (code === 131031) return 'ACCOUNT_OR_PHONE_RESTRICTED';
+    if (code === 100 && subcode != null) return 'META_CODE_100_WITH_SUBCODE';
+    if (code === 100) return 'META_CODE_100_GENERAL_REJECTION';
+    return 'UNCLASSIFIED_META_SEND_FAILURE';
+  },
+
+  _sha256: function(value) {
+    const bytes = Utilities.computeDigest(
+      Utilities.DigestAlgorithm.SHA_256,
+      String(value == null ? '' : value),
+      Utilities.Charset.UTF_8
+    );
+    return bytes.map(function(byte) {
+      const n = (byte + 256) % 256;
+      const h = n.toString(16);
+      return h.length === 1 ? '0' + h : h;
+    }).join('');
   },
 
   _mapSendErrorCode: function(httpCode, raw) {
