@@ -136,7 +136,11 @@ const BookingService = {
 
     return Result.ok({
       reply: text,
-      conversationState: Config.VOCABULARY.CONVERSATION_STATE.MENU_MAIN
+      conversationState: Config.VOCABULARY.CONVERSATION_STATE.MENU_MAIN,
+      deliveryOptions: {
+        templateKind: WhatsAppTemplateCatalog.KINDS.WELCOME,
+        buttonPayloads: [WhatsAppTemplateCatalog.PAYLOADS.START_BOOKING]
+      }
     });
   },
 
@@ -219,7 +223,19 @@ const BookingService = {
              '١️⃣ تأكيد الحجز\n' +
              '٢️⃣ تغيير الموعد\n' +
              'أرسل رقم الخيار المطلوب.',
-      conversationState: Config.VOCABULARY.CONVERSATION_STATE.WAITING_CONFIRMATION
+      conversationState: Config.VOCABULARY.CONVERSATION_STATE.WAITING_CONFIRMATION,
+      deliveryOptions: {
+        templateKind: WhatsAppTemplateCatalog.KINDS.BOOKING_CONFIRMATION,
+        templateParameters: [
+          DateUtils.formatDateDisplay(commandResult.data.date),
+          commandResult.data.busNumber,
+          commandResult.data.clinicWorkStartDisplay
+        ],
+        buttonPayloads: [
+          WhatsAppTemplateCatalog.PAYLOADS.CONFIRM,
+          WhatsAppTemplateCatalog.PAYLOADS.CHANGE
+        ]
+      }
     });
   },
 
@@ -230,7 +246,14 @@ const BookingService = {
                '١️⃣ تأكيد الحجز\n' +
                '٢️⃣ تغيير الموعد\n' +
                'أرسل رقم الخيار المطلوب.',
-        conversationState: Config.VOCABULARY.CONVERSATION_STATE.WAITING_CONFIRMATION
+        conversationState: Config.VOCABULARY.CONVERSATION_STATE.WAITING_CONFIRMATION,
+        deliveryOptions: {
+          templateKind: WhatsAppTemplateCatalog.KINDS.BOOKING_CONFIRMATION,
+          buttonPayloads: [
+            WhatsAppTemplateCatalog.PAYLOADS.CONFIRM,
+            WhatsAppTemplateCatalog.PAYLOADS.CHANGE
+          ]
+        }
       });
     }
 
@@ -384,7 +407,14 @@ const BookingService = {
              '٢️⃣ تغيير الموعد\n' +
              '٣️⃣ إلغاء الموعد\n' +
              'أرسل رقم الخيار المطلوب.',
-      conversationState: Config.VOCABULARY.CONVERSATION_STATE.BOOKED
+      conversationState: Config.VOCABULARY.CONVERSATION_STATE.BOOKED,
+      deliveryOptions: {
+        templateKind: WhatsAppTemplateCatalog.KINDS.BOOKED_ACTIONS,
+        buttonPayloads: [
+          WhatsAppTemplateCatalog.PAYLOADS.CHANGE,
+          WhatsAppTemplateCatalog.PAYLOADS.CANCEL
+        ]
+      }
     });
   },
 
