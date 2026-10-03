@@ -8,7 +8,7 @@ Meta supports Quick Reply buttons inside approved message templates, with button
 
 | Kind | Proposed Meta name | Category | Body parameters | Buttons |
 |---|---|---|---|---|
-| WELCOME | hamzawe_welcome_booking | Utility candidate | none | حجز موعد -> HAMZAWE_START_BOOKING |
+| WELCOME | No Meta template | In-window interactive message | none | حجز موعد -> HAMZAWE_START_BOOKING |
 | BOOKING_CONFIRMATION | hamzawe_booking_confirmation | Utility | date, bus, work-start | تأكيد الحجز -> HAMZAWE_CONFIRM; تغيير الموعد -> HAMZAWE_CHANGE |
 | BOOKED_ACTIONS | hamzawe_booked_actions | Utility | none | تغيير الموعد -> HAMZAWE_CHANGE; إلغاء الموعد -> HAMZAWE_CANCEL |
 | CHANGE_CONFIRMATION | hamzawe_change_confirmation | Utility | date, bus, work-start | تأكيد الحجز -> HAMZAWE_CONFIRM |
@@ -16,6 +16,17 @@ Meta supports Quick Reply buttons inside approved message templates, with button
 | DISRUPTION_NO_ALTERNATIVE | hamzawe_disruption_no_alternative | Utility | none | none |
 | REMINDER | hamzawe_appointment_reminder | Utility | date, bus, work-start | تغيير الموعد -> HAMZAWE_CHANGE; إلغاء الموعد -> HAMZAWE_CANCEL |
 | REMINDER_NO_BUS | hamzawe_appointment_reminder_no_bus | Utility | date | تغيير الموعد -> HAMZAWE_CHANGE; إلغاء الموعد -> HAMZAWE_CANCEL |
+
+
+## WELCOME exception — presentation without a template
+
+The WELCOME path is intentionally not implemented as a Meta message template.
+It is the immediate response to the patient's inbound first message, so HAMZAWE sends an in-window WhatsApp interactive reply-button message through WhatsAppAdapter.sendInteractiveButtons().
+The visible button is **حجز موعد** and its application id is **HAMZAWE_START_BOOKING**.
+The inbound interactive reply is normalized to the same canonical `START_BOOKING` command used by the existing routing path.
+
+This exception is presentation-only: no Conversation state, Router branch, business command, or persistence schema is changed.
+If the interactive send fails, the existing plain-text WELCOME response remains the fallback.
 
 ## Proposed Arabic copy
 
