@@ -12,7 +12,7 @@ const WhatsAppAdapter = {
     GATEWAY_SECRET: 'WHATSAPP_GATEWAY_SECRET'
   },
 
-  MESSAGE_TYPES: { TEXT: 'TEXT' },
+  MESSAGE_TYPES: { TEXT: 'TEXT', BUTTON: 'BUTTON', INTERACTIVE_BUTTON: 'INTERACTIVE_BUTTON' },
 
   parseIncomingPayload: function(e) {
     try {
@@ -36,7 +36,8 @@ const WhatsAppAdapter = {
       var canonicalMessage = '';
       if (event.messageType === this.MESSAGE_TYPES.TEXT) {
         canonicalMessage = event.text || '';
-      } else if (event.messageType === 'BUTTON') {
+      } else if (event.messageType === this.MESSAGE_TYPES.BUTTON ||
+                 event.messageType === this.MESSAGE_TYPES.INTERACTIVE_BUTTON) {
         var buttonMap = {
           HAMZAWE_CONFIRM: '1',
           HAMZAWE_CHANGE: '2',
@@ -128,6 +129,54 @@ const WhatsAppAdapter = {
       to: phone,
       type: 'template',
       template: template
+    });
+  },
+
+  sendInteractiveButtons: function(phone, text, buttons) {
+    if (!phone || typeof phone !== 'string') {
+      return Result.fail('WHATSAPP_RECIPIENT_INVALID', 'A recipient phone is required');
+    }
+    if (typeof text !== 'string' || !text) {
+      return Result.fail('WHATSAPP_MESSAGE_INVALID', 'A non-empty text message is required');
+    }
+    if (!Array.isArray(buttons) || buttons.length < 1 || buttons.length > 3) {
+      return Result.fail(
+        'WHATSAPP_INTERACTIVE_INVALID',
+        'Interactive reply buttons must contain between one and three buttons'
+      );
+    }
+
+    const normalizedButtons = buttons.map(function(button) {
+      if (!button || typeof button !== 'object' ||
+          !button.id || !button.title) {
+        return null;
+      }
+      return {
+        type: 'reply',
+        reply: {
+          id: String(button.id),
+          title: String(button.title)
+        }
+      };
+    });
+
+    if (normalizedButtons.some(function(button) { return button === null; })) {
+      return Result.fail(
+        'WHATSAPP_INTERACTIVE_INVALID',
+        'Each interactive reply button requires id and title'
+      );
+    }
+
+    return this._postMessage({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: phone,
+      type: 'interactive',
+      interactive: {
+        type: 'button',
+        body: { text: text },
+        action: { buttons: normalizedButtons }
+      }
     });
   },
 
