@@ -132,6 +132,13 @@ function mapMetaMessage(message) {
       message.button &&
       typeof message.button.text === 'string'
     ? message.button.text
+    : message &&
+      message.type === 'interactive' &&
+      message.interactive &&
+      message.interactive.type === 'button' &&
+      message.interactive.button_reply &&
+      typeof message.interactive.button_reply.title === 'string'
+    ? message.interactive.button_reply.title
     : null;
 
   const buttonPayload = message &&
@@ -139,6 +146,13 @@ function mapMetaMessage(message) {
       message.button &&
       typeof message.button.payload === 'string'
     ? message.button.payload
+    : message &&
+      message.type === 'interactive' &&
+      message.interactive &&
+      message.interactive.type === 'button' &&
+      message.interactive.button_reply &&
+      typeof message.interactive.button_reply.id === 'string'
+    ? message.interactive.button_reply.id
     : null;
 
   const timestampSeconds = message && message.timestamp !== undefined
@@ -154,7 +168,10 @@ function mapMetaMessage(message) {
     timestampMs: Number.isFinite(timestampSeconds)
       ? Math.round(timestampSeconds * 1000)
       : Date.now(),
-    messageType: type,
+    messageType: message && message.type === 'interactive' &&
+      message.interactive && message.interactive.type === 'button'
+      ? 'INTERACTIVE_BUTTON'
+      : type,
     text: text,
     buttonPayload: buttonPayload
   };
