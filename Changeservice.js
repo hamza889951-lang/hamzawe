@@ -181,7 +181,18 @@ const ChangeService = {
     return Result.ok({
       reply: 'تم تغيير موعدك المؤقت ' + preConfirmDisplay +
         '. أرسل "1" لتأكيد الحجز.',
-      conversationState: Config.VOCABULARY.CONVERSATION_STATE.WAITING_CONFIRMATION
+      conversationState: Config.VOCABULARY.CONVERSATION_STATE.WAITING_CONFIRMATION,
+      deliveryOptions: {
+        templateKind: 'CHANGE_CONFIRMATION',
+        templateParameters: [
+          DateUtils.formatDateDisplay(commandResult.data.date),
+          commandResult.data.busNumber,
+          commandResult.data.clinicWorkStartDisplay
+        ],
+        buttonPayloads: [
+          'HAMZAWE_CONFIRM'
+        ]
+      }
     });
   },
 

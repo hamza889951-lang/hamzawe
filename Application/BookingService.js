@@ -136,7 +136,13 @@ const BookingService = {
 
     return Result.ok({
       reply: text,
-      conversationState: Config.VOCABULARY.CONVERSATION_STATE.MENU_MAIN
+      conversationState: Config.VOCABULARY.CONVERSATION_STATE.MENU_MAIN,
+      deliveryOptions: {
+        interactiveButtons: [{
+          id: 'HAMZAWE_START_BOOKING',
+          title: 'حجز موعد'
+        }]
+      }
     });
   },
 
@@ -219,18 +225,32 @@ const BookingService = {
              '١️⃣ تأكيد الحجز\n' +
              '٢️⃣ تغيير الموعد\n' +
              'أرسل رقم الخيار المطلوب.',
-      conversationState: Config.VOCABULARY.CONVERSATION_STATE.WAITING_CONFIRMATION
+      conversationState: Config.VOCABULARY.CONVERSATION_STATE.WAITING_CONFIRMATION,
+      deliveryOptions: {
+        templateKind: 'BOOKING_CONFIRMATION',
+        templateParameters: [
+          DateUtils.formatDateDisplay(commandResult.data.date),
+          commandResult.data.busNumber,
+          commandResult.data.clinicWorkStartDisplay
+        ],
+        buttonPayloads: [
+          'HAMZAWE_CONFIRM',
+          'HAMZAWE_CHANGE'
+        ]
+      }
     });
   },
 
   _handleWaitingConfirmation(phone, rawMessage, conversation) {
     if (!this._isConfirmationKeyword(rawMessage)) {
+      var deliveryOptions = this._getWaitingConfirmationDeliveryOptions(conversation);
       return Result.ok({
         reply: 'تم إيجاد موعد لك.\n' +
                '١️⃣ تأكيد الحجز\n' +
                '٢️⃣ تغيير الموعد\n' +
                'أرسل رقم الخيار المطلوب.',
-        conversationState: Config.VOCABULARY.CONVERSATION_STATE.WAITING_CONFIRMATION
+        conversationState: Config.VOCABULARY.CONVERSATION_STATE.WAITING_CONFIRMATION,
+        deliveryOptions: deliveryOptions
       });
     }
 
@@ -285,6 +305,30 @@ const BookingService = {
    * @param {string} slotId
    * @returns {Result} ok({ slotId, calendarEventId, date, time, busNumber })
    */
+  _getWaitingConfirmationDeliveryOptions(conversation) {
+    if (!conversation || !conversation.slot_id) return null;
+
+    var slot = SlotRepository.findById(conversation.slot_id);
+    if (!slot) return null;
+
+    var busResult = BusNumberCalculator.fromSlot(slot);
+    var workStartResult = this._getClinicWorkStartDisplay();
+    if (!busResult.ok || !workStartResult.ok) return null;
+
+    return {
+      templateKind: 'BOOKING_CONFIRMATION',
+      templateParameters: [
+        DateUtils.formatDateDisplay(slot.date),
+        busResult.data.busNumber,
+        workStartResult.data
+      ],
+      buttonPayloads: [
+        'HAMZAWE_CONFIRM',
+        'HAMZAWE_CHANGE'
+      ]
+    };
+  },
+
   confirmReservedSlot(phone, slotId) {
     // ── ADR-014: تنفيذ Command مباشر هنا، مؤقتًا، بموافقة المشرف ──
     return CommandExecutor.execute(
@@ -384,7 +428,14 @@ const BookingService = {
              '٢️⃣ تغيير الموعد\n' +
              '٣️⃣ إلغاء الموعد\n' +
              'أرسل رقم الخيار المطلوب.',
-      conversationState: Config.VOCABULARY.CONVERSATION_STATE.BOOKED
+      conversationState: Config.VOCABULARY.CONVERSATION_STATE.BOOKED,
+      deliveryOptions: {
+        templateKind: 'BOOKED_ACTIONS',
+        buttonPayloads: [
+          'HAMZAWE_CHANGE',
+          'HAMZAWE_CANCEL'
+        ]
+      }
     });
   },
 

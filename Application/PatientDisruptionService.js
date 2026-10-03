@@ -686,7 +686,11 @@ const PatientDisruptionService = {
   _notifyProposal: function(phone, proposal, candidate, sendFn) {
     return this._sendAndRecord(phone, proposal.disruption_proposal_id, this._proposalMessage(candidate), sendFn, {
       kind: 'DISRUPTION_PROPOSAL',
-      templateParameters: [this._slotDisplay(candidate) || 'غير محدد']
+      templateParameters: [this._slotDisplay(candidate) || 'غير محدد'],
+      buttonPayloads: [
+        'HAMZAWE_CONFIRM',
+        'HAMZAWE_DECLINE'
+      ]
     });
   },
 
@@ -694,7 +698,8 @@ const PatientDisruptionService = {
     try {
       const result = sendFn(phone, this._noAlternativeMessage(), {
         kind: 'DISRUPTION_NO_ALTERNATIVE',
-        templateParameters: []
+        templateParameters: [],
+        buttonPayloads: []
       });
       return { status: (result && result.ok) ? 'SENT' : 'FAILED', send: result, persisted: null };
     } catch (e) {

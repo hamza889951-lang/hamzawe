@@ -24,7 +24,96 @@ const MessagingPolicyService = {
     GENERIC_PROACTIVE: 'GENERIC_PROACTIVE'
   },
 
-  sendReply: function(phone, text) {
+  sendReply: function(phone, text, deliveryOptions) {
+    deliveryOptions = deliveryOptions || {};
+
+    if (Array.isArray(deliveryOptions.interactiveButtons) &&
+        deliveryOptions.interactiveButtons.length > 0) {
+      var interactiveSend = WhatsAppAdapter.sendInteractiveButtons(
+        phone,
+        text,
+        deliveryOptions.interactiveButtons
+      );
+      if (interactiveSend.ok) return interactiveSend;
+
+      try {
+        LogRepository.write({
+          timestamp: Clock.now(),
+          command: 'WHATSAPP_INTERACTIVE_REPLY_FAILED',
+          phone: phone,
+          slotId: '',
+          stage: 'PRESENTATION',
+          success: false,
+          durationMs: null,
+          error: JSON.stringify(interactiveSend.error)
+        });
+      } catch (e) {}
+
+      if (deliveryOptions.fallbackToText !== false) {
+        return WhatsAppAdapter.sendText(phone, text);
+      }
+      return interactiveSend;
+    }
+
+    if (deliveryOptions.templateKind) {
+      var templateResult = WhatsAppTemplateRepository.getTemplate(
+        deliveryOptions.templateKind,
+        {
+          templateName: deliveryOptions.templateName,
+          templateLanguage: deliveryOptions.templateLanguage,
+          templateParameters: deliveryOptions.templateParameters,
+          buttonPayloads: deliveryOptions.buttonPayloads
+        }
+      );
+
+      if (templateResult.ok) {
+        var templateSend = WhatsAppAdapter.sendTemplate(
+          phone,
+          templateResult.data.name,
+          templateResult.data.language,
+          templateResult.data.parameters,
+          templateResult.data.buttonPayloads
+        );
+        if (templateSend.ok) return templateSend;
+
+        try {
+          LogRepository.write({
+            timestamp: Clock.now(),
+            command: 'WHATSAPP_TEMPLATE_REPLY_FAILED',
+            phone: phone,
+            slotId: '',
+            stage: 'PRESENTATION',
+            success: false,
+            durationMs: null,
+            error: JSON.stringify(templateSend.error)
+          });
+        } catch (e) {}
+
+        if (deliveryOptions.fallbackToText !== false) {
+          return WhatsAppAdapter.sendText(phone, text);
+        }
+        return templateSend;
+      }
+
+      try {
+        LogRepository.write({
+          timestamp: Clock.now(),
+          command: 'WHATSAPP_TEMPLATE_CONFIG_FAILED',
+          phone: phone,
+          slotId: '',
+          stage: 'PRESENTATION',
+          success: false,
+          durationMs: null,
+          error: JSON.stringify(templateResult.error)
+        });
+      } catch (e) {}
+
+      if (deliveryOptions.fallbackToText !== false) {
+        return WhatsAppAdapter.sendText(phone, text);
+      }
+      return templateResult;
+    }
+
     return WhatsAppAdapter.sendText(phone, text);
   },
 
@@ -48,7 +137,11 @@ const MessagingPolicyService = {
       ? Number(conversation.last_inbound_at_ms)
       : NaN;
 
-    if (isFinite(lastInboundMs) &&
+    var forceTemplate = Array.isArray(options.buttonPayloads) &&
+      options.buttonPayloads.length > 0;
+
+    if (!forceTemplate &&
+        isFinite(lastInboundMs) &&
         lastInboundMs > 0 &&
         lastInboundMs <= nowMs &&
         nowMs - lastInboundMs < this.WINDOW_MS) {
@@ -62,7 +155,8 @@ const MessagingPolicyService = {
       phone,
       templateResult.data.name,
       templateResult.data.language,
-      templateResult.data.parameters
+      templateResult.data.parameters,
+      templateResult.data.buttonPayloads
     );
   },
 
