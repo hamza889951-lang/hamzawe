@@ -138,8 +138,10 @@ const BookingService = {
       reply: text,
       conversationState: Config.VOCABULARY.CONVERSATION_STATE.MENU_MAIN,
       deliveryOptions: {
-        templateKind: 'WELCOME',
-        buttonPayloads: ['HAMZAWE_START_BOOKING']
+        interactiveButtons: [{
+          id: 'HAMZAWE_START_BOOKING',
+          title: 'حجز موعد'
+        }]
       }
     });
   },
