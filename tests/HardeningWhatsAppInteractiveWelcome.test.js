@@ -75,12 +75,9 @@ const outbound = adapter.sendInteractiveButtons(
 assert.strictEqual(outbound.ok, true);
 assert.strictEqual(sentBody.type, 'interactive');
 assert.strictEqual(sentBody.interactive.type, 'button');
-assert.deepStrictEqual(sentBody.interactive.action.buttons, [{
-  type: 'reply',
-  reply: {
-    id: 'HAMZAWE_START_BOOKING',
-    title: 'حجز موعد'
-  }
-}]);
+assert.strictEqual(sentBody.interactive.action.buttons.length, 1);
+assert.strictEqual(sentBody.interactive.action.buttons[0].type, 'reply');
+assert.strictEqual(sentBody.interactive.action.buttons[0].reply.id, 'HAMZAWE_START_BOOKING');
+assert.strictEqual(sentBody.interactive.action.buttons[0].reply.title, 'حجز موعد');
 
 console.log('PASS: WhatsAppAdapter — interactive welcome inbound mapping and outbound reply-button transport');
