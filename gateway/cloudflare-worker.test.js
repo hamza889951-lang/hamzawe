@@ -247,7 +247,7 @@ const assert = require('assert');
       forwardedMessages: 0,
       ignoredStatuses: 1
     });
-    assert.strictEqual(forwarded.length, 2);
+    assert.strictEqual(forwarded.length, 3);
 
     console.log('PASS: Cloudflare Worker gateway — health, Meta verification, signature, forwarding, HMAC envelope, and status isolation');
   } finally {
