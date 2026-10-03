@@ -153,7 +153,7 @@ const assert = require('assert');
               timestamp: '1779000003',
               type: 'interactive',
               interactive: {
-                type: 'button',
+                type: 'button_reply',
                 button_reply: {
                   id: 'HAMZAWE_START_BOOKING',
                   title: 'حجز موعد'
