@@ -135,7 +135,7 @@ function mapMetaMessage(message) {
     : message &&
       message.type === 'interactive' &&
       message.interactive &&
-      message.interactive.type === 'button' &&
+      message.interactive.type === 'button_reply' &&
       message.interactive.button_reply &&
       typeof message.interactive.button_reply.title === 'string'
     ? message.interactive.button_reply.title
@@ -149,7 +149,7 @@ function mapMetaMessage(message) {
     : message &&
       message.type === 'interactive' &&
       message.interactive &&
-      message.interactive.type === 'button' &&
+      message.interactive.type === 'button_reply' &&
       message.interactive.button_reply &&
       typeof message.interactive.button_reply.id === 'string'
     ? message.interactive.button_reply.id
@@ -169,7 +169,7 @@ function mapMetaMessage(message) {
       ? Math.round(timestampSeconds * 1000)
       : Date.now(),
     messageType: message && message.type === 'interactive' &&
-      message.interactive && message.interactive.type === 'button'
+      message.interactive && message.interactive.type === 'button_reply'
       ? 'INTERACTIVE_BUTTON'
       : type,
     text: text,
