@@ -27,6 +27,34 @@ const MessagingPolicyService = {
   sendReply: function(phone, text, deliveryOptions) {
     deliveryOptions = deliveryOptions || {};
 
+    if (Array.isArray(deliveryOptions.interactiveButtons) &&
+        deliveryOptions.interactiveButtons.length > 0) {
+      var interactiveSend = WhatsAppAdapter.sendInteractiveButtons(
+        phone,
+        text,
+        deliveryOptions.interactiveButtons
+      );
+      if (interactiveSend.ok) return interactiveSend;
+
+      try {
+        LogRepository.write({
+          timestamp: Clock.now(),
+          command: 'WHATSAPP_INTERACTIVE_REPLY_FAILED',
+          phone: phone,
+          slotId: '',
+          stage: 'PRESENTATION',
+          success: false,
+          durationMs: null,
+          error: JSON.stringify(interactiveSend.error)
+        });
+      } catch (e) {}
+
+      if (deliveryOptions.fallbackToText !== false) {
+        return WhatsAppAdapter.sendText(phone, text);
+      }
+      return interactiveSend;
+    }
+
     if (deliveryOptions.templateKind) {
       var templateResult = WhatsAppTemplateRepository.getTemplate(
         deliveryOptions.templateKind,
