@@ -142,6 +142,55 @@ const assert = require('assert');
     assert.strictEqual(forwarded[1].event.buttonPayload, 'HAMZAWE_CONFIRM');
     assert.strictEqual(forwarded[1].event.text, 'تأكيد الحجز');
 
+    const interactiveBody = JSON.stringify({
+      object: 'whatsapp_business_account',
+      entry: [{
+        changes: [{
+          value: {
+            messages: [{
+              from: '9647001234567',
+              id: 'wamid.worker-interactive-1',
+              timestamp: '1779000003',
+              type: 'interactive',
+              interactive: {
+                type: 'button',
+                button_reply: {
+                  id: 'HAMZAWE_START_BOOKING',
+                  title: 'حجز موعد'
+                }
+              }
+            }]
+          }
+        }]
+      }]
+    });
+
+    const interactiveSignature =
+      'sha256=' +
+      await workerModule.hmacHex(
+        env.META_APP_SECRET,
+        new TextEncoder().encode(interactiveBody)
+      );
+
+    const interactivePost = await worker.fetch(
+      new Request('https://gateway.example/webhook', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-hub-signature-256': interactiveSignature
+        },
+        body: interactiveBody
+      }),
+      env
+    );
+
+    assert.strictEqual(interactivePost.status, 200);
+    assert.strictEqual((await interactivePost.json()).forwardedMessages, 1);
+    assert.strictEqual(forwarded.length, 3);
+    assert.strictEqual(forwarded[2].event.messageType, 'INTERACTIVE_BUTTON');
+    assert.strictEqual(forwarded[2].event.buttonPayload, 'HAMZAWE_START_BOOKING');
+    assert.strictEqual(forwarded[2].event.text, 'حجز موعد');
+
     const badPost = await worker.fetch(
       new Request('https://gateway.example/webhook', {
         method: 'POST',
