@@ -35,7 +35,8 @@ function doPost(e) {
 
     if (parsed.messageType &&
         parsed.messageType !== 'TEXT' &&
-        parsed.messageType !== 'BUTTON') {
+        parsed.messageType !== 'BUTTON' &&
+        parsed.messageType !== 'INTERACTIVE_BUTTON') {
       LogRepository.write({
         timestamp: Clock.now(),
         command: 'WEBHOOK_UNSUPPORTED_MESSAGE',
