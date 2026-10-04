@@ -72,6 +72,18 @@ const context = {
         state: nextState,
         draft: Object.assign({}, draft || {})
       });
+    },
+    updateDoctorControlUxSession: function(phone, nextState, patch) {
+      state.session = {
+        exists: true,
+        state: nextState,
+        draft: Object.assign({}, state.session.draft || {}, patch || {})
+      };
+      return context.Result.ok({
+        phone: phone,
+        state: nextState,
+        draft: Object.assign({}, state.session.draft)
+      });
     }
   },
   DoctorScheduleReadService: {
@@ -226,5 +238,42 @@ let buttonCancel = service.handle(controlContext(), 'CANCEL');
 assert.strictEqual(buttonCancel.ok, true);
 assert.strictEqual(buttonCancel.data.controlState, 'DOCTOR_MENU');
 assert.strictEqual(state.commits, 2);
+
+
+resetMenu();
+let guidedRecurring = service.handle(controlContext(), 'CHANGE_SCHEDULE');
+assert.strictEqual(guidedRecurring.ok, true);
+assert.strictEqual(state.session.draft.doctor_ux_flow, 'RECURRING');
+assert.strictEqual(state.session.draft.doctor_ux_step, 'DAYS');
+
+let days = service.handle(controlContext(), '1,3,5');
+assert.strictEqual(days.ok, true);
+assert.strictEqual(state.session.draft.doctor_draft_days, 'sunday,tuesday,thursday');
+assert.strictEqual(state.session.draft.doctor_ux_step, 'DAYS');
+
+let doneDays = service.handle(controlContext(), 'تم');
+assert.strictEqual(doneDays.ok, true);
+assert.strictEqual(state.session.draft.doctor_ux_step, 'START_TIME');
+
+let startTime = service.handle(controlContext(), '10:00');
+assert.strictEqual(startTime.ok, true);
+let endTime = service.handle(controlContext(), '14:00');
+assert.strictEqual(endTime.ok, true);
+let recurringPreview = service.handle(controlContext(), '2026-10-20');
+assert.strictEqual(recurringPreview.ok, true);
+assert.strictEqual(state.session.state, 'DOCTOR_AWAITING_CONFIRMATION');
+
+resetMenu();
+let guidedClose = service.handle(controlContext(), 'TEMPORARY_CLOSE');
+assert.strictEqual(guidedClose.ok, true);
+assert.strictEqual(guidedClose.data.deliveryOptions.interactiveButtons.length, 3);
+
+let fullDay = service.handle(controlContext(), 'TEMP_CLOSE_FULL_DAY');
+assert.strictEqual(fullDay.ok, true);
+let closePreview = service.handle(controlContext(), '2026-10-20');
+assert.strictEqual(closePreview.ok, true);
+assert.strictEqual(state.session.draft.doctor_draft_effective_from, '2026-10-20T00:00');
+assert.strictEqual(state.session.draft.doctor_draft_effective_to, '2026-10-21T00:00');
+assert.strictEqual(state.session.state, 'DOCTOR_AWAITING_CONFIRMATION');
 
 console.log('PASS: Doctor Control Interactive Intents — menu, More navigation, legacy convergence, and confirmation/cancellation');
