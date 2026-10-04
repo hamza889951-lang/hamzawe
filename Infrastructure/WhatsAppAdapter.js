@@ -171,12 +171,13 @@ const WhatsAppAdapter = {
       );
     }
 
+    var doctorIntentMap = this.DOCTOR_INTERACTIVE_INTENT_TO_META_ID;
     const normalizedButtons = buttons.map(function(button) {
       if (!button || typeof button !== 'object' ||
           !button.id || !button.title) {
         return null;
       }
-      const transportId = this.DOCTOR_INTERACTIVE_INTENT_TO_META_ID[String(button.id)] || String(button.id);
+      const transportId = doctorIntentMap[String(button.id)] || String(button.id);
       return {
         type: 'reply',
         reply: {
