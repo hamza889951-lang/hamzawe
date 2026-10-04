@@ -18,7 +18,9 @@
  * يضمن:
  * - الأرقام وInteractive Button IDs هي channel/presentation representations
  *   فقط؛ ما يصل حدود الـApplication هو Doctor Interaction Intent دلالي.
- *   لا تنشئ الـIntents Domain Commands أو State Machine branches جديدة.
+ *   WhatsApp transport IDs تبقى داخل WhatsAppAdapter boundary ولا تظهر
+ *   في هذا الـprovider-neutral service. لا تنشئ الـIntents Domain Commands
+ *   أو State Machine branches جديدة.
  * - Preview read-only بالكامل: لا Schedule Change persistence، لا
  *   Availability/Appointment/Calendar mutation — يعيد استخدام نفس
  *   builders/validation الالتزام عبر DoctorScheduleCommandService.preview*.
@@ -107,9 +109,9 @@ const DoctorControlInteractionService = {
 
   _menuButtons: function() {
     return [
-      { id: 'DOCTOR_VIEW_SCHEDULE', title: 'عرض الجدول' },
-      { id: 'DOCTOR_CHANGE_SCHEDULE', title: 'تغيير الجدول' },
-      { id: 'DOCTOR_MORE', title: 'المزيد' }
+      { id: 'VIEW_SCHEDULE', title: 'عرض الجدول' },
+      { id: 'CHANGE_SCHEDULE', title: 'تغيير الجدول' },
+      { id: 'MORE', title: 'المزيد' }
     ];
   },
 
@@ -123,9 +125,9 @@ const DoctorControlInteractionService = {
 
   _moreMenuButtons: function() {
     return [
-      { id: 'DOCTOR_TEMPORARY_CLOSE', title: 'إغلاق مؤقت' },
-      { id: 'DOCTOR_EXCEPTION_OPEN', title: 'فتح استثنائي' },
-      { id: 'DOCTOR_CANCEL_CHANGE', title: 'إلغاء تغيير' }
+      { id: 'TEMPORARY_CLOSE', title: 'إغلاق مؤقت' },
+      { id: 'TEMPORARY_OPEN', title: 'فتح استثنائي' },
+      { id: 'CANCEL_CHANGE', title: 'إلغاء تغيير' }
     ];
   },
 
@@ -426,8 +428,8 @@ const DoctorControlInteractionService = {
       controlState: Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_AWAITING_CONFIRMATION,
       deliveryOptions: {
         interactiveButtons: [
-          { id: 'DOCTOR_CONFIRM', title: 'تأكيد' },
-          { id: 'DOCTOR_CANCEL', title: 'إلغاء' }
+          { id: 'CONFIRM', title: 'تأكيد' },
+          { id: 'CANCEL', title: 'إلغاء' }
         ],
         fallbackToText: true
       }
@@ -444,8 +446,8 @@ const DoctorControlInteractionService = {
         controlState: Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_AWAITING_CONFIRMATION,
         deliveryOptions: {
           interactiveButtons: [
-            { id: 'DOCTOR_CONFIRM', title: 'تأكيد' },
-            { id: 'DOCTOR_CANCEL', title: 'إلغاء' }
+            { id: 'CONFIRM', title: 'تأكيد' },
+            { id: 'CANCEL', title: 'إلغاء' }
           ],
           fallbackToText: true
         }
