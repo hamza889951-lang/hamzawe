@@ -237,7 +237,7 @@ const DoctorControlInteractionService = {
     if (draft.doctor_ux_step === 'EDIT') {
       if (text === 'EDIT_DAYS') return this._guidedPrompt(phone, 'RECURRING', 'DAYS', 'أرسل أيام الدوام مثل 1,3,5 ثم أرسل تم.', {});
       if (text === 'EDIT_TIMES') return this._guidedPrompt(phone, kind, 'START_TIME', 'وقت البداية؟ HH:mm', {});
-      if (text === 'EDIT_DATE') return this._guidedPrompt(phone, kind, 'DATE', 'التاريخ؟ YYYY-MM-DD', {});
+      if (text === 'EDIT_DATE') return this._guidedPrompt(phone, kind, kind === 'TEMPORARY_CLOSE' ? 'START_DATE' : 'DATE', 'التاريخ؟ YYYY-MM-DD', {});
       if (text === 'CANCEL') return this._showMenu(phone, 'تم إلغاء العملية.');
       return this._showEditMenu(phone, draft);
     }
@@ -304,7 +304,7 @@ const DoctorControlInteractionService = {
       doctor_ux_step: step
     }, patch || {});
     var set;
-    if ((step === 'DAYS' && !fields.doctor_ux_flow) || step === 'MODE') {
+    if (step === 'MODE') {
       set = ConversationRepository.setDoctorControlSession(
         phone,
         Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_AWAITING_INPUT,
@@ -353,18 +353,18 @@ const DoctorControlInteractionService = {
       );
     }
     if (draft.doctor_ux_step === 'START_TIME') {
-      if (!/^\\d{2}:\\d{2}$/.test(text)) return this._guidedRetry(phone, draft, 'الوقت يجب أن يكون بصيغة HH:mm.');
+      if (!/^\d{2}:\d{2}$/.test(text)) return this._guidedRetry(phone, draft, 'الوقت يجب أن يكون بصيغة HH:mm.');
       return this._guidedPrompt(phone, 'RECURRING', 'END_TIME', 'وقت نهاية الدوام؟ مثال: 14:00', { doctor_ux_start_time: text });
     }
     if (draft.doctor_ux_step === 'END_TIME') {
-      if (!/^\\d{2}:\\d{2}$/.test(text)) return this._guidedRetry(phone, draft, 'الوقت يجب أن يكون بصيغة HH:mm.');
+      if (!/^\d{2}:\d{2}$/.test(text)) return this._guidedRetry(phone, draft, 'الوقت يجب أن يكون بصيغة HH:mm.');
       return this._guidedPrompt(phone, 'RECURRING', 'DATE', 'تاريخ بدء التغيير؟ YYYY-MM-DD', {
         doctor_ux_end_time: text,
         doctor_draft_window: draft.doctor_ux_start_time + '-' + text
       });
     }
     if (draft.doctor_ux_step === 'DATE') {
-      if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(text)) return this._guidedRetry(phone, draft, 'التاريخ يجب أن يكون بصيغة YYYY-MM-DD.');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return this._guidedRetry(phone, draft, 'التاريخ يجب أن يكون بصيغة YYYY-MM-DD.');
       return this._previewAndAsk(controlContext, phone, {
         doctor_draft_kind: 'RECURRING',
         doctor_draft_days: draft.doctor_draft_days,
@@ -384,7 +384,7 @@ const DoctorControlInteractionService = {
       return this._guidedRetry(phone, draft, 'اختر يومًا كاملًا أو فترة محددة.');
     }
     if (draft.doctor_ux_step === 'START_DATE') {
-      if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(text)) return this._guidedRetry(phone, draft, 'التاريخ يجب أن يكون بصيغة YYYY-MM-DD.');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return this._guidedRetry(phone, draft, 'التاريخ يجب أن يكون بصيغة YYYY-MM-DD.');
       if (draft.doctor_ux_close_mode === 'FULL_DAY') {
         var next = DateUtils.nextLocalDateString(text);
         if (!next) return this._guidedRetry(phone, draft, 'التاريخ غير صحيح.');
@@ -398,15 +398,15 @@ const DoctorControlInteractionService = {
       return this._guidedPrompt(phone, 'TEMPORARY_CLOSE', 'START_TIME', 'وقت بداية الإغلاق؟ HH:mm', { doctor_ux_start_date: text });
     }
     if (draft.doctor_ux_step === 'START_TIME') {
-      if (!/^\\d{2}:\\d{2}$/.test(text)) return this._guidedRetry(phone, draft, 'الوقت يجب أن يكون بصيغة HH:mm.');
+      if (!/^\d{2}:\d{2}$/.test(text)) return this._guidedRetry(phone, draft, 'الوقت يجب أن يكون بصيغة HH:mm.');
       return this._guidedPrompt(phone, 'TEMPORARY_CLOSE', 'END_DATE', 'تاريخ نهاية الإغلاق؟ YYYY-MM-DD', { doctor_ux_start_time: text });
     }
     if (draft.doctor_ux_step === 'END_DATE') {
-      if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(text)) return this._guidedRetry(phone, draft, 'التاريخ يجب أن يكون بصيغة YYYY-MM-DD.');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return this._guidedRetry(phone, draft, 'التاريخ يجب أن يكون بصيغة YYYY-MM-DD.');
       return this._guidedPrompt(phone, 'TEMPORARY_CLOSE', 'END_TIME', 'وقت نهاية الإغلاق؟ HH:mm', { doctor_ux_end_date: text });
     }
     if (draft.doctor_ux_step === 'END_TIME') {
-      if (!/^\\d{2}:\\d{2}$/.test(text)) return this._guidedRetry(phone, draft, 'الوقت يجب أن يكون بصيغة HH:mm.');
+      if (!/^\d{2}:\d{2}$/.test(text)) return this._guidedRetry(phone, draft, 'الوقت يجب أن يكون بصيغة HH:mm.');
       var from = draft.doctor_ux_start_date + 'T' + draft.doctor_ux_start_time;
       var to = draft.doctor_ux_end_date + 'T' + text;
       if (to <= from) return this._guidedRetry(phone, draft, 'يجب أن تكون نهاية الإغلاق بعد بدايته.');
