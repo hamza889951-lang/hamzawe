@@ -234,6 +234,13 @@ const DoctorControlInteractionService = {
   _handleInput: function(controlContext, phone, text, draft) {
     if (text === '0') return this._showMenu(phone);
     var kind = draft.doctor_draft_kind;
+    if (draft.doctor_ux_step === 'EDIT') {
+      if (text === 'EDIT_DAYS') return this._guidedPrompt(phone, 'RECURRING', 'DAYS', 'أرسل أيام الدوام مثل 1,3,5 ثم أرسل تم.', {});
+      if (text === 'EDIT_TIMES') return this._guidedPrompt(phone, kind, 'START_TIME', 'وقت البداية؟ HH:mm', {});
+      if (text === 'EDIT_DATE') return this._guidedPrompt(phone, kind, 'DATE', 'التاريخ؟ YYYY-MM-DD', {});
+      if (text === 'CANCEL') return this._showMenu(phone, 'تم إلغاء العملية.');
+      return this._showEditMenu(phone, draft);
+    }
     if (kind === 'RECURRING') {
       if (draft.doctor_ux_flow === 'RECURRING' && draft.doctor_ux_step) {
         return this._handleRecurringGuided(controlContext, phone, text, draft);
@@ -277,11 +284,20 @@ const DoctorControlInteractionService = {
       doctor_ux_flow: kind,
       doctor_ux_step: step
     }, patch || {});
-    var set = ConversationRepository.setDoctorControlSession(
-      phone,
-      Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_AWAITING_INPUT,
-      fields
-    );
+    var set;
+    if ((step === 'DAYS' && !fields.doctor_ux_flow) || step === 'MODE') {
+      set = ConversationRepository.setDoctorControlSession(
+        phone,
+        Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_AWAITING_INPUT,
+        fields
+      );
+    } else {
+      set = ConversationRepository.updateDoctorControlUxSession(
+        phone,
+        Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_AWAITING_INPUT,
+        fields
+      );
+    }
     if (!set.ok) return set;
     return Result.ok({
       reply: reply,
