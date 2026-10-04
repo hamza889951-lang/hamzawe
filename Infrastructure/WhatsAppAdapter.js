@@ -43,7 +43,19 @@ const WhatsAppAdapter = {
           HAMZAWE_CHANGE: '2',
           HAMZAWE_CANCEL: '3',
           HAMZAWE_DECLINE: '2',
-          HAMZAWE_START_BOOKING: 'START_BOOKING'
+          HAMZAWE_START_BOOKING: 'START_BOOKING',
+
+          // Doctor Control — transport IDs map to provider-neutral
+          // interaction intents. These intents are consumed by
+          // DoctorControlInteractionService and are not domain commands.
+          DOCTOR_VIEW_SCHEDULE: 'VIEW_SCHEDULE',
+          DOCTOR_CHANGE_SCHEDULE: 'CHANGE_SCHEDULE',
+          DOCTOR_MORE: 'MORE',
+          DOCTOR_TEMPORARY_CLOSE: 'TEMPORARY_CLOSE',
+          DOCTOR_EXCEPTION_OPEN: 'TEMPORARY_OPEN',
+          DOCTOR_CANCEL_CHANGE: 'CANCEL_CHANGE',
+          DOCTOR_CONFIRM: 'CONFIRM',
+          DOCTOR_CANCEL: 'CANCEL'
         };
         canonicalMessage = buttonMap[String(event.buttonPayload || '')];
         if (canonicalMessage === undefined) return null;
