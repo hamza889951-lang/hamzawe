@@ -24,7 +24,16 @@ const WhatsAppAdapter = {
     TEMPORARY_OPEN: 'DOCTOR_EXCEPTION_OPEN',
     CANCEL_CHANGE: 'DOCTOR_CANCEL_CHANGE',
     CONFIRM: 'DOCTOR_CONFIRM',
-    CANCEL: 'DOCTOR_CANCEL'
+    CANCEL: 'DOCTOR_CANCEL',
+
+    // Guided Doctor Control UX — provider-neutral intents require explicit
+    // transport IDs so outbound and inbound mappings remain symmetric.
+    TEMP_CLOSE_FULL_DAY: 'DOCTOR_TEMP_CLOSE_FULL_DAY',
+    TEMP_CLOSE_PERIOD: 'DOCTOR_TEMP_CLOSE_PERIOD',
+    EDIT: 'DOCTOR_EDIT',
+    EDIT_DAYS: 'DOCTOR_EDIT_DAYS',
+    EDIT_TIMES: 'DOCTOR_EDIT_TIMES',
+    EDIT_DATE: 'DOCTOR_EDIT_DATE'
   },
 
   parseIncomingPayload: function(e) {
