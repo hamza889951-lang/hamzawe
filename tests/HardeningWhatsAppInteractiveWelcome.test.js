@@ -116,4 +116,15 @@ assert.strictEqual(sentBody.interactive.action.buttons[0].type, 'reply');
 assert.strictEqual(sentBody.interactive.action.buttons[0].reply.id, 'HAMZAWE_START_BOOKING');
 assert.strictEqual(sentBody.interactive.action.buttons[0].reply.title, 'حجز موعد');
 
+const doctorOutbound = adapter.sendInteractiveButtons(
+  '9647001234567',
+  'قائمة تحكم الطبيب',
+  [{ id: 'VIEW_SCHEDULE', title: 'عرض الجدول' }]
+);
+
+assert.strictEqual(doctorOutbound.ok, true);
+assert.strictEqual(sentBody.interactive.type, 'button');
+assert.strictEqual(sentBody.interactive.action.buttons[0].reply.id, 'DOCTOR_VIEW_SCHEDULE');
+assert.strictEqual(sentBody.interactive.action.buttons[0].reply.title, 'عرض الجدول');
+
 console.log('PASS: WhatsAppAdapter — interactive welcome inbound mapping and outbound reply-button transport');
