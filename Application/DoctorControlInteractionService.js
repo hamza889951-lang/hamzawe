@@ -2,8 +2,8 @@
  * ═══════════════════════════════════════
  * CONTRACT — DoctorControlInteractionService
  * ═══════════════════════════════════════
- * M4-C Continuation — provider-neutral Doctor Control numbered
- * interaction + read-only Preview → explicit Confirm → Commit.
+ * M4-C Continuation — provider-neutral Doctor Control interaction
+ * (legacy numeric + WhatsApp Interactive Intent) + read-only Preview → explicit Confirm → Commit.
  *
  * لماذا boundary جديد واحد بدلاً من توسيع DoctorControlEntry؟
  * DoctorControlEntry هو عقد M4-A مجمّد ومدموج: read-only، بلا مخازن،
@@ -16,9 +16,9 @@
  * الوحيد تحته. لا طبقة ثانية تؤدي نفس الدور.
  *
  * يضمن:
- * - الأرقام presentation/channel representation فقط؛ ما يصل حدود
- *   الـApplication هو أوامر دلالية (نفس الأوامر التي ستستقبلها أزرار
- *   WhatsApp الرسمية مستقبلًا دون تغيير Domain/Application semantics).
+ * - الأرقام وInteractive Button IDs هي channel/presentation representations
+ *   فقط؛ ما يصل حدود الـApplication هو Doctor Interaction Intent دلالي.
+ *   لا تنشئ الـIntents Domain Commands أو State Machine branches جديدة.
  * - Preview read-only بالكامل: لا Schedule Change persistence، لا
  *   Availability/Appointment/Calendar mutation — يعيد استخدام نفس
  *   builders/validation الالتزام عبر DoctorScheduleCommandService.preview*.
@@ -105,6 +105,30 @@ const DoctorControlInteractionService = {
       'أرسل رقم الخيار.';
   },
 
+  _menuButtons: function() {
+    return [
+      { id: 'DOCTOR_VIEW_SCHEDULE', title: 'عرض الجدول' },
+      { id: 'DOCTOR_CHANGE_SCHEDULE', title: 'تغيير الجدول' },
+      { id: 'DOCTOR_MORE', title: 'المزيد' }
+    ];
+  },
+
+  _moreMenuText: function() {
+    return 'المزيد من عمليات لوحة الطبيب:\n' +
+      '3) إغلاق مؤقت\n' +
+      '4) فتح استثنائي ليوم مغلق\n' +
+      '5) إلغاء تغيير مجدول\n' +
+      'أرسل رقم الخيار.';
+  },
+
+  _moreMenuButtons: function() {
+    return [
+      { id: 'DOCTOR_TEMPORARY_CLOSE', title: 'إغلاق مؤقت' },
+      { id: 'DOCTOR_EXCEPTION_OPEN', title: 'فتح استثنائي' },
+      { id: 'DOCTOR_CANCEL_CHANGE', title: 'إلغاء تغيير' }
+    ];
+  },
+
   _showMenu: function(phone, prefix) {
     var set = ConversationRepository.setDoctorControlSession(
       phone,
@@ -114,15 +138,36 @@ const DoctorControlInteractionService = {
     if (!set.ok) return set;
     return Result.ok({
       reply: (prefix ? prefix + '\n\n' : '') + this._menuText(),
-      controlState: Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_MENU
+      controlState: Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_MENU,
+      deliveryOptions: {
+        interactiveButtons: this._menuButtons(),
+        fallbackToText: true
+      }
+    });
+  },
+
+  _showMoreMenu: function(phone, prefix) {
+    var set = ConversationRepository.setDoctorControlSession(
+      phone,
+      Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_MENU,
+      {}
+    );
+    if (!set.ok) return set;
+    return Result.ok({
+      reply: (prefix ? prefix + '\n\n' : '') + this._moreMenuText(),
+      controlState: Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_MENU,
+      deliveryOptions: {
+        interactiveButtons: this._moreMenuButtons(),
+        fallbackToText: true
+      }
     });
   },
 
   _handleMenu: function(controlContext, phone, text) {
-    if (text === '1') {
+    if (text === '1' || text === 'VIEW_SCHEDULE') {
       return this._renderCurrentSchedule(controlContext, phone);
     }
-    if (text === '2') {
+    if (text === '2' || text === 'CHANGE_SCHEDULE') {
       return this._promptInput(phone, 'RECURRING',
         'تغيير الجدول الأسبوعي:\n' +
         'أرسل: أيام الدوام | نافذة الدوام | تاريخ البدء\n' +
@@ -131,7 +176,7 @@ const DoctorControlInteractionService = {
         'ملاحظة: يبدأ التغيير من الساعة 00:00 بتوقيت بغداد في التاريخ المحدد.\n' +
         'أرسل 0 للرجوع.');
     }
-    if (text === '3') {
+    if (text === '3' || text === 'TEMPORARY_CLOSE') {
       return this._promptInput(phone, 'TEMPORARY_CLOSE',
         'إغلاق مؤقت:\n' +
         'ليوم كامل أرسل التاريخ فقط: 2026-09-20\n' +
@@ -139,15 +184,18 @@ const DoctorControlInteractionService = {
         '(النهاية غير مشمولة — [من، إلى))\n' +
         'أرسل 0 للرجوع.');
     }
-    if (text === '4') {
+    if (text === '4' || text === 'TEMPORARY_OPEN') {
       return this._promptInput(phone, 'TEMPORARY_OPEN',
         'فتح استثنائي ليوم مغلق:\n' +
         'أرسل تاريخ اليوم: 2026-09-22\n' +
         'سيُفتح اليوم بنافذة الدوام المعتادة من الإعدادات (لا فتح جزئي).\n' +
         'أرسل 0 للرجوع.');
     }
-    if (text === '5') {
+    if (text === '5' || text === 'CANCEL_CHANGE') {
       return this._promptCancelList(controlContext, phone);
+    }
+    if (text === 'MORE') {
+      return this._showMoreMenu(phone);
     }
     return this._showMenu(phone);
   },
@@ -375,18 +423,32 @@ const DoctorControlInteractionService = {
     ];
     return Result.ok({
       reply: lines.join('\n'),
-      controlState: Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_AWAITING_CONFIRMATION
+      controlState: Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_AWAITING_CONFIRMATION,
+      deliveryOptions: {
+        interactiveButtons: [
+          { id: 'DOCTOR_CONFIRM', title: 'تأكيد' },
+          { id: 'DOCTOR_CANCEL', title: 'إلغاء' }
+        ],
+        fallbackToText: true
+      }
     });
   },
 
   _handleConfirmation: function(controlContext, phone, text, draft) {
-    if (text === '2' || text === '0') {
+    if (text === '2' || text === '0' || text === 'CANCEL') {
       return this._showMenu(phone, 'تم إلغاء العملية. لم يُحفظ أي تغيير.');
     }
-    if (text !== '1') {
+    if (text !== '1' && text !== 'CONFIRM') {
       return Result.ok({
         reply: 'أرسل 1 للتأكيد أو 2 للإلغاء.',
-        controlState: Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_AWAITING_CONFIRMATION
+        controlState: Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_AWAITING_CONFIRMATION,
+        deliveryOptions: {
+          interactiveButtons: [
+            { id: 'DOCTOR_CONFIRM', title: 'تأكيد' },
+            { id: 'DOCTOR_CANCEL', title: 'إلغاء' }
+          ],
+          fallbackToText: true
+        }
       });
     }
 
