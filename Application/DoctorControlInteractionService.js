@@ -71,7 +71,7 @@ const DoctorControlInteractionService = {
     var phone = controlContext.actorId;
     var text = typeof message === 'string' ? message.trim() : '';
 
-    var sessionResult = ConversationRepository.getDoctorControlSession(phone);
+    var sessionResult = ConversationRepository.getDoctorControlUxSession(phone);
     if (!sessionResult.ok) return sessionResult;
     var session = sessionResult.data;
 
@@ -258,7 +258,7 @@ const DoctorControlInteractionService = {
   },
 
   _startRecurringGuided: function(phone) {
-    var set = ConversationRepository.setDoctorControlSession(
+    var set = ConversationRepository.setDoctorControlUxSession(
       phone,
       Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_AWAITING_INPUT,
       { doctor_draft_kind: 'RECURRING', doctor_ux_flow: 'RECURRING', doctor_ux_step: 'DAYS', doctor_draft_days: '' }
@@ -272,7 +272,7 @@ const DoctorControlInteractionService = {
   },
 
   _startTemporaryCloseGuided: function(phone) {
-    var set = ConversationRepository.setDoctorControlSession(
+    var set = ConversationRepository.setDoctorControlUxSession(
       phone,
       Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_AWAITING_INPUT,
       { doctor_draft_kind: 'TEMPORARY_CLOSE', doctor_ux_flow: 'TEMPORARY_CLOSE', doctor_ux_step: 'MODE', doctor_ux_close_mode: '' }
@@ -300,7 +300,7 @@ const DoctorControlInteractionService = {
     }, patch || {});
     var set;
     if (step === 'MODE') {
-      set = ConversationRepository.setDoctorControlSession(
+      set = ConversationRepository.setDoctorControlUxSession(
         phone,
         Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_AWAITING_INPUT,
         fields
