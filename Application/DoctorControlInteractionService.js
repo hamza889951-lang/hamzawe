@@ -263,19 +263,38 @@ const DoctorControlInteractionService = {
   },
 
   _startRecurringGuided: function(phone) {
-    return this._guidedPrompt(
-      phone, 'RECURRING', 'DAYS',
-      'تغيير الجدول الأسبوعي:\nأرسل أرقام أيام الدوام مفصولة بفواصل، مثال: 1,3,5\n1=الأحد ... 7=السبت\nثم أرسل تم.',
-      { doctor_draft_days: '' }
+    var set = ConversationRepository.setDoctorControlSession(
+      phone,
+      Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_AWAITING_INPUT,
+      { doctor_draft_kind: 'RECURRING', doctor_ux_flow: 'RECURRING', doctor_ux_step: 'DAYS', doctor_draft_days: '' }
     );
+    if (!set.ok) return set;
+    return Result.ok({
+      reply: 'تغيير الجدول الأسبوعي:\nأرسل أرقام أيام الدوام مفصولة بفواصل، مثال: 1,3,5\n1=الأحد ... 7=السبت\nثم أرسل تم.',
+      controlState: Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_AWAITING_INPUT,
+      deliveryOptions: { fallbackToText: true }
+    });
   },
 
   _startTemporaryCloseGuided: function(phone) {
-    return this._guidedPrompt(
-      phone, 'TEMPORARY_CLOSE', 'MODE',
-      'إغلاق مؤقت: اختر يومًا كاملًا أو فترة محددة.',
-      { doctor_ux_close_mode: '' }
+    var set = ConversationRepository.setDoctorControlSession(
+      phone,
+      Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_AWAITING_INPUT,
+      { doctor_draft_kind: 'TEMPORARY_CLOSE', doctor_ux_flow: 'TEMPORARY_CLOSE', doctor_ux_step: 'MODE', doctor_ux_close_mode: '' }
     );
+    if (!set.ok) return set;
+    return Result.ok({
+      reply: 'إغلاق مؤقت: اختر يومًا كاملًا أو فترة محددة.',
+      controlState: Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_AWAITING_INPUT,
+      deliveryOptions: {
+        interactiveButtons: [
+          { id: 'TEMP_CLOSE_FULL_DAY', title: 'يوم كامل' },
+          { id: 'TEMP_CLOSE_PERIOD', title: 'فترة محددة' },
+          { id: 'CANCEL', title: 'رجوع' }
+        ],
+        fallbackToText: true
+      }
+    });
   },
 
   _guidedPrompt: function(phone, kind, step, reply, patch) {
