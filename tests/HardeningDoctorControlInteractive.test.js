@@ -124,11 +124,11 @@ function resetMenu() {
 function assertMainMenu(result) {
   assert.strictEqual(result.ok, true);
   assert.strictEqual(result.data.controlState, 'DOCTOR_MENU');
-  assert.deepStrictEqual(
-    result.data.deliveryOptions.interactiveButtons.map(function(button) {
+  assert.strictEqual(
+    JSON.stringify(result.data.deliveryOptions.interactiveButtons.map(function(button) {
       return button.id;
-    }),
-    ['DOCTOR_VIEW_SCHEDULE', 'DOCTOR_CHANGE_SCHEDULE', 'DOCTOR_MORE']
+    })),
+    JSON.stringify(['DOCTOR_VIEW_SCHEDULE', 'DOCTOR_CHANGE_SCHEDULE', 'DOCTOR_MORE'])
   );
 }
 
@@ -142,20 +142,20 @@ let interactive = service.handle(controlContext(), 'VIEW_SCHEDULE');
 assertMainMenu(interactive);
 assert.strictEqual(state.scheduleReads, 1);
 
-assert.deepStrictEqual(
-  interactive.data.deliveryOptions.interactiveButtons,
-  legacy.data.deliveryOptions.interactiveButtons
+assert.strictEqual(
+  JSON.stringify(interactive.data.deliveryOptions.interactiveButtons),
+  JSON.stringify(legacy.data.deliveryOptions.interactiveButtons)
 );
 
 resetMenu();
 let more = service.handle(controlContext(), 'MORE');
 assert.strictEqual(more.ok, true);
 assert.strictEqual(more.data.controlState, 'DOCTOR_MENU');
-assert.deepStrictEqual(
-  more.data.deliveryOptions.interactiveButtons.map(function(button) {
+assert.strictEqual(
+  JSON.stringify(more.data.deliveryOptions.interactiveButtons.map(function(button) {
     return button.id;
-  }),
-  ['DOCTOR_TEMPORARY_CLOSE', 'DOCTOR_EXCEPTION_OPEN', 'DOCTOR_CANCEL_CHANGE']
+  })),
+  JSON.stringify(['DOCTOR_TEMPORARY_CLOSE', 'DOCTOR_EXCEPTION_OPEN', 'DOCTOR_CANCEL_CHANGE'])
 );
 assert.strictEqual(state.session.state, 'DOCTOR_MENU');
 
