@@ -61,6 +61,17 @@ const context = {
         draft: Object.assign({}, state.session.draft)
       });
     },
+    getDoctorControlUxSession: function() {
+      return context.Result.ok({
+        exists: state.session.exists,
+        state: state.session.state,
+        draft: Object.assign({}, state.session.draft)
+      });
+    },
+    setDoctorControlUxSession: function(phone, nextState, draft) {
+      state.session = { exists: true, state: nextState, draft: Object.assign({}, draft || {}) };
+      return context.Result.ok({ phone: phone, state: nextState, draft: Object.assign({}, draft || {}) });
+    },
     setDoctorControlSession: function(phone, nextState, draft) {
       state.session = {
         exists: true,
