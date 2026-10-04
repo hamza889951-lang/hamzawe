@@ -279,7 +279,10 @@ const CONVERSATIONS_HEADERS = [
   'conversation_id', 'phone', 'state', 'temp_name', 'slot_id', 'updated_at',
   'doctor_draft_kind', 'doctor_draft_days', 'doctor_draft_window',
   'doctor_draft_effective_from', 'doctor_draft_effective_to', 'doctor_draft_target_change_id',
-  'doctor_draft_command_id'
+  'doctor_draft_command_id',
+  'doctor_ux_flow', 'doctor_ux_step', 'doctor_ux_close_mode',
+  'doctor_ux_start_date', 'doctor_ux_start_time',
+  'doctor_ux_end_date', 'doctor_ux_end_time'
 ];
 
 function reset() {

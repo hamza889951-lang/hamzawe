@@ -68,7 +68,14 @@ const WhatsAppAdapter = {
           DOCTOR_EXCEPTION_OPEN: 'TEMPORARY_OPEN',
           DOCTOR_CANCEL_CHANGE: 'CANCEL_CHANGE',
           DOCTOR_CONFIRM: 'CONFIRM',
-          DOCTOR_CANCEL: 'CANCEL'
+          DOCTOR_CANCEL: 'CANCEL',
+          DOCTOR_TEMP_CLOSE_FULL_DAY: 'TEMP_CLOSE_FULL_DAY',
+          DOCTOR_TEMP_CLOSE_PERIOD: 'TEMP_CLOSE_PERIOD',
+          DOCTOR_EDIT: 'EDIT',
+          DOCTOR_EDIT_DAYS: 'EDIT_DAYS',
+          DOCTOR_EDIT_TIMES: 'EDIT_TIMES',
+          DOCTOR_EDIT_DATE: 'EDIT_DATE',
+          DOCTOR_DONE_DAYS: 'DONE_DAYS'
         };
         canonicalMessage = buttonMap[String(event.buttonPayload || '')];
         if (canonicalMessage === undefined) return null;
