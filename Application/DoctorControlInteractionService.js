@@ -170,13 +170,7 @@ const DoctorControlInteractionService = {
       return this._renderCurrentSchedule(controlContext, phone);
     }
     if (text === '2' || text === 'CHANGE_SCHEDULE') {
-      return this._promptInput(phone, 'RECURRING',
-        'تغيير الجدول الأسبوعي:\n' +
-        'أرسل: أيام الدوام | نافذة الدوام | تاريخ البدء\n' +
-        'الأيام أرقام (1=الأحد ... 7=السبت) مفصولة بفواصل.\n' +
-        'مثال: 1,2,4 | 10:00-14:00 | 2026-09-15\n' +
-        'ملاحظة: يبدأ التغيير من الساعة 00:00 بتوقيت بغداد في التاريخ المحدد.\n' +
-        'أرسل 0 للرجوع.');
+      return this._startRecurringGuided(phone);
     }
     if (text === '3' || text === 'TEMPORARY_CLOSE') {
       return this._promptInput(phone, 'TEMPORARY_CLOSE',
@@ -241,9 +235,15 @@ const DoctorControlInteractionService = {
     if (text === '0') return this._showMenu(phone);
     var kind = draft.doctor_draft_kind;
     if (kind === 'RECURRING') {
+      if (draft.doctor_ux_flow === 'RECURRING' && draft.doctor_ux_step) {
+        return this._handleRecurringGuided(controlContext, phone, text, draft);
+      }
       return this._inputRecurring(controlContext, phone, text);
     }
     if (kind === 'TEMPORARY_CLOSE') {
+      if (draft.doctor_ux_flow === 'TEMPORARY_CLOSE' && draft.doctor_ux_step) {
+        return this._handleTemporaryCloseGuided(controlContext, phone, text, draft);
+      }
       return this._inputTemporaryClose(controlContext, phone, text);
     }
     if (kind === 'TEMPORARY_OPEN') {
@@ -253,6 +253,165 @@ const DoctorControlInteractionService = {
       return this._inputCancelSelection(controlContext, phone, text);
     }
     return this._showMenu(phone);
+  },
+
+  _startRecurringGuided: function(phone) {
+    return this._guidedPrompt(
+      phone, 'RECURRING', 'DAYS',
+      'تغيير الجدول الأسبوعي:\nأرسل أرقام أيام الدوام مفصولة بفواصل، مثال: 1,3,5\n1=الأحد ... 7=السبت\nثم أرسل تم.',
+      { doctor_draft_days: '' }
+    );
+  },
+
+  _startTemporaryCloseGuided: function(phone) {
+    return this._guidedPrompt(
+      phone, 'TEMPORARY_CLOSE', 'MODE',
+      'إغلاق مؤقت: اختر يومًا كاملًا أو فترة محددة.',
+      { doctor_ux_close_mode: '' }
+    );
+  },
+
+  _guidedPrompt: function(phone, kind, step, reply, patch) {
+    var fields = Object.assign({
+      doctor_draft_kind: kind,
+      doctor_ux_flow: kind,
+      doctor_ux_step: step
+    }, patch || {});
+    var set = ConversationRepository.setDoctorControlSession(
+      phone,
+      Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_AWAITING_INPUT,
+      fields
+    );
+    if (!set.ok) return set;
+    return Result.ok({
+      reply: reply,
+      controlState: Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_AWAITING_INPUT,
+      deliveryOptions: {
+        interactiveButtons: kind === 'TEMPORARY_CLOSE' && step === 'MODE'
+          ? [
+              { id: 'TEMP_CLOSE_FULL_DAY', title: 'يوم كامل' },
+              { id: 'TEMP_CLOSE_PERIOD', title: 'فترة محددة' },
+              { id: 'CANCEL', title: 'رجوع' }
+            ]
+          : undefined,
+        fallbackToText: true
+      }
+    });
+  },
+
+  _handleRecurringGuided: function(controlContext, phone, text, draft) {
+    // Legacy compound input remains accepted.
+    if (text.indexOf('|') !== -1) return this._inputRecurring(controlContext, phone, text);
+    if (draft.doctor_ux_step === 'DAYS') {
+      if (text === 'DONE_DAYS' || text.toLowerCase() === 'تم') {
+        if (!draft.doctor_draft_days) return this._guidedRetry(phone, draft, 'اختر يوم دوام واحدًا على الأقل.');
+        return this._guidedPrompt(phone, 'RECURRING', 'START_TIME', 'وقت بداية الدوام؟ مثال: 10:00');
+      }
+      var parsed = this._parseDays(text);
+      if (!parsed.ok) return this._guidedRetry(phone, draft, parsed.error.message);
+      return this._guidedPrompt(
+        phone, 'RECURRING', 'DAYS',
+        'تم حفظ الأيام: ' + parsed.data.map(function(k) {
+          return DoctorControlInteractionService.DAY_LABELS[EffectiveScheduleService.DAY_KEYS.indexOf(k)];
+        }).join('، ') + '\nأرسل تم عند الاكتمال.',
+        { doctor_draft_days: parsed.data.join(',') }
+      );
+    }
+    if (draft.doctor_ux_step === 'START_TIME') {
+      if (!/^\\d{2}:\\d{2}$/.test(text)) return this._guidedRetry(phone, draft, 'الوقت يجب أن يكون بصيغة HH:mm.');
+      return this._guidedPrompt(phone, 'RECURRING', 'END_TIME', 'وقت نهاية الدوام؟ مثال: 14:00', { doctor_ux_start_time: text });
+    }
+    if (draft.doctor_ux_step === 'END_TIME') {
+      if (!/^\\d{2}:\\d{2}$/.test(text)) return this._guidedRetry(phone, draft, 'الوقت يجب أن يكون بصيغة HH:mm.');
+      return this._guidedPrompt(phone, 'RECURRING', 'DATE', 'تاريخ بدء التغيير؟ YYYY-MM-DD', {
+        doctor_ux_end_time: text,
+        doctor_draft_window: draft.doctor_ux_start_time + '-' + text
+      });
+    }
+    if (draft.doctor_ux_step === 'DATE') {
+      if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(text)) return this._guidedRetry(phone, draft, 'التاريخ يجب أن يكون بصيغة YYYY-MM-DD.');
+      return this._previewAndAsk(controlContext, phone, {
+        doctor_draft_kind: 'RECURRING',
+        doctor_draft_days: draft.doctor_draft_days,
+        doctor_draft_window: draft.doctor_draft_window,
+        doctor_draft_effective_from: text,
+        doctor_draft_command_id: IdGenerator.generateScheduleCommandId()
+      });
+    }
+    return this._showMenu(phone);
+  },
+
+  _handleTemporaryCloseGuided: function(controlContext, phone, text, draft) {
+    if (text.indexOf('|') !== -1) return this._inputTemporaryClose(controlContext, phone, text);
+    if (draft.doctor_ux_step === 'MODE') {
+      if (text === 'TEMP_CLOSE_FULL_DAY') return this._guidedPrompt(phone, 'TEMPORARY_CLOSE', 'START_DATE', 'ما تاريخ الإغلاق؟ YYYY-MM-DD', { doctor_ux_close_mode: 'FULL_DAY' });
+      if (text === 'TEMP_CLOSE_PERIOD') return this._guidedPrompt(phone, 'TEMPORARY_CLOSE', 'START_DATE', 'تاريخ بداية الإغلاق؟ YYYY-MM-DD', { doctor_ux_close_mode: 'PERIOD' });
+      return this._guidedRetry(phone, draft, 'اختر يومًا كاملًا أو فترة محددة.');
+    }
+    if (draft.doctor_ux_step === 'START_DATE') {
+      if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(text)) return this._guidedRetry(phone, draft, 'التاريخ يجب أن يكون بصيغة YYYY-MM-DD.');
+      if (draft.doctor_ux_close_mode === 'FULL_DAY') {
+        var next = DateUtils.nextLocalDateString(text);
+        if (!next) return this._guidedRetry(phone, draft, 'التاريخ غير صحيح.');
+        return this._previewAndAsk(controlContext, phone, {
+          doctor_draft_kind: 'TEMPORARY_CLOSE',
+          doctor_draft_effective_from: text + 'T00:00',
+          doctor_draft_effective_to: next + 'T00:00',
+          doctor_draft_command_id: IdGenerator.generateScheduleCommandId()
+        });
+      }
+      return this._guidedPrompt(phone, 'TEMPORARY_CLOSE', 'START_TIME', 'وقت بداية الإغلاق؟ HH:mm', { doctor_ux_start_date: text });
+    }
+    if (draft.doctor_ux_step === 'START_TIME') {
+      if (!/^\\d{2}:\\d{2}$/.test(text)) return this._guidedRetry(phone, draft, 'الوقت يجب أن يكون بصيغة HH:mm.');
+      return this._guidedPrompt(phone, 'TEMPORARY_CLOSE', 'END_DATE', 'تاريخ نهاية الإغلاق؟ YYYY-MM-DD', { doctor_ux_start_time: text });
+    }
+    if (draft.doctor_ux_step === 'END_DATE') {
+      if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(text)) return this._guidedRetry(phone, draft, 'التاريخ يجب أن يكون بصيغة YYYY-MM-DD.');
+      return this._guidedPrompt(phone, 'TEMPORARY_CLOSE', 'END_TIME', 'وقت نهاية الإغلاق؟ HH:mm', { doctor_ux_end_date: text });
+    }
+    if (draft.doctor_ux_step === 'END_TIME') {
+      if (!/^\\d{2}:\\d{2}$/.test(text)) return this._guidedRetry(phone, draft, 'الوقت يجب أن يكون بصيغة HH:mm.');
+      var from = draft.doctor_ux_start_date + 'T' + draft.doctor_ux_start_time;
+      var to = draft.doctor_ux_end_date + 'T' + text;
+      if (to <= from) return this._guidedRetry(phone, draft, 'يجب أن تكون نهاية الإغلاق بعد بدايته.');
+      return this._previewAndAsk(controlContext, phone, {
+        doctor_draft_kind: 'TEMPORARY_CLOSE',
+        doctor_draft_effective_from: from,
+        doctor_draft_effective_to: to,
+        doctor_draft_command_id: IdGenerator.generateScheduleCommandId()
+      });
+    }
+    return this._showMenu(phone);
+  },
+
+  _guidedRetry: function(phone, draft, reason) {
+    return this._guidedPrompt(phone, draft.doctor_draft_kind, draft.doctor_ux_step, reason, draft);
+  },
+
+  _showEditMenu: function(phone, draft) {
+    var buttons = draft.doctor_draft_kind === 'RECURRING'
+      ? [
+          { id: 'EDIT_DAYS', title: 'الأيام' },
+          { id: 'EDIT_TIMES', title: 'الأوقات' },
+          { id: 'EDIT_DATE', title: 'تاريخ البدء' }
+        ]
+      : [
+          { id: 'EDIT_DATE', title: 'التاريخ' },
+          { id: 'EDIT_TIMES', title: 'الأوقات' },
+          { id: 'CANCEL', title: 'إلغاء' }
+        ];
+    var set = ConversationRepository.setDoctorControlSession(
+      phone,
+      Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_AWAITING_INPUT,
+      Object.assign({}, draft, { doctor_ux_flow: draft.doctor_draft_kind, doctor_ux_step: 'EDIT' })
+    );
+    if (!set.ok) return set;
+    return Result.ok({
+      reply: 'اختر الحقل الذي تريد تعديله.',
+      controlState: Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_AWAITING_INPUT,
+      deliveryOptions: { interactiveButtons: buttons, fallbackToText: true }
+    });
   },
 
   _inputRecurring: function(controlContext, phone, text) {
@@ -429,6 +588,7 @@ const DoctorControlInteractionService = {
       deliveryOptions: {
         interactiveButtons: [
           { id: 'CONFIRM', title: 'تأكيد' },
+          { id: 'EDIT', title: 'تعديل' },
           { id: 'CANCEL', title: 'إلغاء' }
         ],
         fallbackToText: true
@@ -439,6 +599,9 @@ const DoctorControlInteractionService = {
   _handleConfirmation: function(controlContext, phone, text, draft) {
     if (text === '2' || text === '0' || text === 'CANCEL') {
       return this._showMenu(phone, 'تم إلغاء العملية. لم يُحفظ أي تغيير.');
+    }
+    if (text === 'EDIT') {
+      return this._showEditMenu(phone, draft);
     }
     if (text !== '1' && text !== 'CONFIRM') {
       return Result.ok({
