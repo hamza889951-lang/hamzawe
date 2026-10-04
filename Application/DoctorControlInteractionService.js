@@ -173,12 +173,7 @@ const DoctorControlInteractionService = {
       return this._startRecurringGuided(phone);
     }
     if (text === '3' || text === 'TEMPORARY_CLOSE') {
-      return this._promptInput(phone, 'TEMPORARY_CLOSE',
-        'إغلاق مؤقت:\n' +
-        'ليوم كامل أرسل التاريخ فقط: 2026-09-20\n' +
-        'ولفترة محددة أرسل: 2026-09-20 10:00 | 2026-09-20 12:00\n' +
-        '(النهاية غير مشمولة — [من، إلى))\n' +
-        'أرسل 0 للرجوع.');
+      return this._startTemporaryCloseGuided(phone);
     }
     if (text === '4' || text === 'TEMPORARY_OPEN') {
       return this._promptInput(phone, 'TEMPORARY_OPEN',
