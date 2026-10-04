@@ -289,6 +289,17 @@ let recurringPreview = service.handle(controlContext(), '2026-10-20');
 assert.strictEqual(recurringPreview.ok, true);
 assert.strictEqual(state.session.state, 'DOCTOR_AWAITING_CONFIRMATION');
 
+let edit = service.handle(controlContext(), 'EDIT');
+assert.strictEqual(edit.ok, true);
+assert.strictEqual(edit.data.controlState, 'DOCTOR_AWAITING_INPUT');
+assert.strictEqual(edit.data.deliveryOptions.interactiveButtons.length, 3);
+
+let editDate = service.handle(controlContext(), 'EDIT_DATE');
+assert.strictEqual(editDate.ok, true);
+let editedPreview = service.handle(controlContext(), '2026-10-21');
+assert.strictEqual(editedPreview.ok, true);
+assert.strictEqual(state.session.state, 'DOCTOR_AWAITING_CONFIRMATION');
+
 resetMenu();
 let guidedClose = service.handle(controlContext(), 'TEMPORARY_CLOSE');
 assert.strictEqual(guidedClose.ok, true);
