@@ -217,6 +217,16 @@ const ConversationRepository = {
    * @param {Object} draft — subset of DOCTOR_SESSION_FIELDS
    * @returns {Result}
    */
+  updateDoctorControlUxSession(phone, doctorState, patch) {
+    var current = this.getDoctorControlSession(phone);
+    if (!current.ok) return current;
+    return this.setDoctorControlSession(
+      phone,
+      doctorState,
+      Object.assign({}, current.data.draft || {}, patch || {})
+    );
+  },
+
   setDoctorControlSession(phone, doctorState, draft) {
     if (this.DOCTOR_STATES.indexOf(doctorState) === -1) {
       return Result.fail(
