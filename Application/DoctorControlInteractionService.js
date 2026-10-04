@@ -254,13 +254,13 @@ const DoctorControlInteractionService = {
       return this._showEditMenu(phone, draft);
     }
     if (kind === 'RECURRING') {
-      if (draft.doctor_ux_flow === 'RECURRING' && draft.doctor_ux_step) {
+      if (draft.doctor_ux_step) {
         return this._handleRecurringGuided(controlContext, phone, text, draft);
       }
       return this._inputRecurring(controlContext, phone, text);
     }
     if (kind === 'TEMPORARY_CLOSE') {
-      if (draft.doctor_ux_flow === 'TEMPORARY_CLOSE' && draft.doctor_ux_step) {
+      if (draft.doctor_ux_step) {
         return this._handleTemporaryCloseGuided(controlContext, phone, text, draft);
       }
       return this._inputTemporaryClose(controlContext, phone, text);
@@ -278,7 +278,7 @@ const DoctorControlInteractionService = {
     var set = ConversationRepository.setDoctorControlUxSession(
       phone,
       Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_AWAITING_INPUT,
-      { doctor_draft_kind: 'RECURRING', doctor_ux_flow: 'RECURRING', doctor_ux_step: 'DAYS', doctor_draft_days: '' }
+      { doctor_draft_kind: 'RECURRING', doctor_ux_step: 'DAYS', doctor_draft_days: '' }
     );
     if (!set.ok) return set;
     return Result.ok({
@@ -292,7 +292,7 @@ const DoctorControlInteractionService = {
     var set = ConversationRepository.setDoctorControlUxSession(
       phone,
       Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_AWAITING_INPUT,
-      { doctor_draft_kind: 'TEMPORARY_CLOSE', doctor_ux_flow: 'TEMPORARY_CLOSE', doctor_ux_step: 'MODE', doctor_ux_close_mode: '' }
+      { doctor_draft_kind: 'TEMPORARY_CLOSE', doctor_ux_step: 'MODE', doctor_ux_close_mode: '' }
     );
     if (!set.ok) return set;
     return Result.ok({
@@ -312,7 +312,6 @@ const DoctorControlInteractionService = {
   _guidedPrompt: function(phone, kind, step, reply, patch) {
     var fields = Object.assign({
       doctor_draft_kind: kind,
-      doctor_ux_flow: kind,
       doctor_ux_step: step
     }, patch || {});
     var set;
@@ -451,7 +450,7 @@ const DoctorControlInteractionService = {
     var set = ConversationRepository.setDoctorControlUxSession(
       phone,
       Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_AWAITING_INPUT,
-      Object.assign({}, draft, { doctor_ux_flow: draft.doctor_draft_kind, doctor_ux_step: 'EDIT' })
+      Object.assign({}, draft, { doctor_ux_step: 'EDIT' })
     );
     if (!set.ok) return set;
     return Result.ok({

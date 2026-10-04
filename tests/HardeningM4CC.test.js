@@ -280,7 +280,7 @@ const CONVERSATIONS_HEADERS = [
   'doctor_draft_kind', 'doctor_draft_days', 'doctor_draft_window',
   'doctor_draft_effective_from', 'doctor_draft_effective_to', 'doctor_draft_target_change_id',
   'doctor_draft_command_id',
-  'doctor_ux_flow', 'doctor_ux_step', 'doctor_ux_close_mode',
+  'doctor_ux_step', 'doctor_ux_close_mode',
   'doctor_ux_start_date', 'doctor_ux_start_time',
   'doctor_ux_end_date', 'doctor_ux_end_time'
 ];
@@ -836,6 +836,21 @@ function doctorRow() {
     return r.phone === DOCTOR_ID;
   })[0];
 }
+
+// Doctor UX schema is intentionally separate from the frozen M4-C draft schema.
+test('M4CC-E0 — Doctor UX schema is bounded and has no redundant flow discriminator', function() {
+  const uxFields = Array.from(sandbox.ConversationRepository.DOCTOR_UX_SESSION_FIELDS).sort();
+  assert.deepStrictEqual(uxFields, [
+    'doctor_ux_close_mode',
+    'doctor_ux_end_date',
+    'doctor_ux_end_time',
+    'doctor_ux_start_date',
+    'doctor_ux_start_time',
+    'doctor_ux_step'
+  ]);
+  assert.strictEqual(uxFields.indexOf('doctor_ux_flow'), -1);
+  assert.strictEqual(CONVERSATIONS_HEADERS.indexOf('doctor_ux_flow'), -1);
+});
 
 test('M4CC-E1 — first doctor contact shows the numbered menu and opens a DOCTOR_MENU session', function() {
   reset();
