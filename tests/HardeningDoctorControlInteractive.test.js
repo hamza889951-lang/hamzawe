@@ -128,7 +128,7 @@ function assertMainMenu(result) {
     JSON.stringify(result.data.deliveryOptions.interactiveButtons.map(function(button) {
       return button.id;
     })),
-    JSON.stringify(['DOCTOR_VIEW_SCHEDULE', 'DOCTOR_CHANGE_SCHEDULE', 'DOCTOR_MORE'])
+    JSON.stringify(['VIEW_SCHEDULE', 'CHANGE_SCHEDULE', 'MORE'])
   );
 }
 
@@ -155,7 +155,7 @@ assert.strictEqual(
   JSON.stringify(more.data.deliveryOptions.interactiveButtons.map(function(button) {
     return button.id;
   })),
-  JSON.stringify(['DOCTOR_TEMPORARY_CLOSE', 'DOCTOR_EXCEPTION_OPEN', 'DOCTOR_CANCEL_CHANGE'])
+  JSON.stringify(['TEMPORARY_CLOSE', 'TEMPORARY_OPEN', 'CANCEL_CHANGE'])
 );
 assert.strictEqual(state.session.state, 'DOCTOR_MENU');
 
