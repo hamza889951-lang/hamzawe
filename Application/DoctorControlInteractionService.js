@@ -448,7 +448,7 @@ const DoctorControlInteractionService = {
           { id: 'EDIT_TIMES', title: 'الأوقات' },
           { id: 'CANCEL', title: 'إلغاء' }
         ];
-    var set = ConversationRepository.setDoctorControlSession(
+    var set = ConversationRepository.setDoctorControlUxSession(
       phone,
       Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_AWAITING_INPUT,
       Object.assign({}, draft, { doctor_ux_flow: draft.doctor_draft_kind, doctor_ux_step: 'EDIT' })
