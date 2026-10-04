@@ -240,6 +240,21 @@ assert.strictEqual(buttonCancel.data.controlState, 'DOCTOR_MENU');
 assert.strictEqual(state.commits, 2);
 
 
+service._runPreview = function() {
+  return context.Result.ok({
+    status: 'PREVIEWED',
+    record: {
+      effectiveFrom: '2026-10-20T00:00',
+      effectiveTo: '2026-10-21T00:00'
+    },
+    baseline: {},
+    records: []
+  });
+};
+service._countAffectedBookings = function() {
+  return context.Result.ok({ count: 0 });
+};
+
 resetMenu();
 let guidedRecurring = service.handle(controlContext(), 'CHANGE_SCHEDULE');
 assert.strictEqual(guidedRecurring.ok, true);
