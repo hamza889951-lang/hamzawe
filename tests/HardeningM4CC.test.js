@@ -837,6 +837,20 @@ function doctorRow() {
   })[0];
 }
 
+test('M4CC-E0 — Doctor UX schema is bounded and has no redundant flow discriminator', function() {
+  const uxFields = Array.from(sandbox.ConversationRepository.DOCTOR_UX_SESSION_FIELDS).sort();
+  assert.deepStrictEqual(uxFields, [
+    'doctor_ux_close_mode',
+    'doctor_ux_end_date',
+    'doctor_ux_end_time',
+    'doctor_ux_start_date',
+    'doctor_ux_start_time',
+    'doctor_ux_step'
+  ]);
+  assert.strictEqual(uxFields.indexOf('doctor_ux_flow'), -1);
+  assert.strictEqual(CONVERSATIONS_HEADERS.indexOf('doctor_ux_flow'), -1);
+});
+
 test('M4CC-E1 — first doctor contact shows the numbered menu and opens a DOCTOR_MENU session', function() {
   reset();
   const r = DCI.handle(controlContext(), 'مرحبا');
