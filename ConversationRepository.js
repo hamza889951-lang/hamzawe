@@ -170,14 +170,17 @@ const ConversationRepository = {
     'doctor_draft_effective_from',   // 'YYYY-MM-DD' or 'YYYY-MM-DDTHH:mm'
     'doctor_draft_effective_to',     // 'YYYY-MM-DDTHH:mm' (temporary close only)
     'doctor_draft_target_change_id', // cancel only
-    'doctor_draft_command_id',       // idempotency identity for preview→commit
-    'doctor_ux_flow',                // bounded guided UX flow
-    'doctor_ux_step',                // bounded guided UX step
-    'doctor_ux_close_mode',          // FULL_DAY | PERIOD
-    'doctor_ux_start_date',           // YYYY-MM-DD
-    'doctor_ux_start_time',           // HH:mm
-    'doctor_ux_end_date',             // YYYY-MM-DD
-    'doctor_ux_end_time'              // HH:mm
+    'doctor_draft_command_id'        // idempotency identity for preview→commit
+  ],
+
+  DOCTOR_UX_SESSION_FIELDS: [
+    'doctor_ux_flow',
+    'doctor_ux_step',
+    'doctor_ux_close_mode',
+    'doctor_ux_start_date',
+    'doctor_ux_start_time',
+    'doctor_ux_end_date',
+    'doctor_ux_end_time'
   ],
 
   DOCTOR_STATES: [
@@ -217,13 +220,77 @@ const ConversationRepository = {
    * @param {Object} draft — subset of DOCTOR_SESSION_FIELDS
    * @returns {Result}
    */
+  getDoctorControlUxSession(phone) {
+    var base = this.getDoctorControlSession(phone);
+    if (!base.ok) return base;
+    var schema = this._doctorUxSchemaCheck();
+    if (!schema.ok) return schema;
+    try {
+      var row = this.findByPhone(phone);
+      var ux = {};
+      this.DOCTOR_UX_SESSION_FIELDS.forEach(function(field) {
+        var value = row && row[field];
+        ux[field] = value === undefined || value === null ? '' : String(value);
+      });
+      return Result.ok({
+        exists: base.data.exists,
+        state: base.data.state,
+        draft: Object.assign({}, base.data.draft || {}, ux)
+      });
+    } catch (e) {
+      return Result.fail('DOCTOR_SESSION_READ_FAILED', e.message, e.stack);
+    }
+  },
+
+  setDoctorControlUxSession(phone, doctorState, draft) {
+    if (this.DOCTOR_STATES.indexOf(doctorState) === -1) {
+      return Result.fail('INVALID_DOCTOR_SESSION_STATE', 'Unknown doctor control state: ' + doctorState);
+    }
+    var input = draft || {};
+    var unknown = Object.keys(input).filter(function(key) {
+      return ConversationRepository.DOCTOR_SESSION_FIELDS.indexOf(key) === -1 &&
+             ConversationRepository.DOCTOR_UX_SESSION_FIELDS.indexOf(key) === -1;
+    });
+    if (unknown.length) return Result.fail('INVALID_DOCTOR_SESSION_FIELD', 'Doctor UX fields outside the bounded schema: ' + unknown.join(', '));
+    var schema = this._doctorUxSchemaCheck();
+    if (!schema.ok) return schema;
+    var fields = {};
+    this.DOCTOR_UX_SESSION_FIELDS.forEach(function(field) {
+      var value = input[field];
+      fields[field] = value === undefined || value === null ? '' : String(value);
+    });
+    var baseFields = {};
+    this.DOCTOR_SESSION_FIELDS.forEach(function(field) {
+      var value = input[field];
+      baseFields[field] = value === undefined || value === null ? '' : String(value);
+    });
+    try {
+      var existing = this.findByPhone(phone);
+      var all = Object.assign({}, baseFields, fields);
+      if (!existing) {
+        var record = Object.assign({
+          conversation_id: IdGenerator.generateConversationId(),
+          phone: phone,
+          state: doctorState,
+          temp_name: '',
+          slot_id: '',
+          updated_at: Clock.now()
+        }, all);
+        GoogleSheets.appendRow(Config.VOCABULARY.SHEETS.CONVERSATIONS, record);
+        return Result.ok(record);
+      }
+      this._updateState(phone, doctorState, all);
+      return Result.ok(Object.assign({ phone: phone, state: doctorState }, all));
+    } catch (e) {
+      return Result.fail('DOCTOR_SESSION_WRITE_FAILED', e.message, e.stack);
+    }
+  },
+
   updateDoctorControlUxSession(phone, doctorState, patch) {
-    var current = this.getDoctorControlSession(phone);
+    var current = this.getDoctorControlUxSession(phone);
     if (!current.ok) return current;
-    return this.setDoctorControlSession(
-      phone,
-      doctorState,
-      Object.assign({}, current.data.draft || {}, patch || {})
+    return this.setDoctorControlUxSession(
+      phone, doctorState, Object.assign({}, current.data.draft || {}, patch || {})
     );
   },
 
@@ -278,6 +345,19 @@ const ConversationRepository = {
    * fail-closed schema presence check — the raw infrastructure silently
    * drops unknown columns, which would corrupt the preview→commit flow.
    */
+  _doctorUxSchemaCheck() {
+    try {
+      var headers = GoogleSheets.getHeaders(Config.VOCABULARY.SHEETS.CONVERSATIONS);
+      var missing = this.DOCTOR_UX_SESSION_FIELDS.filter(function(field) {
+        return headers.indexOf(field) === -1;
+      });
+      if (missing.length) return Result.fail('DOCTOR_CONTROL_UX_SCHEMA_MISSING', 'Conversations sheet is missing Doctor UX columns: ' + missing.join(', '));
+      return Result.ok(true);
+    } catch (e) {
+      return Result.fail('DOCTOR_SESSION_READ_FAILED', e.message, e.stack);
+    }
+  },
+
   _doctorSchemaCheck() {
     try {
       const headers = GoogleSheets.getHeaders(Config.VOCABULARY.SHEETS.CONVERSATIONS);
