@@ -169,10 +169,27 @@ const DoctorControlInteractionService = {
     if (text === '1' || text === 'VIEW_SCHEDULE') {
       return this._renderCurrentSchedule(controlContext, phone);
     }
-    if (text === '2' || text === 'CHANGE_SCHEDULE') {
+    if (text === '2') {
+      return this._promptInput(phone, 'RECURRING',
+        'تغيير الجدول الأسبوعي:\n' +
+        'أرسل: أيام الدوام | نافذة الدوام | تاريخ البدء\n' +
+        'الأيام أرقام (1=الأحد ... 7=السبت) مفصولة بفواصل.\n' +
+        'مثال: 1,2,4 | 10:00-14:00 | 2026-09-15\n' +
+        'ملاحظة: يبدأ التغيير من الساعة 00:00 بتوقيت بغداد في التاريخ المحدد.\n' +
+        'أرسل 0 للرجوع.');
+    }
+    if (text === 'CHANGE_SCHEDULE') {
       return this._startRecurringGuided(phone);
     }
-    if (text === '3' || text === 'TEMPORARY_CLOSE') {
+    if (text === '3') {
+      return this._promptInput(phone, 'TEMPORARY_CLOSE',
+        'إغلاق مؤقت:\n' +
+        'ليوم كامل أرسل التاريخ فقط: 2026-09-20\n' +
+        'وللفترة المحددة أرسل: 2026-09-20 10:00 | 2026-09-20 12:00\n' +
+        '(النهاية غير مشمولة — [من، إلى))\n' +
+        'أرسل 0 للرجوع.');
+    }
+    if (text === 'TEMPORARY_CLOSE') {
       return this._startTemporaryCloseGuided(phone);
     }
     if (text === '4' || text === 'TEMPORARY_OPEN') {
