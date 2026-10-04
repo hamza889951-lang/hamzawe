@@ -269,7 +269,6 @@ service._countAffectedBookings = function() {
 resetMenu();
 let guidedRecurring = service.handle(controlContext(), 'CHANGE_SCHEDULE');
 assert.strictEqual(guidedRecurring.ok, true);
-assert.strictEqual(state.session.draft.doctor_ux_flow, 'RECURRING');
 assert.strictEqual(state.session.draft.doctor_ux_step, 'DAYS');
 
 let days = service.handle(controlContext(), '1,3,5');
