@@ -14,6 +14,19 @@ const WhatsAppAdapter = {
 
   MESSAGE_TYPES: { TEXT: 'TEXT', BUTTON: 'BUTTON', INTERACTIVE_BUTTON: 'INTERACTIVE_BUTTON' },
 
+  // Provider-neutral Doctor Interaction Intent -> Meta transport ID.
+  // The inverse mapping is applied on inbound callbacks below.
+  DOCTOR_INTERACTIVE_INTENT_TO_META_ID: {
+    VIEW_SCHEDULE: 'DOCTOR_VIEW_SCHEDULE',
+    CHANGE_SCHEDULE: 'DOCTOR_CHANGE_SCHEDULE',
+    MORE: 'DOCTOR_MORE',
+    TEMPORARY_CLOSE: 'DOCTOR_TEMPORARY_CLOSE',
+    TEMPORARY_OPEN: 'DOCTOR_EXCEPTION_OPEN',
+    CANCEL_CHANGE: 'DOCTOR_CANCEL_CHANGE',
+    CONFIRM: 'DOCTOR_CONFIRM',
+    CANCEL: 'DOCTOR_CANCEL'
+  },
+
   parseIncomingPayload: function(e) {
     try {
       const payload = JSON.parse(e.postData.contents || '');
@@ -163,10 +176,11 @@ const WhatsAppAdapter = {
           !button.id || !button.title) {
         return null;
       }
+      const transportId = this.DOCTOR_INTERACTIVE_INTENT_TO_META_ID[String(button.id)] || String(button.id);
       return {
         type: 'reply',
         reply: {
-          id: String(button.id),
+          id: transportId,
           title: String(button.title)
         }
       };
