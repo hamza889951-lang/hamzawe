@@ -174,7 +174,6 @@ const ConversationRepository = {
   ],
 
   DOCTOR_UX_SESSION_FIELDS: [
-    'doctor_ux_flow',
     'doctor_ux_step',
     'doctor_ux_close_mode',
     'doctor_ux_start_date',
