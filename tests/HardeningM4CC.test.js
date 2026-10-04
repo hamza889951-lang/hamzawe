@@ -837,6 +837,7 @@ function doctorRow() {
   })[0];
 }
 
+// Doctor UX schema is intentionally separate from the frozen M4-C draft schema.
 test('M4CC-E0 — Doctor UX schema is bounded and has no redundant flow discriminator', function() {
   const uxFields = Array.from(sandbox.ConversationRepository.DOCTOR_UX_SESSION_FIELDS).sort();
   assert.deepStrictEqual(uxFields, [
