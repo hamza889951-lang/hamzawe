@@ -14,6 +14,19 @@ const WhatsAppAdapter = {
 
   MESSAGE_TYPES: { TEXT: 'TEXT', BUTTON: 'BUTTON', INTERACTIVE_BUTTON: 'INTERACTIVE_BUTTON' },
 
+  // Provider-neutral Doctor Interaction Intent -> Meta transport ID.
+  // The inverse mapping is applied on inbound callbacks below.
+  DOCTOR_INTERACTIVE_INTENT_TO_META_ID: {
+    VIEW_SCHEDULE: 'DOCTOR_VIEW_SCHEDULE',
+    CHANGE_SCHEDULE: 'DOCTOR_CHANGE_SCHEDULE',
+    MORE: 'DOCTOR_MORE',
+    TEMPORARY_CLOSE: 'DOCTOR_TEMPORARY_CLOSE',
+    TEMPORARY_OPEN: 'DOCTOR_EXCEPTION_OPEN',
+    CANCEL_CHANGE: 'DOCTOR_CANCEL_CHANGE',
+    CONFIRM: 'DOCTOR_CONFIRM',
+    CANCEL: 'DOCTOR_CANCEL'
+  },
+
   parseIncomingPayload: function(e) {
     try {
       const payload = JSON.parse(e.postData.contents || '');
@@ -43,7 +56,19 @@ const WhatsAppAdapter = {
           HAMZAWE_CHANGE: '2',
           HAMZAWE_CANCEL: '3',
           HAMZAWE_DECLINE: '2',
-          HAMZAWE_START_BOOKING: 'START_BOOKING'
+          HAMZAWE_START_BOOKING: 'START_BOOKING',
+
+          // Doctor Control — transport IDs map to provider-neutral
+          // interaction intents. These intents are consumed by
+          // DoctorControlInteractionService and are not domain commands.
+          DOCTOR_VIEW_SCHEDULE: 'VIEW_SCHEDULE',
+          DOCTOR_CHANGE_SCHEDULE: 'CHANGE_SCHEDULE',
+          DOCTOR_MORE: 'MORE',
+          DOCTOR_TEMPORARY_CLOSE: 'TEMPORARY_CLOSE',
+          DOCTOR_EXCEPTION_OPEN: 'TEMPORARY_OPEN',
+          DOCTOR_CANCEL_CHANGE: 'CANCEL_CHANGE',
+          DOCTOR_CONFIRM: 'CONFIRM',
+          DOCTOR_CANCEL: 'CANCEL'
         };
         canonicalMessage = buttonMap[String(event.buttonPayload || '')];
         if (canonicalMessage === undefined) return null;
@@ -146,15 +171,17 @@ const WhatsAppAdapter = {
       );
     }
 
+    var doctorIntentMap = this.DOCTOR_INTERACTIVE_INTENT_TO_META_ID;
     const normalizedButtons = buttons.map(function(button) {
       if (!button || typeof button !== 'object' ||
           !button.id || !button.title) {
         return null;
       }
+      const transportId = doctorIntentMap[String(button.id)] || String(button.id);
       return {
         type: 'reply',
         reply: {
-          id: String(button.id),
+          id: transportId,
           title: String(button.title)
         }
       };
