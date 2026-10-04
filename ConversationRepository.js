@@ -170,7 +170,14 @@ const ConversationRepository = {
     'doctor_draft_effective_from',   // 'YYYY-MM-DD' or 'YYYY-MM-DDTHH:mm'
     'doctor_draft_effective_to',     // 'YYYY-MM-DDTHH:mm' (temporary close only)
     'doctor_draft_target_change_id', // cancel only
-    'doctor_draft_command_id'        // idempotency identity for preview→commit
+    'doctor_draft_command_id',       // idempotency identity for preview→commit
+    'doctor_ux_flow',                // bounded guided UX flow
+    'doctor_ux_step',                // bounded guided UX step
+    'doctor_ux_close_mode',          // FULL_DAY | PERIOD
+    'doctor_ux_start_date',           // YYYY-MM-DD
+    'doctor_ux_start_time',           // HH:mm
+    'doctor_ux_end_date',             // YYYY-MM-DD
+    'doctor_ux_end_time'              // HH:mm
   ],
 
   DOCTOR_STATES: [
