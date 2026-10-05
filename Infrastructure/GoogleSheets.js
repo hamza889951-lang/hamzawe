@@ -152,7 +152,13 @@ const GoogleSheets = {
     Object.keys(fields).forEach(function(key) {
       var fieldColIndex = headers.indexOf(key);
       if (fieldColIndex !== -1) {
-        sheet.getRange(rowNumber, fieldColIndex + 1).setValue(fields[key]);
+        var cell = sheet.getRange(rowNumber, fieldColIndex + 1);
+        // Preserve string storage values; Sheets otherwise may coerce ISO-like
+        // strings into Date values, changing their representation on readback.
+        if (typeof fields[key] === 'string') {
+          cell.setNumberFormat('@');
+        }
+        cell.setValue(fields[key]);
       }
     });
     return true;
@@ -169,6 +175,13 @@ const GoogleSheets = {
     });
 
     var nextRow = sheet.getLastRow() + 1;
+
+    // Set text format before writing so ISO-like string values remain strings.
+    row.forEach(function(value, index) {
+      if (typeof value === 'string') {
+        sheet.getRange(nextRow, index + 1).setNumberFormat('@');
+      }
+    });
 
     sheet
       .getRange(nextRow, 1, 1, row.length)
