@@ -8,14 +8,14 @@ function webhookDoctorTrace(stage, startedAt, details) {
     console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({
       component: 'Webhook',
       stage: stage,
-      elapsedMs: startedAt ? Date.now() - startedAt : null,
+      elapsedMs: startedAt ? Clock.now().getTime() - startedAt : null,
       details: details || null
     }));
   } catch (ignored) {}
 }
 
 function doPost(e) {
-  var traceStartedAt = Date.now();
+  var traceStartedAt = Clock.now().getTime();
   webhookDoctorTrace('POST_ENTER', traceStartedAt);
   try {
     webhookDoctorTrace('BEFORE_PARSE', traceStartedAt);
