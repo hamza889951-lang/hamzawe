@@ -220,12 +220,17 @@ const ConversationRepository = {
    * @returns {Result}
    */
   getDoctorControlUxSession(phone) {
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'ConversationRepository',stage:'BEFORE_BASE_SESSION_READ',atMs:Date.now()})); } catch (ignored) {}
     var base = this.getDoctorControlSession(phone);
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'ConversationRepository',stage:'AFTER_BASE_SESSION_READ',atMs:Date.now(),ok:!!base.ok,errorCode:base.error&&base.error.code||null})); } catch (ignored) {}
     if (!base.ok) return base;
     var schema = this._doctorUxSchemaCheck();
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'ConversationRepository',stage:'AFTER_UX_SCHEMA_CHECK',atMs:Date.now(),ok:!!schema.ok,errorCode:schema.error&&schema.error.code||null})); } catch (ignored) {}
     if (!schema.ok) return schema;
     try {
+      try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'ConversationRepository',stage:'BEFORE_UX_ROW_READ',atMs:Date.now()})); } catch (ignored) {}
       var row = this.findByPhone(phone);
+      try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'ConversationRepository',stage:'AFTER_UX_ROW_READ',atMs:Date.now(),found:!!row})); } catch (ignored) {}
       var ux = {};
       this.DOCTOR_UX_SESSION_FIELDS.forEach(function(field) {
         var value = row && row[field];
@@ -305,6 +310,7 @@ const ConversationRepository = {
   },
 
   setDoctorControlSession(phone, doctorState, draft) {
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'ConversationRepository',stage:'SET_SESSION_ENTER',atMs:Date.now(),state:doctorState})); } catch (ignored) {}
     if (this.DOCTOR_STATES.indexOf(doctorState) === -1) {
       return Result.fail(
         'INVALID_DOCTOR_SESSION_STATE',
@@ -322,6 +328,7 @@ const ConversationRepository = {
       );
     }
     const schemaCheck = this._doctorSchemaCheck();
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'ConversationRepository',stage:'SET_SESSION_SCHEMA_CHECK',atMs:Date.now(),ok:!!schemaCheck.ok,errorCode:schemaCheck.error&&schemaCheck.error.code||null})); } catch (ignored) {}
     if (!schemaCheck.ok) return schemaCheck;
 
     const fields = {};
@@ -331,7 +338,9 @@ const ConversationRepository = {
     });
 
     try {
+      try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'ConversationRepository',stage:'BEFORE_SET_SESSION_LOOKUP',atMs:Date.now()})); } catch (ignored) {}
       const existing = this.findByPhone(phone);
+      try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'ConversationRepository',stage:'AFTER_SET_SESSION_LOOKUP',atMs:Date.now(),found:!!existing})); } catch (ignored) {}
       if (!existing) {
         const record = Object.assign({
           conversation_id: IdGenerator.generateConversationId(),
@@ -341,7 +350,9 @@ const ConversationRepository = {
           slot_id: '',
           updated_at: Clock.now()
         }, fields);
+        try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'ConversationRepository',stage:'BEFORE_SESSION_APPEND',atMs:Date.now()})); } catch (ignored) {}
         GoogleSheets.appendRow(Config.VOCABULARY.SHEETS.CONVERSATIONS, record);
+        try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'ConversationRepository',stage:'AFTER_SESSION_APPEND',atMs:Date.now()})); } catch (ignored) {}
       } else {
         const updated = GoogleSheets.updateRowByColumn(
           Config.VOCABULARY.SHEETS.CONVERSATIONS, 'phone', phone,
@@ -354,7 +365,9 @@ const ConversationRepository = {
           );
         }
       }
+      try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'ConversationRepository',stage:'BEFORE_SESSION_VERIFY',atMs:Date.now()})); } catch (ignored) {}
       const verified = this._verifyDoctorSessionPersisted(phone, doctorState, fields);
+      try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'ConversationRepository',stage:'AFTER_SESSION_VERIFY',atMs:Date.now(),ok:!!verified.ok,errorCode:verified.error&&verified.error.code||null})); } catch (ignored) {}
       if (!verified.ok) return verified;
       return Result.ok(Object.assign({ phone: phone, state: doctorState }, fields));
     } catch (e) {
