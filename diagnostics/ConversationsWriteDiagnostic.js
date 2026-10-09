@@ -239,8 +239,8 @@ var ConversationsWriteDiagnostic = (function () {
       // Phase 1: inspect a populated row, where table/typed-column restrictions
       // are expected to be visible without writing business data.
       var existingRows = [];
-      if (report.lastRow >= 2) existingRows.push({ row: 2, phase: 'EXISTING_ROW_FIRST_DATA' });
-      if (report.lastRow >= 3) existingRows.push({ row: report.lastRow, phase: 'EXISTING_ROW_LAST_DATA' });
+      if (report.lastRow >= 2) existingRows.push({ row: 2, phase: 'UPDATE_ROW_BY_COLUMN_SIMULATION_FIRST_DATA' });
+      if (report.lastRow >= 3) existingRows.push({ row: report.lastRow, phase: 'UPDATE_ROW_BY_COLUMN_SIMULATION_LAST_DATA' });
 
       for (var r = 0; r < existingRows.length; r++) {
         for (var c = 1; c <= report.lastColumn; c++) {
@@ -254,11 +254,21 @@ var ConversationsWriteDiagnostic = (function () {
       // Phase 2: inspect the exact row GoogleSheets.appendRow would target.
       // Values are never written. Every successful temporary format is restored.
       var appendRow = report.lastRow + 1;
-      for (var ac = 1; ac <= report.lastColumn; ac++) {
-        var appendProbe = probeCell(sheet, appendRow, ac, headers[ac - 1], 'APPEND_ROW_CANDIDATE');
-        report.probes++;
-        if (appendProbe.status === 'FORMAT_SET_FAILED' || appendProbe.status === 'PROBE_SETUP_FAILED') report.formatFailures++;
-        if (appendProbe.status === 'CRITICAL_FORMAT_RESTORE_FAILURE') report.restoreFailures++;
+      if (appendRow > sheet.getMaxRows()) {
+        emit({
+          phase: 'APPEND_ROW_SIMULATION',
+          status: 'SKIPPED_NO_GRID_ROW',
+          appendRow: appendRow,
+          maxRows: sheet.getMaxRows(),
+          message: 'The sheet has no pre-existing grid row available for a non-value-writing append probe.'
+        });
+      } else {
+        for (var ac = 1; ac <= report.lastColumn; ac++) {
+          var appendProbe = probeCell(sheet, appendRow, ac, headers[ac - 1], 'APPEND_ROW_SIMULATION');
+          report.probes++;
+          if (appendProbe.status === 'FORMAT_SET_FAILED' || appendProbe.status === 'PROBE_SETUP_FAILED') report.formatFailures++;
+          if (appendProbe.status === 'CRITICAL_FORMAT_RESTORE_FAILURE') report.restoreFailures++;
+        }
       }
 
       report.status = report.restoreFailures > 0
