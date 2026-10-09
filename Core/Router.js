@@ -58,6 +58,17 @@
  *
  * Router لا يتعامل مباشرة مع Availability أو Calendar أو B6.
  */
+function routerDoctorTrace(stage, details) {
+  try {
+    console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({
+      component: 'Router',
+      stage: stage,
+      atMs: Date.now(),
+      details: details || null
+    }));
+  } catch (ignored) {}
+}
+
 const Router = {
 
   /**
@@ -90,7 +101,9 @@ const Router = {
     //    ConversationRepository.findByPhone() لتحديد حالة المحادثة.
     //    أي اختلاف في صيغة الرقم = توجيه خاطئ.
     // ─────────────────────────────
+    routerDoctorTrace('BEFORE_PHONE_NORMALIZE');
     var phone = PhoneUtils.normalize(rawPhone);
+    routerDoctorTrace('AFTER_PHONE_NORMALIZE');
 
     // ─────────────────────────────
     // 2. M4-A Doctor Identity & Authorization gate
@@ -103,19 +116,37 @@ const Router = {
     // ─────────────────────────────
     if (typeof DoctorAuthorizationService !== 'undefined' &&
         typeof DoctorControlEntry !== 'undefined') {
+      routerDoctorTrace('BEFORE_DOCTOR_AUTHORIZATION');
       var doctorAuth = DoctorAuthorizationService.authorizeDoctor(phone);
+      routerDoctorTrace('AFTER_DOCTOR_AUTHORIZATION', {
+        ok: !!doctorAuth.ok,
+        errorCode: doctorAuth.error && doctorAuth.error.code || null,
+        authorized: !!(doctorAuth.data && doctorAuth.data.authorized === true)
+      });
       if (doctorAuth.ok && doctorAuth.data && doctorAuth.data.authorized === true) {
+        routerDoctorTrace('BEFORE_DOCTOR_ENTRY');
         var entryResult = DoctorControlEntry.enter(doctorAuth.data);
+        routerDoctorTrace('AFTER_DOCTOR_ENTRY', {
+          ok: !!entryResult.ok,
+          errorCode: entryResult.error && entryResult.error.code || null
+        });
         if (!entryResult.ok) return entryResult;
         // M4-C Continuation: routing-only hand-off of the accepted entry
         // context + raw message to the doctor interaction boundary. Router
         // parses nothing; typeof guard keeps older/partial bundles
         // fail-closed on the read-only M4-A entry result.
         if (typeof DoctorControlInteractionService !== 'undefined') {
-          return DoctorControlInteractionService.handle(
+          routerDoctorTrace('BEFORE_DOCTOR_INTERACTION');
+          var doctorInteractionResult = DoctorControlInteractionService.handle(
             entryResult.data.controlContext,
             message
           );
+          routerDoctorTrace('AFTER_DOCTOR_INTERACTION', {
+            ok: !!doctorInteractionResult.ok,
+            errorCode: doctorInteractionResult.error && doctorInteractionResult.error.code || null,
+            hasReply: !!(doctorInteractionResult.data && doctorInteractionResult.data.reply)
+          });
+          return doctorInteractionResult;
         }
         return entryResult;
       }
