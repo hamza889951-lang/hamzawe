@@ -63,7 +63,7 @@ function routerDoctorTrace(stage, details) {
     console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({
       component: 'Router',
       stage: stage,
-      atMs: Date.now(),
+      atMs: Clock.now().getTime(),
       details: details || null
     }));
   } catch (ignored) {}
