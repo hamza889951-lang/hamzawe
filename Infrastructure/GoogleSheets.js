@@ -165,8 +165,10 @@ const GoogleSheets = {
   },
 
   appendRow: function(sheetName, rowObject) {
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'GoogleSheets',stage:'APPEND_ENTER',atMs:Date.now(),sheet:sheetName})); } catch (ignored) {}
     var sheet = this._getSheet(sheetName);
     var headers = sheet.getDataRange().getValues()[0];
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'GoogleSheets',stage:'APPEND_HEADERS_READ',atMs:Date.now(),sheet:sheetName,headerCount:headers.length})); } catch (ignored) {}
 
     var row = headers.map(function(header) {
       return rowObject.hasOwnProperty(header)
@@ -177,15 +179,19 @@ const GoogleSheets = {
     var nextRow = sheet.getLastRow() + 1;
 
     // Set text format before writing so ISO-like string values remain strings.
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'GoogleSheets',stage:'APPEND_BEFORE_FORMAT_LOOP',atMs:Date.now(),sheet:sheetName,rowWidth:row.length,nextRow:nextRow})); } catch (ignored) {}
     row.forEach(function(value, index) {
       if (typeof value === 'string') {
         sheet.getRange(nextRow, index + 1).setNumberFormat('@');
       }
     });
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'GoogleSheets',stage:'APPEND_AFTER_FORMAT_LOOP',atMs:Date.now(),sheet:sheetName})); } catch (ignored) {}
 
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'GoogleSheets',stage:'APPEND_BEFORE_SET_VALUES',atMs:Date.now(),sheet:sheetName})); } catch (ignored) {}
     sheet
       .getRange(nextRow, 1, 1, row.length)
       .setValues([row]);
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'GoogleSheets',stage:'APPEND_AFTER_SET_VALUES',atMs:Date.now(),sheet:sheetName})); } catch (ignored) {}
   }
 };
 
