@@ -15,7 +15,8 @@ function webhookDoctorTrace(stage, startedAt, details) {
 }
 
 function doPost(e) {
-  var traceStartedAt = Clock.now().getTime();
+  var traceStartedAt = null;
+  try { traceStartedAt = Clock.now().getTime(); } catch (ignored) {}
   webhookDoctorTrace('POST_ENTER', traceStartedAt);
   try {
     webhookDoctorTrace('BEFORE_PARSE', traceStartedAt);
