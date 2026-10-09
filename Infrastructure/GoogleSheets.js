@@ -142,7 +142,7 @@ const GoogleSheets = {
       return true;
     } catch (e) {
       var message = e && e.message ? String(e.message) : String(e);
-      var isTypedColumnRestriction = /number formats?.*(column|col).*(type|classif)|(?:column|col).*(type|classif).*number formats?|set number format.*(?:typed|classified) column|تنسيق الأرقام.*عمود.*مصنّف|ضبط تنسيق الأرقام.*عمود/i.test(message);
+      var isTypedColumnRestriction = /(?:cannot|can't|unable to|not allowed to)\\s+(?:set|change)\\s+(?:the )?number formats?.*(?:cell|range)?.*(?:typed|classified) column|(?:typed|classified) column.*number formats?|لا يمكنك ضبط تنسيق الأرقام للخلايا في عمود مصنّف|لا يمكنك ضبط تنسيق الأرقام للخلايا في عمود مصنف|ضبط تنسيق الأرقام.*عمود.*(?:مصنّف|مصنف)|تنسيق الأرقام.*عمود.*(?:مصنّف|مصنف)/i.test(message);
       if (isTypedColumnRestriction) return false;
       throw e;
     }
