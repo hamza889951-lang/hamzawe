@@ -276,9 +276,20 @@ const ConversationRepository = {
           updated_at: Clock.now()
         }, all);
         GoogleSheets.appendRow(Config.VOCABULARY.SHEETS.CONVERSATIONS, record);
-        return Result.ok(record);
+      } else {
+        var updated = GoogleSheets.updateRowByColumn(
+          Config.VOCABULARY.SHEETS.CONVERSATIONS, 'phone', phone,
+          Object.assign({ state: doctorState, updated_at: Clock.now() }, all)
+        );
+        if (!updated) {
+          return Result.fail(
+            'DOCTOR_SESSION_WRITE_FAILED',
+            'Conversation row could not be updated for doctor session'
+          );
+        }
       }
-      this._updateState(phone, doctorState, all);
+      var verified = this._verifyDoctorSessionPersisted(phone, doctorState, all);
+      if (!verified.ok) return verified;
       return Result.ok(Object.assign({ phone: phone, state: doctorState }, all));
     } catch (e) {
       return Result.fail('DOCTOR_SESSION_WRITE_FAILED', e.message, e.stack);
@@ -331,9 +342,20 @@ const ConversationRepository = {
           updated_at: Clock.now()
         }, fields);
         GoogleSheets.appendRow(Config.VOCABULARY.SHEETS.CONVERSATIONS, record);
-        return Result.ok(record);
+      } else {
+        const updated = GoogleSheets.updateRowByColumn(
+          Config.VOCABULARY.SHEETS.CONVERSATIONS, 'phone', phone,
+          Object.assign({ state: doctorState, updated_at: Clock.now() }, fields)
+        );
+        if (!updated) {
+          return Result.fail(
+            'DOCTOR_SESSION_WRITE_FAILED',
+            'Conversation row could not be updated for doctor session'
+          );
+        }
       }
-      this._updateState(phone, doctorState, fields);
+      const verified = this._verifyDoctorSessionPersisted(phone, doctorState, fields);
+      if (!verified.ok) return verified;
       return Result.ok(Object.assign({ phone: phone, state: doctorState }, fields));
     } catch (e) {
       return Result.fail('DOCTOR_SESSION_WRITE_FAILED', e.message, e.stack);
@@ -344,6 +366,49 @@ const ConversationRepository = {
    * fail-closed schema presence check — the raw infrastructure silently
    * drops unknown columns, which would corrupt the preview→commit flow.
    */
+  /**
+   * Verify the durable Conversations write before reporting success to the
+   * interaction layer. appendRow has no return value, and legacy _updateState
+   * intentionally ignores updateRowByColumn's boolean result; without this
+   * read-back, a missing/failed write can still produce a menu reply while the
+   * next inbound message has no persisted state to resume.
+   */
+  _verifyDoctorSessionPersisted(phone, doctorState, expectedFields) {
+    try {
+      var row = this.findByPhone(phone);
+      if (!row) {
+        return Result.fail(
+          'DOCTOR_SESSION_PERSISTENCE_FAILED',
+          'Doctor session write completed without a readable Conversations row'
+        );
+      }
+      if (row.state !== doctorState) {
+        return Result.fail(
+          'DOCTOR_SESSION_PERSISTENCE_FAILED',
+          'Doctor session state did not persist',
+          { expectedState: doctorState, actualState: row.state || null }
+        );
+      }
+      var fields = expectedFields || {};
+      var keys = Object.keys(fields);
+      for (var i = 0; i < keys.length; i++) {
+        var key = keys[i];
+        var expected = fields[key] === undefined || fields[key] === null ? '' : String(fields[key]);
+        var actual = row[key] === undefined || row[key] === null ? '' : String(row[key]);
+        if (actual !== expected) {
+          return Result.fail(
+            'DOCTOR_SESSION_PERSISTENCE_FAILED',
+            'Doctor session field did not persist: ' + key,
+            { field: key, expected: expected, actual: actual }
+          );
+        }
+      }
+      return Result.ok({ verified: true });
+    } catch (e) {
+      return Result.fail('DOCTOR_SESSION_PERSISTENCE_FAILED', e.message, e.stack);
+    }
+  },
+
   _doctorUxSchemaCheck() {
     try {
       var headers = GoogleSheets.getHeaders(Config.VOCABULARY.SHEETS.CONVERSATIONS);
