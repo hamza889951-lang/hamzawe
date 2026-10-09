@@ -1,14 +1,19 @@
 const GoogleSheets = {
   _openSpreadsheet: function() {
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'GoogleSheets',stage:'OPEN_SPREADSHEET_ENTER',atMs:Clock.now().getTime()})); } catch (ignored) {}
     var sheetId = PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID');
-    return sheetId
+    var spreadsheet = sheetId
       ? SpreadsheetApp.openById(sheetId)
       : SpreadsheetApp.getActiveSpreadsheet();
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'GoogleSheets',stage:'OPEN_SPREADSHEET_EXIT',atMs:Clock.now().getTime(),configuredId:!!sheetId})); } catch (ignored) {}
+    return spreadsheet;
   },
 
   _getSheet: function(sheetName) {
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'GoogleSheets',stage:'GET_SHEET_ENTER',atMs:Clock.now().getTime(),sheet:sheetName})); } catch (ignored) {}
     var sheet = this._openSpreadsheet().getSheetByName(sheetName);
     if (!sheet) throw new Error('SHEET_NOT_FOUND: ' + sheetName);
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'GoogleSheets',stage:'GET_SHEET_EXIT',atMs:Clock.now().getTime(),sheet:sheetName})); } catch (ignored) {}
     return sheet;
   },
 
@@ -165,8 +170,10 @@ const GoogleSheets = {
   },
 
   appendRow: function(sheetName, rowObject) {
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'GoogleSheets',stage:'APPEND_ENTER',atMs:Clock.now().getTime(),sheet:sheetName})); } catch (ignored) {}
     var sheet = this._getSheet(sheetName);
     var headers = sheet.getDataRange().getValues()[0];
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'GoogleSheets',stage:'APPEND_HEADERS_READ',atMs:Clock.now().getTime(),sheet:sheetName,headerCount:headers.length})); } catch (ignored) {}
 
     var row = headers.map(function(header) {
       return rowObject.hasOwnProperty(header)
@@ -177,15 +184,19 @@ const GoogleSheets = {
     var nextRow = sheet.getLastRow() + 1;
 
     // Set text format before writing so ISO-like string values remain strings.
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'GoogleSheets',stage:'APPEND_BEFORE_FORMAT_LOOP',atMs:Clock.now().getTime(),sheet:sheetName,rowWidth:row.length,nextRow:nextRow})); } catch (ignored) {}
     row.forEach(function(value, index) {
       if (typeof value === 'string') {
         sheet.getRange(nextRow, index + 1).setNumberFormat('@');
       }
     });
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'GoogleSheets',stage:'APPEND_AFTER_FORMAT_LOOP',atMs:Clock.now().getTime(),sheet:sheetName})); } catch (ignored) {}
 
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'GoogleSheets',stage:'APPEND_BEFORE_SET_VALUES',atMs:Clock.now().getTime(),sheet:sheetName})); } catch (ignored) {}
     sheet
       .getRange(nextRow, 1, 1, row.length)
       .setValues([row]);
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'GoogleSheets',stage:'APPEND_AFTER_SET_VALUES',atMs:Clock.now().getTime(),sheet:sheetName})); } catch (ignored) {}
   }
 };
 
@@ -229,8 +240,11 @@ GoogleSheets.updateBatch = function(sheetName, updates) {
 };
 
 GoogleSheets.getHeaders = function(sheetName) {
+  try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'GoogleSheets',stage:'GET_HEADERS_ENTER',atMs:Clock.now().getTime(),sheet:sheetName})); } catch (ignored) {}
   var sheet = GoogleSheets._getSheet(sheetName);
-  return sheet.getDataRange().getValues()[0];
+  var headers = sheet.getDataRange().getValues()[0];
+  try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'GoogleSheets',stage:'GET_HEADERS_EXIT',atMs:Clock.now().getTime(),sheet:sheetName,headerCount:headers.length})); } catch (ignored) {}
+  return headers;
 };
 
 GoogleSheets.appendRows = function(sheetName, rows) {

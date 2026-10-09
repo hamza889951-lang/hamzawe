@@ -71,7 +71,9 @@ const DoctorControlInteractionService = {
     var phone = controlContext.actorId;
     var text = typeof message === 'string' ? message.trim() : '';
 
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'DoctorControlInteractionService',stage:'BEFORE_GET_UX_SESSION',atMs:Clock.now().getTime()})); } catch (ignored) {}
     var sessionResult = ConversationRepository.getDoctorControlUxSession(phone);
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'DoctorControlInteractionService',stage:'AFTER_GET_UX_SESSION',atMs:Clock.now().getTime(),ok:!!sessionResult.ok,errorCode:sessionResult.error&&sessionResult.error.code||null,exists:!!(sessionResult.data&&sessionResult.data.exists),state:sessionResult.data&&sessionResult.data.state||null})); } catch (ignored) {}
     if (!sessionResult.ok) return sessionResult;
     var session = sessionResult.data;
 
@@ -132,11 +134,13 @@ const DoctorControlInteractionService = {
   },
 
   _showMenu: function(phone, prefix) {
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'DoctorControlInteractionService',stage:'BEFORE_SET_MENU_SESSION',atMs:Clock.now().getTime()})); } catch (ignored) {}
     var set = ConversationRepository.setDoctorControlSession(
       phone,
       Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_MENU,
       {}
     );
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'DoctorControlInteractionService',stage:'AFTER_SET_MENU_SESSION',atMs:Clock.now().getTime(),ok:!!set.ok,errorCode:set.error&&set.error.code||null})); } catch (ignored) {}
     if (!set.ok) return set;
     return Result.ok({
       reply: (prefix ? prefix + '\n\n' : '') + this._menuText(),
