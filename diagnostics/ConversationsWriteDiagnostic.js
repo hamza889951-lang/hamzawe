@@ -127,6 +127,16 @@ var ConversationsWriteDiagnostic = (function () {
             try {
               result.helperReturn = GoogleSheets._setTextFormatIfSupported(range);
               result.helperStatus = 'RETURNED';
+              if (result.helperReturn === true) {
+                try {
+                  range.setNumberFormat(beforeFormat);
+                  result.helperRestoreStatus = 'RESTORED';
+                } catch (helperRestoreError) {
+                  result.helperRestoreStatus = 'RESTORE_FAILED';
+                  result.helperRestoreError = errorDetails(helperRestoreError);
+                  result.status = 'CRITICAL_FORMAT_RESTORE_FAILURE';
+                }
+              }
             } catch (helperError) {
               result.helperStatus = 'THREW';
               result.helperError = errorDetails(helperError);
