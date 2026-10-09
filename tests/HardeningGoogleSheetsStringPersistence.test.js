@@ -26,6 +26,10 @@ function createHarness() {
   }
 
   function range(row, col, numRows, numCols) {
+    // Google Apps Script defaults omitted dimensions to a single cell.
+    // updateRowByColumn intentionally uses getRange(row, column) for a point write.
+    numRows = numRows === undefined ? 1 : numRows;
+    numCols = numCols === undefined ? 1 : numCols;
     return {
       getValues: function() {
         const out = [];
