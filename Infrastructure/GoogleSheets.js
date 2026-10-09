@@ -129,6 +129,25 @@ const GoogleSheets = {
    * Update one fresh row located by a point lookup rather than rereading the
    * entire sheet. First-match semantics are preserved.
    */
+  /**
+   * Apply text formatting where the sheet allows per-cell formats.
+   * Google Sheets typed/table columns reject setNumberFormat for individual
+   * cells. Their column type already governs formatting, so that specific
+   * restriction must not abort an otherwise valid Conversations write.
+   * Other formatting errors are rethrown rather than silently ignored.
+   */
+  _setTextFormatIfSupported: function(range) {
+    try {
+      range.setNumberFormat('@');
+      return true;
+    } catch (e) {
+      var message = e && e.message ? String(e.message) : String(e);
+      var isTypedColumnRestriction = /number formats?.*(column|col).*(type|classif)|(?:column|col).*(type|classif).*number formats?|set number format.*(?:typed|classified) column|تنسيق الأرقام.*عمود.*مصنّف|ضبط تنسيق الأرقام.*عمود/i.test(message);
+      if (isTypedColumnRestriction) return false;
+      throw e;
+    }
+  },
+
   updateRowByColumn: function(sheetName, columnName, value, fields) {
     var sheet = this._getSheet(sheetName);
     var lastRow = sheet.getLastRow();
@@ -156,7 +175,7 @@ const GoogleSheets = {
         // Preserve string storage values; Sheets otherwise may coerce ISO-like
         // strings into Date values, changing their representation on readback.
         if (typeof fields[key] === 'string') {
-          cell.setNumberFormat('@');
+          GoogleSheets._setTextFormatIfSupported(cell);
         }
         cell.setValue(fields[key]);
       }
@@ -179,7 +198,7 @@ const GoogleSheets = {
     // Set text format before writing so ISO-like string values remain strings.
     row.forEach(function(value, index) {
       if (typeof value === 'string') {
-        sheet.getRange(nextRow, index + 1).setNumberFormat('@');
+        GoogleSheets._setTextFormatIfSupported(sheet.getRange(nextRow, index + 1));
       }
     });
 
