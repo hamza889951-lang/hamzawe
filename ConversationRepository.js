@@ -222,10 +222,10 @@ const ConversationRepository = {
   getDoctorControlUxSession(phone) {
     try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'ConversationRepository',stage:'BEFORE_BASE_SESSION_READ',atMs:Clock.now().getTime()})); } catch (ignored) {}
     var base = this.getDoctorControlSession(phone);
-    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'ConversationRepository',stage:'AFTER_BASE_SESSION_READ',atMs:Clock.now().getTime(),ok:!!base.ok,errorCode:base.error&&base.error.code||null})); } catch (ignored) {}
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'ConversationRepository',stage:'AFTER_BASE_SESSION_READ',atMs:Clock.now().getTime(),ok:!!base.ok,errorCode:base.error&&base.error.code||null,missingColumns:base.error&&base.error.code==='DOCTOR_CONTROL_SCHEMA_MISSING'?String(base.error.message||'').split(': ').slice(1).join(': ').split(',').map(function(v){return v.trim();}):null})); } catch (ignored) {}
     if (!base.ok) return base;
     var schema = this._doctorUxSchemaCheck();
-    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'ConversationRepository',stage:'AFTER_UX_SCHEMA_CHECK',atMs:Clock.now().getTime(),ok:!!schema.ok,errorCode:schema.error&&schema.error.code||null})); } catch (ignored) {}
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'ConversationRepository',stage:'AFTER_UX_SCHEMA_CHECK',atMs:Clock.now().getTime(),ok:!!schema.ok,errorCode:schema.error&&schema.error.code||null,missingColumns:schema.error&&schema.error.code==='DOCTOR_CONTROL_UX_SCHEMA_MISSING'?String(schema.error.message||'').split(': ').slice(1).join(': ').split(',').map(function(v){return v.trim();}):null})); } catch (ignored) {}
     if (!schema.ok) return schema;
     try {
       try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'ConversationRepository',stage:'BEFORE_UX_ROW_READ',atMs:Clock.now().getTime()})); } catch (ignored) {}
@@ -328,7 +328,7 @@ const ConversationRepository = {
       );
     }
     const schemaCheck = this._doctorSchemaCheck();
-    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'ConversationRepository',stage:'SET_SESSION_SCHEMA_CHECK',atMs:Clock.now().getTime(),ok:!!schemaCheck.ok,errorCode:schemaCheck.error&&schemaCheck.error.code||null})); } catch (ignored) {}
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'ConversationRepository',stage:'SET_SESSION_SCHEMA_CHECK',atMs:Clock.now().getTime(),ok:!!schemaCheck.ok,errorCode:schemaCheck.error&&schemaCheck.error.code||null,missingColumns:schemaCheck.error&&schemaCheck.error.code==='DOCTOR_CONTROL_SCHEMA_MISSING'?String(schemaCheck.error.message||'').split(': ').slice(1).join(': ').split(',').map(function(v){return v.trim();}):null})); } catch (ignored) {}
     if (!schemaCheck.ok) return schemaCheck;
 
     const fields = {};
