@@ -863,6 +863,40 @@ test('M4CC-E1 — first doctor contact shows the numbered menu and opens a DOCTO
   assert.strictEqual(state.sheets['ScheduleChanges'].rows.length, 0);
 });
 
+test('M4CC-E1A — first-menu append is not reported successful unless the row is readable', function() {
+  reset();
+  const originalAppend = sandbox.GoogleSheets.appendRow;
+  sandbox.GoogleSheets.appendRow = function(name, rowObject) {
+    if (name === 'Conversations') return; // simulate a silent persistence failure
+    return originalAppend(name, rowObject);
+  };
+
+  const r = DCI.handle(controlContext(), 'مرحبا');
+  sandbox.GoogleSheets.appendRow = originalAppend;
+
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.error.code, 'DOCTOR_SESSION_PERSISTENCE_FAILED');
+  assert.strictEqual(doctorRow(), undefined);
+});
+
+test('M4CC-E1B — a failed state update is surfaced instead of returning another menu', function() {
+  reset();
+  const first = DCI.handle(controlContext(), 'مرحبا');
+  assert.strictEqual(first.ok, true);
+  const originalUpdate = sandbox.GoogleSheets.updateRowByColumn;
+  sandbox.GoogleSheets.updateRowByColumn = function(name, columnName, value, fields) {
+    if (name === 'Conversations') return false;
+    return originalUpdate(name, columnName, value, fields);
+  };
+
+  const r = DCI.handle(controlContext(), 'MORE');
+  sandbox.GoogleSheets.updateRowByColumn = originalUpdate;
+
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.error.code, 'DOCTOR_SESSION_WRITE_FAILED');
+  assert.strictEqual(doctorRow().state, 'DOCTOR_MENU');
+});
+
 test('M4CC-E2 — menu option 1 renders the current schedule read-only', function() {
   reset();
   DCI.handle(controlContext(), 'start');
