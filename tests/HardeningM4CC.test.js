@@ -930,7 +930,8 @@ test('M4CC-E3 — recurring flow: prompt → preview (no persistence) → confir
   const preview = DCI.handle(controlContext(), '1,2 | 10:00-14:00 | 2026-09-15');
   assert.strictEqual(preview.ok, true, JSON.stringify(preview.error));
   assert.ok(preview.data.reply.indexOf('معاينة') !== -1, JSON.stringify(preview));
-  assert.ok(preview.data.reply.indexOf('2026-09-15T00:00') !== -1);
+  assert.ok(preview.data.reply.indexOf('2026-09-15، الساعة 00:00') !== -1);
+  assert.strictEqual(preview.data.reply.indexOf('2026-09-15T00:00'), -1);
   assert.ok(preview.data.reply.indexOf('الحجوزات المتأثرة حاليًا:') !== -1);
   // Preview is strictly read-only.
   assert.strictEqual(state.sheets['ScheduleChanges'].rows.length, 0);
