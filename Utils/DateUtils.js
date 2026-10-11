@@ -23,7 +23,7 @@ const DateUtils = {
   _formatDateObject(value) {
     if (typeof Utilities !== 'undefined' && Utilities &&
       typeof Utilities.formatDate === 'function') {
-      return DateUtils._formatDateObject(value);
+      return Utilities.formatDate(value, DateUtils.CLINIC_TIME_ZONE, 'yyyy-MM-dd');
     }
     // Test-only/runtime-neutral fallback. Production Apps Script uses the
     // explicit clinic timezone above; the script timezone is also pinned.
@@ -35,7 +35,7 @@ const DateUtils = {
   _formatTimeObject(value) {
     if (typeof Utilities !== 'undefined' && Utilities &&
       typeof Utilities.formatDate === 'function') {
-      return DateUtils._formatTimeObject(value);
+      return Utilities.formatDate(value, DateUtils.CLINIC_TIME_ZONE, 'HH:mm');
     }
     var hh = String(value.getHours()).padStart(2, '0');
     var mm = String(value.getMinutes()).padStart(2, '0');
@@ -67,7 +67,7 @@ const DateUtils = {
    */
   normalizeDate(value) {
     if (DateUtils._isDate(value)) {
-      return Utilities.formatDate(value, DateUtils.CLINIC_TIME_ZONE, 'yyyy-MM-dd');
+      return DateUtils._formatDateObject(value);
     }
     return DateUtils._normalizeDateString(value);
   },
@@ -79,7 +79,7 @@ const DateUtils = {
    */
   normalizeTime(value) {
     if (DateUtils._isDate(value)) {
-      return Utilities.formatDate(value, DateUtils.CLINIC_TIME_ZONE, 'HH:mm');
+      return DateUtils._formatTimeObject(value);
     }
     if (typeof value !== 'string') return null;
     var match = value.trim().match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
