@@ -65,7 +65,7 @@ const DateUtils = {
     var hour = Number(match[1]);
     var minute = Number(match[2]);
     if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
-    return match[1] + ':' + match[2];
+    return (hour < 10 ? '0' : '') + hour + ':' + match[2];
   },
 
   /**
