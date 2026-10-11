@@ -930,7 +930,8 @@ test('M4CC-E3 — recurring flow: prompt → preview (no persistence) → confir
   const preview = DCI.handle(controlContext(), '1,2 | 10:00-14:00 | 2026-09-15');
   assert.strictEqual(preview.ok, true, JSON.stringify(preview.error));
   assert.ok(preview.data.reply.indexOf('معاينة') !== -1, JSON.stringify(preview));
-  assert.ok(preview.data.reply.indexOf('2026-09-15T00:00') !== -1);
+  assert.ok(preview.data.reply.indexOf('2026-09-15، الساعة 00:00') !== -1);
+  assert.strictEqual(preview.data.reply.indexOf('2026-09-15T00:00'), -1);
   assert.ok(preview.data.reply.indexOf('الحجوزات المتأثرة حاليًا:') !== -1);
   // Preview is strictly read-only.
   assert.strictEqual(state.sheets['ScheduleChanges'].rows.length, 0);
@@ -1034,10 +1035,13 @@ test('M4CC-E8 — exceptional open flow commits a Settings-window full-day recor
   DCI.handle(controlContext(), '4');
   const preview = DCI.handle(controlContext(), '2026-09-22');
   assert.strictEqual(preview.ok, true, JSON.stringify(preview.error));
-  assert.ok(preview.data.reply.indexOf('2026-09-22T00:00') !== -1);
-  assert.ok(preview.data.reply.indexOf('2026-09-23T00:00') !== -1);
+  assert.ok(preview.data.reply.indexOf('2026-09-22، الساعة 00:00') !== -1);
+  assert.ok(preview.data.reply.indexOf('2026-09-23، الساعة 00:00') !== -1);
+  assert.strictEqual(preview.data.reply.indexOf('2026-09-22T00:00'), -1);
   const commit = DCI.handle(controlContext(), '1');
   assert.strictEqual(commit.ok, true, JSON.stringify(commit.error));
+  assert.ok(commit.data.reply.indexOf('يسري من: 2026-09-22، الساعة 00:00') !== -1);
+  assert.strictEqual(commit.data.reply.indexOf('2026-09-22T00:00'), -1);
   const row = state.sheets['ScheduleChanges'].rows[0];
   assert.strictEqual(row.changeKind, 'TEMPORARY_OPEN');
   const payload = JSON.parse(row.payloadJson);
@@ -1255,6 +1259,27 @@ test('M4CC-E17 — a single missing doctor column mid-flow fails closed before a
   // No command execution, no partial write, no session mutation.
   assert.strictEqual(state.sheets['ScheduleChanges'].rows.length, 0);
   assert.deepStrictEqual(jsonClone(doctorRow()), rowBefore);
+});
+
+test('M4CC-E18 — doctor-control date/time display is separated across preview, commit and change descriptions', function() {
+  assert.strictEqual(
+    DCI._formatLocalDateTimeForDisplay('2026-10-12T00:00'),
+    '2026-10-12، الساعة 00:00'
+  );
+  assert.strictEqual(
+    DCI._formatLocalDateTimeForDisplay('2026-10-14T14:30'),
+    '2026-10-14، الساعة 14:30'
+  );
+  const description = DCI._describeChange({
+    changeKind: 'RECURRING',
+    effectiveFrom: '2026-10-12T00:00',
+    effectiveTo: '2026-10-14T14:30'
+  });
+  assert.strictEqual(
+    description,
+    'تغيير الجدول الأسبوعي — من 2026-10-12، الساعة 00:00 حتى 2026-10-14، الساعة 14:30'
+  );
+  assert.strictEqual(description.indexOf('2026-10-12T00:00'), -1);
 });
 
 // ── Runner ──────────────────────────────────────────────────────
