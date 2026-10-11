@@ -184,8 +184,8 @@ const DoctorScheduleReadService = {
   },
 
   /**
-   * يقبل فقط H:mm أو HH:mm بعد trim، دون تطبيع parseInt الجزئي.
-   * يحافظ على النص كما خُزّن (بعد trim) دون إعادة تنسيق.
+   * يقبل H:mm أو HH:mm بعد trim، ثم يعيد الصيغة الداخلية الموحدة HH:mm.
+   * يرفض القيم خارج النطاق دون parseInt جزئي أو تفسير تخميني.
    *
    * @param {*} value
    * @returns {Result} ok(string)
