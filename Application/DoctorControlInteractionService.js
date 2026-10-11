@@ -632,8 +632,8 @@ const DoctorControlInteractionService = {
     var lines = [
       'معاينة (لم يُحفظ شيء بعد):',
       'النوع: ' + this.KIND_LABELS[draft.doctor_draft_kind],
-      'يسري من: ' + record.effectiveFrom +
-        (record.effectiveTo ? ' حتى ' + record.effectiveTo + ' (النهاية غير مشمولة)' : ''),
+      'يسري من: ' + this._formatLocalDateTimeForDisplay(record.effectiveFrom) +
+        (record.effectiveTo ? ' حتى ' + this._formatLocalDateTimeForDisplay(record.effectiveTo) + ' (النهاية غير مشمولة)' : ''),
       'الحجوزات المتأثرة حاليًا: ' + impact.data.count,
       '',
       'أرسل 1 للتأكيد أو 2 للإلغاء.'
@@ -691,8 +691,8 @@ const DoctorControlInteractionService = {
     return this._showMenu(
       phone,
       status + '\nالمرجع: ' + record.changeId +
-        '\nيسري من: ' + record.effectiveFrom +
-        (record.effectiveTo ? ' حتى ' + record.effectiveTo : '')
+        '\nيسري من: ' + this._formatLocalDateTimeForDisplay(record.effectiveFrom) +
+        (record.effectiveTo ? ' حتى ' + this._formatLocalDateTimeForDisplay(record.effectiveTo) : '')
     );
   },
 
@@ -876,8 +876,20 @@ const DoctorControlInteractionService = {
       : rec.changeKind === ScheduleChangeRepository.KIND.TEMPORARY_CLOSE
         ? this.KIND_LABELS.TEMPORARY_CLOSE
         : this.KIND_LABELS.TEMPORARY_OPEN;
-    return kindLabel + ' — من ' + rec.effectiveFrom +
-      (rec.effectiveTo ? ' حتى ' + rec.effectiveTo : '');
+    return kindLabel + ' — من ' + this._formatLocalDateTimeForDisplay(rec.effectiveFrom) +
+      (rec.effectiveTo ? ' حتى ' + this._formatLocalDateTimeForDisplay(rec.effectiveTo) : '');
+  },
+
+  /**
+   * Presentation-only formatter for clinic-local schedule boundaries.
+   * Keeps canonical YYYY-MM-DDTHH:mm values unchanged in storage and logic,
+   * while ensuring WhatsApp text never renders date and time as one token.
+   */
+  _formatLocalDateTimeForDisplay: function(value) {
+    var normalized = DateUtils.normalizeLocalDateTime(value);
+    if (!normalized) return typeof value === 'string' ? value : '';
+    var parts = normalized.split('T');
+    return parts[0] + '، الساعة ' + parts[1];
   },
 
   // ─────────────────────────────────────────────────────────
