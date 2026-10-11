@@ -75,7 +75,18 @@ sandbox.Validators = {
 sandbox.Clock = { now: function() { return new Date('2026-09-05T10:00:00.000Z'); } };
 sandbox.DateUtils = {
   addMinutes: function(date, minutes) { return new Date(date.getTime() + minutes * 60000); },
-  formatDateDisplay: function() { return '2026-09-06'; }
+  formatDateDisplay: function() { return '2026-09-06'; },
+  normalizeTime: function(value) {
+    if (typeof value === 'string') {
+      var match = /^(\d{1,2}):(\d{2})$/.exec(value.trim());
+      if (!match || Number(match[1]) > 23 || Number(match[2]) > 59) return null;
+      return (Number(match[1]) < 10 ? '0' : '') + Number(match[1]) + ':' + match[2];
+    }
+    if (value && typeof value.getTime === 'function' && !isNaN(value.getTime())) {
+      return sandbox.Utilities.formatDate(value, 'Asia/Baghdad', 'HH:mm');
+    }
+    return null;
+  }
 };
 sandbox.ConversationRepository = {
   moveToWaitingConfirmation: function() {}
