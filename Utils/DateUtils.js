@@ -82,7 +82,7 @@ const DateUtils = {
       return DateUtils._formatTimeObject(value);
     }
     if (typeof value !== 'string') return null;
-    var match = value.trim().match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+    var match = value.trim().match(/^(\d{1,2}):(\d{2})$/);
     if (!match) return null;
     var hour = Number(match[1]);
     var minute = Number(match[2]);
@@ -100,7 +100,7 @@ const DateUtils = {
     }
     if (typeof value !== 'string') return null;
     var text = value.trim();
-    var match = text.match(/^(\d{4}[-/]\d{2}[-/]\d{2})[T ](\d{1,2}:\d{2})(?::\d{2})?$/);
+    var match = text.match(/^(\d{4}[-/]\d{2}[-/]\d{2})[T ](\d{1,2}:\d{2})$/);
     if (!match) return null;
     var date = DateUtils._normalizeDateString(match[1]);
     var time = DateUtils.normalizeTime(match[2]);
