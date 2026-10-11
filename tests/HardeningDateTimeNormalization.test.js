@@ -40,6 +40,7 @@ const D = sandbox.DateUtils;
 
 (function normalizesTimeWithoutLocaleGuessing() {
   assert.strictEqual(D.normalizeTime('09:05'), '09:05');
+  assert.strictEqual(D.normalizeTime('9:05'), '09:05');
   assert.strictEqual(D.normalizeTime('09:05:59'), '09:05');
   assert.strictEqual(D.normalizeTime('24:00'), null);
   assert.strictEqual(D.normalizeTime('9:05 AM'), null);
@@ -48,6 +49,7 @@ const D = sandbox.DateUtils;
 
 (function normalizesLocalWallClockStamps() {
   assert.strictEqual(D.normalizeLocalDateTime('2026-09-02T09:05'), '2026-09-02T09:05');
+  assert.strictEqual(D.normalizeLocalDateTime('2026-09-02 9:05'), '2026-09-02T09:05');
   assert.strictEqual(D.normalizeLocalDateTime('2026/09/02 09:05:59'), '2026-09-02T09:05');
   assert.strictEqual(D.normalizeLocalDateTime('2026-02-29T09:05'), null);
   assert.strictEqual(D.normalizeLocalDateTime('2026-09-02T25:05'), null);
