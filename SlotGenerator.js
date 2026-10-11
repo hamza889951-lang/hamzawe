@@ -82,10 +82,17 @@ const SlotGenerator = {
     var slots = [];
     var dur = slotDuration || 30;
 
-    var startParts = settings.work_start.split(':');
-    var endParts = settings.work_end.split(':');
-    var startMinutes = parseInt(startParts[0], 10) * 60 + parseInt(startParts[1], 10);
-    var endMinutes = parseInt(endParts[0], 10) * 60 + parseInt(endParts[1], 10);
+    // All schedule-clock interpretation goes through the canonical boundary.
+    // Invalid settings fail closed: do not generate malformed/shifted slots.
+    var normalizedStart = DateUtils.normalizeTime(settings && settings.work_start);
+    var normalizedEnd = DateUtils.normalizeTime(settings && settings.work_end);
+    if (!normalizedStart || !normalizedEnd) return slots;
+
+    var startParts = normalizedStart.split(':');
+    var endParts = normalizedEnd.split(':');
+    var startMinutes = Number(startParts[0]) * 60 + Number(startParts[1]);
+    var endMinutes = Number(endParts[0]) * 60 + Number(endParts[1]);
+    if (endMinutes <= startMinutes) return slots;
 
     var currentMinutes = startMinutes;
 

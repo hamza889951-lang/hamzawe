@@ -41,7 +41,15 @@ function loadReminder(settings, busResult) {
   sandbox.Config = { VOCABULARY: { STATUS: { CONFIRMED: 'CONFIRMED' } } };
   sandbox.SettingsRepository = { getAll: function() { return settings; } };
   sandbox.BusNumberCalculator = { fromSlot: function() { return busResult; } };
-  sandbox.DateUtils = { formatDateDisplay: function() { return '2026-09-06'; } };
+  sandbox.DateUtils = {
+    formatDateDisplay: function() { return '2026-09-06'; },
+    normalizeTime: function(value) {
+      if (typeof value !== 'string') return null;
+      var match = /^(\d{1,2}):(\d{2})$/.exec(value.trim());
+      if (!match || Number(match[1]) > 23 || Number(match[2]) > 59) return null;
+      return (Number(match[1]) < 10 ? '0' : '') + Number(match[1]) + ':' + match[2];
+    }
+  };
   vm.runInContext(source('Reminderservice.js') + '\nthis.ReminderService = ReminderService;', sandbox);
   return sandbox.ReminderService;
 }
@@ -53,6 +61,14 @@ function loadChangeForPresentation(settings) {
     fail: function(code, message) { return { ok: false, error: { code: code, message: message } }; }
   };
   sandbox.SettingsRepository = { getAll: function() { return settings; } };
+  sandbox.DateUtils = {
+    normalizeTime: function(value) {
+      if (typeof value !== 'string') return null;
+      var match = /^(\d{1,2}):(\d{2})$/.exec(value.trim());
+      if (!match || Number(match[1]) > 23 || Number(match[2]) > 59) return null;
+      return (Number(match[1]) < 10 ? '0' : '') + Number(match[1]) + ':' + match[2];
+    }
+  };
   vm.runInContext(source('Changeservice.js') + '\nthis.ChangeService = ChangeService;', sandbox);
   return sandbox.ChangeService;
 }
@@ -162,6 +178,23 @@ test('PP-10 — Reminder presentation helper fails closed on invalid clinic work
   const result = reminder._getClinicWorkStartDisplay();
   assert.strictEqual(result.ok, false);
   assert.strictEqual(result.error.code, 'PATIENT_PRESENTATION_UNAVAILABLE');
+});
+
+test('PP-11 — Change presentation canonicalizes legacy H:mm work-start', function() {
+  const change = loadChangeForPresentation({ work_start: '8:05' });
+  const result = change._getClinicWorkStartDisplay();
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.data, '08:05 صباحًا');
+});
+
+test('PP-12 — Reminder presentation canonicalizes legacy H:mm work-start', function() {
+  const reminder = loadReminder(
+    { work_start: '8:05' },
+    { ok: true, data: { busNumber: 1 } }
+  );
+  const result = reminder._getClinicWorkStartDisplay();
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.data, '08:05 صباحًا');
 });
 
 process.on('exit', function() {

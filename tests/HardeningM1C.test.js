@@ -154,6 +154,7 @@ function createM1CSandbox() {
   load('Result.js', 'Result');
   load('Config.js', 'Config');
   load('StateMachine.js', 'StateMachine');
+  load('Utils/DateUtils.js', 'DateUtils');
   load('Utils/LegacySlotTimeParser.js', 'LegacySlotTimeParser');
   load('Utils/ReportPeriod.js', 'ReportPeriod');
   load('SlotGenerator.js', 'SlotGenerator');

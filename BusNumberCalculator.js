@@ -112,31 +112,13 @@ const BusNumberCalculator = {
   },
 
   _extractClinicHourMinute(timeValue) {
-    if (timeValue instanceof Date || Object.prototype.toString.call(timeValue) === '[object Date]') {
-      if (isNaN(timeValue.getTime())) return null;
-      var rendered = Utilities.formatDate(
-        timeValue,
-        Session.getScriptTimeZone(),
-        'HH:mm'
-      );
-      return this._parseHourMinuteText(rendered);
-    }
-
-    if (typeof timeValue === 'string') {
-      return this._parseHourMinuteText(timeValue);
-    }
-
-    return null;
+    var normalized = DateUtils.normalizeTime(timeValue);
+    if (!normalized) return null;
+    var parts = normalized.split(':');
+    return { hour: Number(parts[0]), minute: Number(parts[1]) };
   },
 
   _parseHourMinuteText(text) {
-    if (typeof text !== 'string') return null;
-    var match = text.trim().match(/^(\d{1,2}):(\d{2})$/);
-    if (!match) return null;
-    var hour = parseInt(match[1], 10);
-    var minute = parseInt(match[2], 10);
-    if (isNaN(hour) || isNaN(minute)) return null;
-    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
-    return { hour: hour, minute: minute };
+    return this._extractClinicHourMinute(text);
   }
 };

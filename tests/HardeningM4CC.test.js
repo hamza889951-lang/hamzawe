@@ -61,7 +61,17 @@ function createSandbox() {
   };
 
   sandbox.Utilities = {
-    formatDate: function(date) { return String(date); }
+    formatDate: function(date, timeZone, pattern) {
+      if (pattern !== 'yyyy-MM-dd' && pattern !== 'HH:mm') return String(date);
+      var options = pattern === 'yyyy-MM-dd'
+        ? { timeZone: timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }
+        : { timeZone: timeZone, hour: '2-digit', minute: '2-digit', hour12: false };
+      var parts = new Intl.DateTimeFormat('en-CA', options).formatToParts(date)
+        .reduce(function(out, part) { out[part.type] = part.value; return out; }, {});
+      return pattern === 'yyyy-MM-dd'
+        ? parts.year + '-' + parts.month + '-' + parts.day
+        : parts.hour + ':' + parts.minute;
+    }
   };
   sandbox.Session = {
     getScriptTimeZone: function() { return 'Asia/Baghdad'; }
@@ -919,7 +929,7 @@ test('M4CC-E3 — recurring flow: prompt → preview (no persistence) → confir
 
   const preview = DCI.handle(controlContext(), '1,2 | 10:00-14:00 | 2026-09-15');
   assert.strictEqual(preview.ok, true, JSON.stringify(preview.error));
-  assert.ok(preview.data.reply.indexOf('معاينة') !== -1);
+  assert.ok(preview.data.reply.indexOf('معاينة') !== -1, JSON.stringify(preview));
   assert.ok(preview.data.reply.indexOf('2026-09-15T00:00') !== -1);
   assert.ok(preview.data.reply.indexOf('الحجوزات المتأثرة حاليًا:') !== -1);
   // Preview is strictly read-only.

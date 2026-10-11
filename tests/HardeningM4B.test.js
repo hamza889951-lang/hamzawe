@@ -96,6 +96,7 @@ function createSandbox() {
   load('Result.js', 'Result');
   load('Config.js', 'Config');
   load('SettingsRepository.js', 'SettingsRepository');
+  load('Utils/DateUtils.js', 'DateUtils');
   load('Application/DoctorScheduleReadService.js', 'DoctorScheduleReadService');
 
   return { sandbox: sandbox, state: state };
@@ -264,7 +265,7 @@ test('M4B-W1 — work_start and work_end are preserved without reinterpretation'
   assert.strictEqual(r.data.workWindow.end, '20:30');
 });
 
-test('M4B-W2 — non-padded configured clock text is kept as stored, not rewritten', function() {
+test('M4B-W2 — non-padded configured clock text is normalized to canonical HH:mm', function() {
   reset();
   seedSettings(standardSettings({
     work_start: '8:05',
@@ -272,7 +273,7 @@ test('M4B-W2 — non-padded configured clock text is kept as stored, not rewritt
   }));
   const r = read();
   assert.strictEqual(r.ok, true);
-  assert.strictEqual(r.data.workWindow.start, '8:05');
+  assert.strictEqual(r.data.workWindow.start, '08:05');
   assert.strictEqual(r.data.workWindow.end, '13:00');
 });
 
@@ -421,7 +422,7 @@ test('M4B-M10 — strict clock still accepts H:mm and HH:mm', function() {
   seedSettings(standardSettings({ work_start: '8:05', work_end: '13:00' }));
   const unpadded = read();
   assert.strictEqual(unpadded.ok, true);
-  assert.strictEqual(unpadded.data.workWindow.start, '8:05');
+  assert.strictEqual(unpadded.data.workWindow.start, '08:05');
   assert.strictEqual(unpadded.data.workWindow.end, '13:00');
 });
 

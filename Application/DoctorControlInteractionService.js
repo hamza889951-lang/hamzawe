@@ -364,23 +364,26 @@ const DoctorControlInteractionService = {
       );
     }
     if (draft.doctor_ux_step === 'START_TIME') {
-      if (!/^\d{2}:\d{2}$/.test(text)) return this._guidedRetry(phone, draft, 'الوقت يجب أن يكون بصيغة HH:mm.');
-      return this._guidedPrompt(phone, 'RECURRING', 'END_TIME', 'وقت نهاية الدوام؟ مثال: 14:00', { doctor_ux_start_time: text });
+      var startTime = DateUtils.normalizeTime(text);
+      if (!startTime) return this._guidedRetry(phone, draft, 'الوقت يجب أن يكون بصيغة HH:mm.');
+      return this._guidedPrompt(phone, 'RECURRING', 'END_TIME', 'وقت نهاية الدوام؟ مثال: 14:00', { doctor_ux_start_time: startTime });
     }
     if (draft.doctor_ux_step === 'END_TIME') {
-      if (!/^\d{2}:\d{2}$/.test(text)) return this._guidedRetry(phone, draft, 'الوقت يجب أن يكون بصيغة HH:mm.');
+      var endTime = DateUtils.normalizeTime(text);
+      if (!endTime) return this._guidedRetry(phone, draft, 'الوقت يجب أن يكون بصيغة HH:mm.');
       return this._guidedPrompt(phone, 'RECURRING', 'DATE', 'تاريخ بدء التغيير؟ YYYY-MM-DD', {
-        doctor_ux_end_time: text,
-        doctor_draft_window: draft.doctor_ux_start_time + '-' + text
+        doctor_ux_end_time: endTime,
+        doctor_draft_window: draft.doctor_ux_start_time + '-' + endTime
       });
     }
     if (draft.doctor_ux_step === 'DATE') {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return this._guidedRetry(phone, draft, 'التاريخ يجب أن يكون بصيغة YYYY-MM-DD.');
+      var effectiveDate = DateUtils.normalizeDate(text);
+      if (!effectiveDate) return this._guidedRetry(phone, draft, 'التاريخ يجب أن يكون بصيغة YYYY-MM-DD.');
       return this._previewAndAsk(controlContext, phone, {
         doctor_draft_kind: 'RECURRING',
         doctor_draft_days: draft.doctor_draft_days,
         doctor_draft_window: draft.doctor_draft_window,
-        doctor_draft_effective_from: text,
+        doctor_draft_effective_from: effectiveDate,
         doctor_draft_command_id: IdGenerator.generateScheduleCommandId()
       });
     }
@@ -395,31 +398,35 @@ const DoctorControlInteractionService = {
       return this._guidedRetry(phone, draft, 'اختر يومًا كاملًا أو فترة محددة.');
     }
     if (draft.doctor_ux_step === 'START_DATE') {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return this._guidedRetry(phone, draft, 'التاريخ يجب أن يكون بصيغة YYYY-MM-DD.');
+      var startDate = DateUtils.normalizeDate(text);
+      if (!startDate) return this._guidedRetry(phone, draft, 'التاريخ يجب أن يكون بصيغة YYYY-MM-DD.');
       if (draft.doctor_ux_close_mode === 'FULL_DAY') {
-        var next = DateUtils.nextLocalDateString(text);
+        var next = DateUtils.nextLocalDateString(startDate);
         if (!next) return this._guidedRetry(phone, draft, 'التاريخ غير صحيح.');
         return this._previewAndAsk(controlContext, phone, {
           doctor_draft_kind: 'TEMPORARY_CLOSE',
-          doctor_draft_effective_from: text + 'T00:00',
+          doctor_draft_effective_from: startDate + 'T00:00',
           doctor_draft_effective_to: next + 'T00:00',
           doctor_draft_command_id: IdGenerator.generateScheduleCommandId()
         });
       }
-      return this._guidedPrompt(phone, 'TEMPORARY_CLOSE', 'START_TIME', 'وقت بداية الإغلاق؟ HH:mm', { doctor_ux_start_date: text });
+      return this._guidedPrompt(phone, 'TEMPORARY_CLOSE', 'START_TIME', 'وقت بداية الإغلاق؟ HH:mm', { doctor_ux_start_date: startDate });
     }
     if (draft.doctor_ux_step === 'START_TIME') {
-      if (!/^\d{2}:\d{2}$/.test(text)) return this._guidedRetry(phone, draft, 'الوقت يجب أن يكون بصيغة HH:mm.');
-      return this._guidedPrompt(phone, 'TEMPORARY_CLOSE', 'END_DATE', 'تاريخ نهاية الإغلاق؟ YYYY-MM-DD', { doctor_ux_start_time: text });
+      var startTime = DateUtils.normalizeTime(text);
+      if (!startTime) return this._guidedRetry(phone, draft, 'الوقت يجب أن يكون بصيغة HH:mm.');
+      return this._guidedPrompt(phone, 'TEMPORARY_CLOSE', 'END_DATE', 'تاريخ نهاية الإغلاق؟ YYYY-MM-DD', { doctor_ux_start_time: startTime });
     }
     if (draft.doctor_ux_step === 'END_DATE') {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return this._guidedRetry(phone, draft, 'التاريخ يجب أن يكون بصيغة YYYY-MM-DD.');
-      return this._guidedPrompt(phone, 'TEMPORARY_CLOSE', 'END_TIME', 'وقت نهاية الإغلاق؟ HH:mm', { doctor_ux_end_date: text });
+      var endDate = DateUtils.normalizeDate(text);
+      if (!endDate) return this._guidedRetry(phone, draft, 'التاريخ يجب أن يكون بصيغة YYYY-MM-DD.');
+      return this._guidedPrompt(phone, 'TEMPORARY_CLOSE', 'END_TIME', 'وقت نهاية الإغلاق؟ HH:mm', { doctor_ux_end_date: endDate });
     }
     if (draft.doctor_ux_step === 'END_TIME') {
-      if (!/^\d{2}:\d{2}$/.test(text)) return this._guidedRetry(phone, draft, 'الوقت يجب أن يكون بصيغة HH:mm.');
+      var endTime = DateUtils.normalizeTime(text);
+      if (!endTime) return this._guidedRetry(phone, draft, 'الوقت يجب أن يكون بصيغة HH:mm.');
       var from = draft.doctor_ux_start_date + 'T' + draft.doctor_ux_start_time;
-      var to = draft.doctor_ux_end_date + 'T' + text;
+      var to = draft.doctor_ux_end_date + 'T' + endTime;
       if (to <= from) return this._guidedRetry(phone, draft, 'يجب أن تكون نهاية الإغلاق بعد بدايته.');
       return this._previewAndAsk(controlContext, phone, {
         doctor_draft_kind: 'TEMPORARY_CLOSE',
@@ -470,7 +477,8 @@ const DoctorControlInteractionService = {
     if (!days.ok) return this._retryInput(phone, 'RECURRING', days.error.message);
     var window = this._parseWindow(parts[1]);
     if (!window.ok) return this._retryInput(phone, 'RECURRING', window.error.message);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(parts[2])) {
+    var effectiveDate = DateUtils.normalizeDate(parts[2]);
+    if (!effectiveDate) {
       return this._retryInput(phone, 'RECURRING', 'التاريخ يجب أن يكون بصيغة YYYY-MM-DD');
     }
 
@@ -478,7 +486,7 @@ const DoctorControlInteractionService = {
       doctor_draft_kind: 'RECURRING',
       doctor_draft_days: days.data.join(','),
       doctor_draft_window: window.data.start + '-' + window.data.end,
-      doctor_draft_effective_from: parts[2],
+      doctor_draft_effective_from: effectiveDate,
       doctor_draft_command_id: IdGenerator.generateScheduleCommandId()
     };
     return this._previewAndAsk(controlContext, phone, draft);
@@ -487,12 +495,13 @@ const DoctorControlInteractionService = {
   _inputTemporaryClose: function(controlContext, phone, text) {
     var from = null;
     var to = null;
-    if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
-      var next = DateUtils.nextLocalDateString(text);
+    var fullDayDate = DateUtils.normalizeDate(text);
+    if (fullDayDate) {
+      var next = DateUtils.nextLocalDateString(fullDayDate);
       if (!next) {
         return this._retryInput(phone, 'TEMPORARY_CLOSE', 'التاريخ غير صحيح.');
       }
-      from = text + 'T00:00';
+      from = fullDayDate + 'T00:00';
       to = next + 'T00:00';
     } else {
       var parts = text.split('|').map(function(p) { return p.trim(); });
@@ -519,12 +528,13 @@ const DoctorControlInteractionService = {
   },
 
   _inputExceptionalOpen: function(controlContext, phone, text) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    var effectiveDate = DateUtils.normalizeDate(text);
+    if (!effectiveDate) {
       return this._retryInput(phone, 'TEMPORARY_OPEN', 'أرسل التاريخ بصيغة YYYY-MM-DD فقط.');
     }
     var draft = {
       doctor_draft_kind: 'TEMPORARY_OPEN',
-      doctor_draft_effective_from: text,
+      doctor_draft_effective_from: effectiveDate,
       doctor_draft_command_id: IdGenerator.generateScheduleCommandId()
     };
     return this._previewAndAsk(controlContext, phone, draft);
@@ -892,15 +902,18 @@ const DoctorControlInteractionService = {
 
   _parseWindow: function(text) {
     var parts = text.split('-').map(function(p) { return p.trim(); });
-    if (parts.length !== 2 || !/^\d{1,2}:\d{2}$/.test(parts[0]) || !/^\d{1,2}:\d{2}$/.test(parts[1])) {
+    if (parts.length !== 2) {
       return Result.fail('INVALID_INPUT', 'النافذة بصيغة HH:mm-HH:mm، مثال: 10:00-14:00');
     }
-    return Result.ok({ start: parts[0], end: parts[1] });
+    var start = DateUtils.normalizeTime(parts[0]);
+    var end = DateUtils.normalizeTime(parts[1]);
+    if (!start || !end) {
+      return Result.fail('INVALID_INPUT', 'النافذة بصيغة HH:mm-HH:mm، مثال: 10:00-14:00');
+    }
+    return Result.ok({ start: start, end: end });
   },
 
   _parseLocalDateTimeText: function(text) {
-    var m = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})$/.exec(text.trim());
-    if (!m) return null;
-    return m[1] + 'T' + m[2];
+    return DateUtils.normalizeLocalDateTime(text);
   }
 };
