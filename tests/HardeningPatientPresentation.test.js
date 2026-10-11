@@ -180,6 +180,23 @@ test('PP-10 — Reminder presentation helper fails closed on invalid clinic work
   assert.strictEqual(result.error.code, 'PATIENT_PRESENTATION_UNAVAILABLE');
 });
 
+test('PP-11 — Change presentation canonicalizes legacy H:mm work-start', function() {
+  const change = loadChangeForPresentation({ work_start: '8:05' });
+  const result = change._getClinicWorkStartDisplay();
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.data, '08:05 صباحًا');
+});
+
+test('PP-12 — Reminder presentation canonicalizes legacy H:mm work-start', function() {
+  const reminder = loadReminder(
+    { work_start: '8:05' },
+    { ok: true, data: { busNumber: 1 } }
+  );
+  const result = reminder._getClinicWorkStartDisplay();
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.data, '08:05 صباحًا');
+});
+
 process.on('exit', function() {
   console.log('\nPatient presentation tests: ' + pass + '/' + (pass + fail) + ' PASS');
   if (fail > 0) process.exitCode = 1;
