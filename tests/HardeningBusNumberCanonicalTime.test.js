@@ -16,6 +16,10 @@ const vm = require('vm');
 const ROOT = path.resolve(__dirname, '..');
 
 function load(src, sandbox, filename) {
+  if (!sandbox.DateUtils) {
+    const dateUtilsSource = fs.readFileSync(path.join(ROOT, 'Utils/DateUtils.js'), 'utf8');
+    vm.runInContext(dateUtilsSource + '\nthis.DateUtils = DateUtils;', sandbox, { filename: 'Utils/DateUtils.js' });
+  }
   vm.runInContext(src + '\nthis.BusNumberCalculator = BusNumberCalculator;', sandbox, { filename: filename });
 }
 
