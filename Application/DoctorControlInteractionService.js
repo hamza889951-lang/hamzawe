@@ -495,12 +495,13 @@ const DoctorControlInteractionService = {
   _inputTemporaryClose: function(controlContext, phone, text) {
     var from = null;
     var to = null;
-    if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
-      var next = DateUtils.nextLocalDateString(text);
+    var fullDayDate = DateUtils.normalizeDate(text);
+    if (fullDayDate) {
+      var next = DateUtils.nextLocalDateString(fullDayDate);
       if (!next) {
         return this._retryInput(phone, 'TEMPORARY_CLOSE', 'التاريخ غير صحيح.');
       }
-      from = text + 'T00:00';
+      from = fullDayDate + 'T00:00';
       to = next + 'T00:00';
     } else {
       var parts = text.split('|').map(function(p) { return p.trim(); });
@@ -527,12 +528,13 @@ const DoctorControlInteractionService = {
   },
 
   _inputExceptionalOpen: function(controlContext, phone, text) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    var effectiveDate = DateUtils.normalizeDate(text);
+    if (!effectiveDate) {
       return this._retryInput(phone, 'TEMPORARY_OPEN', 'أرسل التاريخ بصيغة YYYY-MM-DD فقط.');
     }
     var draft = {
       doctor_draft_kind: 'TEMPORARY_OPEN',
-      doctor_draft_effective_from: text,
+      doctor_draft_effective_from: effectiveDate,
       doctor_draft_command_id: IdGenerator.generateScheduleCommandId()
     };
     return this._previewAndAsk(controlContext, phone, draft);
