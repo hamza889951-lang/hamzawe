@@ -127,14 +127,10 @@ const ReminderService = {
   },
 
   _parseHourMinuteText: function(text) {
-    if (typeof text !== 'string') return null;
-    var match = text.trim().match(/^(\d{1,2}):(\d{2})$/);
-    if (!match) return null;
-    var hour = parseInt(match[1], 10);
-    var minute = parseInt(match[2], 10);
-    if (isNaN(hour) || isNaN(minute)) return null;
-    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
-    return { hour: hour, minute: minute };
+    var normalized = DateUtils.normalizeTime(text);
+    if (!normalized) return null;
+    var parts = normalized.split(':');
+    return { hour: Number(parts[0]), minute: Number(parts[1]) };
   },
 
   _formatArabicClinicTime: function(hour, minute) {
