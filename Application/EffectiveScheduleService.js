@@ -345,12 +345,10 @@ const EffectiveScheduleService = {
   },
 
   _clockToMinutes: function(clock) {
-    if (typeof clock !== 'string' || !/^\d{1,2}:\d{2}$/.test(clock.trim())) return null;
-    var parts = clock.trim().split(':');
-    var hour = parseInt(parts[0], 10);
-    var minute = parseInt(parts[1], 10);
-    if (hour > 23 || minute > 59) return null;
-    return hour * 60 + minute;
+    var normalized = DateUtils.normalizeTime(clock);
+    if (!normalized) return null;
+    var parts = normalized.split(':');
+    return Number(parts[0]) * 60 + Number(parts[1]);
   },
 
   _weekdaySunday0: function(year, month, day) {
