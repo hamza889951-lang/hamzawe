@@ -917,6 +917,7 @@ test('M4CC-E3 — recurring flow: prompt → preview (no persistence) → confir
   assert.strictEqual(doctorRow().state, 'DOCTOR_AWAITING_INPUT');
   assert.strictEqual(doctorRow().doctor_draft_kind, 'RECURRING');
 
+  console.log('DEBUG_DATE_CONTRACT', JSON.stringify({ now: sandbox.Clock.now(), stamp: sandbox.DateUtils.formatLocalStamp(sandbox.Clock.now()), date: sandbox.DateUtils.normalizeDate(sandbox.Clock.now()), time: sandbox.DateUtils.normalizeTime(sandbox.Clock.now()), inputDate: sandbox.DateUtils.normalizeDate('2026-09-15'), inputTime: sandbox.DateUtils.normalizeTime('10:00') }));
   const preview = DCI.handle(controlContext(), '1,2 | 10:00-14:00 | 2026-09-15');
   assert.strictEqual(preview.ok, true, JSON.stringify(preview.error));
   assert.ok(preview.data.reply.indexOf('معاينة') !== -1, JSON.stringify(preview));
