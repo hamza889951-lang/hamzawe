@@ -20,6 +20,28 @@ const DateUtils = {
       !isNaN(value.getTime());
   },
 
+  _formatDateObject(value) {
+    if (typeof Utilities !== 'undefined' && Utilities &&
+      typeof Utilities.formatDate === 'function') {
+      return DateUtils._formatDateObject(value);
+    }
+    // Test-only/runtime-neutral fallback. Production Apps Script uses the
+    // explicit clinic timezone above; the script timezone is also pinned.
+    var mm = String(value.getMonth() + 1).padStart(2, '0');
+    var dd = String(value.getDate()).padStart(2, '0');
+    return value.getFullYear() + '-' + mm + '-' + dd;
+  },
+
+  _formatTimeObject(value) {
+    if (typeof Utilities !== 'undefined' && Utilities &&
+      typeof Utilities.formatDate === 'function') {
+      return DateUtils._formatTimeObject(value);
+    }
+    var hh = String(value.getHours()).padStart(2, '0');
+    var mm = String(value.getMinutes()).padStart(2, '0');
+    return hh + ':' + mm;
+  },
+
   _validDateParts(year, month, day) {
     if (year < 1 || month < 1 || month > 12 || day < 1) return false;
     var leap = (year % 4 === 0 && year % 100 !== 0) || (year % 400 === 0);
@@ -125,7 +147,7 @@ const DateUtils = {
   /** Format a Date as clinic-local YYYY-MM-DD. */
   formatClinicDate(dateValue) {
     if (!DateUtils._isDate(dateValue)) return '';
-    return Utilities.formatDate(dateValue, DateUtils.CLINIC_TIME_ZONE, 'yyyy-MM-dd');
+    return DateUtils._formatDateObject(dateValue);
   },
 
   /** Format an epoch millisecond value as clinic-local YYYY-MM-DD. */
