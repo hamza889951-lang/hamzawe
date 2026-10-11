@@ -1061,9 +1061,9 @@ const MetricsService = {
       );
     }
 
-    var startParts = String(settings.work_start).trim().split(':');
-    var endParts = String(settings.work_end).trim().split(':');
-    if (startParts.length < 2 || endParts.length < 2) {
+    var normalizedStart = DateUtils.normalizeTime(settings.work_start);
+    var normalizedEnd = DateUtils.normalizeTime(settings.work_end);
+    if (!normalizedStart || !normalizedEnd) {
       return Result.fail(
         'METRIC_EVIDENCE_INVALID',
         'Settings work_start or work_end format is invalid (expected HH:mm)',
@@ -1071,8 +1071,10 @@ const MetricsService = {
       );
     }
 
-    var startMin = parseInt(startParts[0], 10) * 60 + parseInt(startParts[1], 10);
-    var endMin = parseInt(endParts[0], 10) * 60 + parseInt(endParts[1], 10);
+    var startParts = normalizedStart.split(':');
+    var endParts = normalizedEnd.split(':');
+    var startMin = Number(startParts[0]) * 60 + Number(startParts[1]);
+    var endMin = Number(endParts[0]) * 60 + Number(endParts[1]);
     if (isNaN(startMin) || isNaN(endMin) || endMin <= startMin) {
       return Result.fail(
         'METRIC_EVIDENCE_INVALID',
