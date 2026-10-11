@@ -83,6 +83,7 @@ function createBaseSandbox(settingsOverride) {
   loadInto(sandbox, 'Result.js', 'Result');
   loadInto(sandbox, 'Config.js', 'Config');
   loadInto(sandbox, 'SettingsRepository.js', 'SettingsRepository');
+  loadInto(sandbox, 'Utils/DateUtils.js', 'DateUtils');
   loadInto(sandbox, 'BusNumberCalculator.js', 'BusNumberCalculator');
 
   return sandbox;
