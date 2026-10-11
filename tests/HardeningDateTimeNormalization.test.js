@@ -70,4 +70,26 @@ const D = sandbox.DateUtils;
   assert.strictEqual(D.formatLocalStamp('not a timestamp'), '');
 }());
 
-console.log('Canonical date/time normalization: 5/5 PASS');
+(function operationalClockParsersDelegateToTheCanonicalBoundary() {
+  function read(rel) {
+    return fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+  }
+  const generator = read('SlotGenerator.js');
+  const reminders = read('Reminderservice.js');
+  const changes = read('Changeservice.js');
+  const buses = read('BusNumberCalculator.js');
+  const doctorControl = read('Application/DoctorControlInteractionService.js');
+
+  assert.ok(generator.includes('DateUtils.normalizeTime(settings && settings.work_start)'));
+  assert.ok(generator.includes('DateUtils.normalizeTime(settings && settings.work_end)'));
+  assert.strictEqual(generator.includes('settings.work_start.split'), false);
+  assert.ok(reminders.includes('var normalized = DateUtils.normalizeTime(text);'));
+  assert.ok(changes.includes('const normalized = DateUtils.normalizeTime(text);'));
+  assert.ok(buses.includes('var normalized = DateUtils.normalizeTime(timeValue);'));
+  assert.strictEqual(buses.includes('Utilities.formatDate('), false,
+    'bus time interpretation must use the canonical timezone boundary');
+  assert.ok(doctorControl.includes('var fullDayDate = DateUtils.normalizeDate(text);'));
+  assert.ok(doctorControl.includes('var effectiveDate = DateUtils.normalizeDate(text);'));
+}());
+
+console.log('Canonical date/time normalization: 6/6 PASS');
