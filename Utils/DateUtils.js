@@ -2,10 +2,89 @@
  * ═══════════════════════════════════════
  * CONTRACT — DateUtils
  * ═══════════════════════════════════════
- * Pure date/time conversions only. Current time remains the sole responsibility
- * of Clock.now().
+ * Canonical clinic-local representations:
+ *   date       YYYY-MM-DD
+ *   time       HH:mm (24-hour)
+ *   local stamp YYYY-MM-DDTHH:mm
+ * Absolute instants remain epoch milliseconds / Date values.
+ *
+ * Legacy inputs are normalized at this boundary only when their shape is
+ * unambiguous. Invalid or ambiguous strings are rejected (null / '') rather
+ * than guessed. Current time remains the sole responsibility of Clock.now().
  */
 const DateUtils = {
+  CLINIC_TIME_ZONE: 'Asia/Baghdad',
+
+  _isDate(value) {
+    return Object.prototype.toString.call(value) === '[object Date]' &&
+      !isNaN(value.getTime());
+  },
+
+  _validDateParts(year, month, day) {
+    if (year < 1 || month < 1 || month > 12 || day < 1) return false;
+    var leap = (year % 4 === 0 && year % 100 !== 0) || (year % 400 === 0);
+    var days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    return day <= days[month - 1];
+  },
+
+  _normalizeDateString(value) {
+    if (typeof value !== 'string') return null;
+    var match = value.trim().match(/^(\d{4})[-/](\d{2})[-/](\d{2})$/);
+    if (!match) return null;
+    var year = Number(match[1]);
+    var month = Number(match[2]);
+    var day = Number(match[3]);
+    if (!DateUtils._validDateParts(year, month, day)) return null;
+    return match[1] + '-' + match[2] + '-' + match[3];
+  },
+
+  /**
+   * Normalize an unambiguous date-only value to YYYY-MM-DD.
+   * Date objects are interpreted in the clinic timezone; strings must be
+   * YYYY-MM-DD or the known legacy YYYY/MM/DD shape.
+   */
+  normalizeDate(value) {
+    if (DateUtils._isDate(value)) {
+      return Utilities.formatDate(value, DateUtils.CLINIC_TIME_ZONE, 'yyyy-MM-dd');
+    }
+    return DateUtils._normalizeDateString(value);
+  },
+
+  /**
+   * Normalize an unambiguous time-only value to 24-hour HH:mm.
+   * Date objects are interpreted in the clinic timezone. Strings accept
+   * HH:mm or HH:mm:ss only; locale-dependent values are not guessed.
+   */
+  normalizeTime(value) {
+    if (DateUtils._isDate(value)) {
+      return Utilities.formatDate(value, DateUtils.CLINIC_TIME_ZONE, 'HH:mm');
+    }
+    if (typeof value !== 'string') return null;
+    var match = value.trim().match(/^(\d{2}):(\d{2})(?::\d{2})?$/);
+    if (!match) return null;
+    var hour = Number(match[1]);
+    var minute = Number(match[2]);
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+    return match[1] + ':' + match[2];
+  },
+
+  /**
+   * Normalize local wall-clock date/time to YYYY-MM-DDTHH:mm.
+   * No timezone offset is implied by this value.
+   */
+  normalizeLocalDateTime(value) {
+    if (DateUtils._isDate(value)) {
+      return DateUtils.normalizeDate(value) + 'T' + DateUtils.normalizeTime(value);
+    }
+    if (typeof value !== 'string') return null;
+    var text = value.trim();
+    var match = text.match(/^(\d{4}[-/]\d{2}[-/]\d{2})[T ](\d{2}:\d{2})(?::\d{2})?$/);
+    if (!match) return null;
+    var date = DateUtils._normalizeDateString(match[1]);
+    var time = DateUtils.normalizeTime(match[2]);
+    return date && time ? date + 'T' + time : null;
+  },
+
   /**
    * @param {Date} date
    * @param {number} minutes
@@ -25,9 +104,8 @@ const DateUtils = {
 
   /**
    * Convert a Date / numeric / date-string value to epoch ms.
-   * Invalid or absent values return null.
-   * Date detection deliberately supports cross-realm Date objects as well,
-   * which is required by the repository's VM-based contract tests.
+   * Invalid or absent values return null. This is an instant conversion,
+   * not a local wall-clock date/time parser.
    */
   toEpochMs(value) {
     if (Object.prototype.toString.call(value) === '[object Date]') {
@@ -44,19 +122,13 @@ const DateUtils = {
     return null;
   },
 
-  /**
-   * Format a Date as clinic-local YYYY-MM-DD.
-   */
+  /** Format a Date as clinic-local YYYY-MM-DD. */
   formatClinicDate(dateValue) {
-    if (!dateValue) return '';
-    return Utilities.formatDate(dateValue, 'Asia/Baghdad', 'yyyy-MM-dd');
+    if (!DateUtils._isDate(dateValue)) return '';
+    return Utilities.formatDate(dateValue, DateUtils.CLINIC_TIME_ZONE, 'yyyy-MM-dd');
   },
 
-  /**
-   * Format an epoch millisecond value as clinic-local YYYY-MM-DD.
-   * The Date construction is deliberately kept inside DateUtils so CAS-009
-   * callers never construct Date objects from numeric timestamps themselves.
-   */
+  /** Format an epoch millisecond value as clinic-local YYYY-MM-DD. */
   formatClinicDateFromEpoch(timestampMs) {
     if (timestampMs === null || timestampMs === undefined) return '';
     var numeric = Number(timestampMs);
@@ -64,97 +136,59 @@ const DateUtils = {
     return DateUtils.formatClinicDate(new Date(numeric));
   },
 
-  /**
-   * Return the clinic-local calendar date N*24h before a supplied Date.
-   */
+  /** Return the clinic-local calendar date N*24h before a supplied Date. */
   clinicDateDaysAgo(dateValue, days) {
-    if (!(dateValue instanceof Date) || isNaN(dateValue.getTime())) return '';
+    if (!DateUtils._isDate(dateValue)) return '';
     return DateUtils.formatClinicDate(
       new Date(dateValue.getTime() - Number(days) * 24 * 60 * 60 * 1000)
     );
   },
 
-  /**
-   * Format Date for display as YYYY-MM-DD.
-   */
+  /** Display format is canonical too: YYYY-MM-DD. */
   formatDateDisplay(dateValue) {
-    if (!dateValue) return '';
-    return Utilities.formatDate(dateValue, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    return DateUtils.normalizeDate(dateValue) || '';
   },
 
-  /**
-   * Format Date for display as HH:mm.
-   */
+  /** Display format is canonical too: HH:mm. */
   formatTimeDisplay(timeValue) {
-    if (!timeValue) return '';
-    return Utilities.formatDate(timeValue, Session.getScriptTimeZone(), 'HH:mm');
+    return DateUtils.normalizeTime(timeValue) || '';
   }
 };
 
+/** Preserve the existing legacy storage contract YYYY/MM/DD. */
 DateUtils.formatDateForStorage = function(dateValue) {
-  if (!dateValue) return '';
-  var yyyy = dateValue.getFullYear();
-  var mm = String(dateValue.getMonth() + 1);
-  if (mm.length < 2) mm = '0' + mm;
-  var dd = String(dateValue.getDate());
-  if (dd.length < 2) dd = '0' + dd;
-  return yyyy + '/' + mm + '/' + dd;
+  var date = DateUtils.normalizeDate(dateValue);
+  return date ? date.replace(/-/g, '/') : '';
 };
 
-DateUtils.formatTimeForStorage = function(dateValue) {
-  if (!dateValue) return '';
-  var hh = String(dateValue.getHours());
-  if (hh.length < 2) hh = '0' + hh;
-  var mm = String(dateValue.getMinutes());
-  if (mm.length < 2) mm = '0' + mm;
-  return hh + ':' + mm;
+/** Preserve the existing storage contract HH:mm. */
+DateUtils.formatTimeForStorage = function(timeValue) {
+  return DateUtils.normalizeTime(timeValue) || '';
 };
 
+/** Canonical operational sort key: YYYYMMDDHHmm. */
 DateUtils.formatSortKey = function(dateValue) {
-  if (!dateValue) return '';
-  var yyyy = dateValue.getFullYear();
-  var Mnth = String(dateValue.getMonth() + 1);
-  if (Mnth.length < 2) Mnth = '0' + Mnth;
-  var dy = String(dateValue.getDate());
-  if (dy.length < 2) dy = '0' + dy;
-  var hr = String(dateValue.getHours());
-  if (hr.length < 2) hr = '0' + hr;
-  var mn = String(dateValue.getMinutes());
-  if (mn.length < 2) mn = '0' + mn;
-  return '' + yyyy + Mnth + dy + hr + mn;
+  var date = DateUtils.normalizeDate(dateValue);
+  var time = DateUtils.normalizeTime(dateValue);
+  return date && time ? date.replace(/-/g, '') + time.replace(':', '') : '';
 };
 
-/**
- * M4-C Continuation — local schedule stamp 'YYYY-MM-DDTHH:mm'.
- */
+/** Canonical local wall-clock stamp: YYYY-MM-DDTHH:mm. */
 DateUtils.formatLocalStamp = function(dateValue) {
-  if (!dateValue) return '';
-  var yyyy = dateValue.getFullYear();
-  var mm = String(dateValue.getMonth() + 1);
-  if (mm.length < 2) mm = '0' + mm;
-  var dd = String(dateValue.getDate());
-  if (dd.length < 2) dd = '0' + dd;
-  var hh = String(dateValue.getHours());
-  if (hh.length < 2) hh = '0' + hh;
-  var mn = String(dateValue.getMinutes());
-  if (mn.length < 2) mn = '0' + mn;
-  return yyyy + '-' + mm + '-' + dd + 'T' + hh + ':' + mn;
+  return DateUtils.normalizeLocalDateTime(dateValue) || '';
 };
 
-/**
- * M4-C Continuation — next calendar date for a 'YYYY-MM-DD' string.
- */
+/** Next calendar date for a canonical YYYY-MM-DD string. */
 DateUtils.nextLocalDateString = function(dateStr) {
-  if (typeof dateStr !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return null;
-  var y = parseInt(dateStr.substring(0, 4), 10);
-  var m = parseInt(dateStr.substring(5, 7), 10);
-  var d = parseInt(dateStr.substring(8, 10), 10);
-  var dim = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-  var leap = (y % 4 === 0 && y % 100 !== 0) || (y % 400 === 0);
-  if (leap) dim[1] = 29;
-  if (m < 1 || m > 12 || d < 1 || d > dim[m - 1]) return null;
+  var normalized = DateUtils.normalizeDate(dateStr);
+  if (!normalized) return null;
+  var y = Number(normalized.substring(0, 4));
+  var m = Number(normalized.substring(5, 7));
+  var d = Number(normalized.substring(8, 10));
   d += 1;
-  if (d > dim[m - 1]) {
+  var daysInMonth = [31, ((y % 4 === 0 && y % 100 !== 0) || (y % 400 === 0)) ? 29 : 28,
+    31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (d > daysInMonth[m - 1]) {
     d = 1;
     m += 1;
     if (m > 12) { m = 1; y += 1; }
