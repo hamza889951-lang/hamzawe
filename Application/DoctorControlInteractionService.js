@@ -477,7 +477,8 @@ const DoctorControlInteractionService = {
     if (!days.ok) return this._retryInput(phone, 'RECURRING', days.error.message);
     var window = this._parseWindow(parts[1]);
     if (!window.ok) return this._retryInput(phone, 'RECURRING', window.error.message);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(parts[2])) {
+    var effectiveDate = DateUtils.normalizeDate(parts[2]);
+    if (!effectiveDate) {
       return this._retryInput(phone, 'RECURRING', 'التاريخ يجب أن يكون بصيغة YYYY-MM-DD');
     }
 
@@ -485,7 +486,7 @@ const DoctorControlInteractionService = {
       doctor_draft_kind: 'RECURRING',
       doctor_draft_days: days.data.join(','),
       doctor_draft_window: window.data.start + '-' + window.data.end,
-      doctor_draft_effective_from: parts[2],
+      doctor_draft_effective_from: effectiveDate,
       doctor_draft_command_id: IdGenerator.generateScheduleCommandId()
     };
     return this._previewAndAsk(controlContext, phone, draft);
@@ -899,10 +900,15 @@ const DoctorControlInteractionService = {
 
   _parseWindow: function(text) {
     var parts = text.split('-').map(function(p) { return p.trim(); });
-    if (parts.length !== 2 || !/^\d{1,2}:\d{2}$/.test(parts[0]) || !/^\d{1,2}:\d{2}$/.test(parts[1])) {
+    if (parts.length !== 2) {
       return Result.fail('INVALID_INPUT', 'النافذة بصيغة HH:mm-HH:mm، مثال: 10:00-14:00');
     }
-    return Result.ok({ start: parts[0], end: parts[1] });
+    var start = DateUtils.normalizeTime(parts[0]);
+    var end = DateUtils.normalizeTime(parts[1]);
+    if (!start || !end) {
+      return Result.fail('INVALID_INPUT', 'النافذة بصيغة HH:mm-HH:mm، مثال: 10:00-14:00');
+    }
+    return Result.ok({ start: start, end: end });
   },
 
   _parseLocalDateTimeText: function(text) {
