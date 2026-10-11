@@ -162,6 +162,7 @@ function createMetricsSandbox() {
   load('Result.js', 'Result');
   load('Config.js', 'Config');
   load('StateMachine.js', 'StateMachine');
+  load('Utils/DateUtils.js', 'DateUtils');
   load('Utils/LegacySlotTimeParser.js', 'LegacySlotTimeParser');
   load('Repositories/SlotRepository.js', 'SlotRepository');
   load('Repositories/AttendanceAuditRepository.js', 'AttendanceAuditRepository');
