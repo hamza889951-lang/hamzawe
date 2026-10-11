@@ -74,8 +74,8 @@ const DateUtils = {
 
   /**
    * Normalize an unambiguous time-only value to 24-hour HH:mm.
-   * Date objects are interpreted in the clinic timezone. Strings accept
-   * HH:mm or HH:mm:ss only; locale-dependent values are not guessed.
+   * Date objects are interpreted in the clinic timezone. Strings accept H:mm
+   * or HH:mm only; seconds and locale-dependent values are rejected.
    */
   normalizeTime(value) {
     if (DateUtils._isDate(value)) {
@@ -92,7 +92,8 @@ const DateUtils = {
 
   /**
    * Normalize local wall-clock date/time to YYYY-MM-DDTHH:mm.
-   * No timezone offset is implied by this value.
+   * Known legacy YYYY/MM/DD and space-separated forms are accepted; no
+   * timezone offset is implied by this value.
    */
   normalizeLocalDateTime(value) {
     if (DateUtils._isDate(value)) {
