@@ -191,20 +191,11 @@ const DoctorScheduleReadService = {
    * @returns {Result} ok(string)
    */
   _clockString: function(value) {
-    if (typeof value !== 'string') {
-      return Result.fail('SCHEDULE_SOURCE_INVALID', 'Clock value is not a string');
+    var normalized = DateUtils.normalizeTime(value);
+    if (!normalized) {
+      return Result.fail('SCHEDULE_SOURCE_INVALID', 'Clock value must be a valid clinic-local HH:mm time');
     }
-    var trimmed = value.trim();
-    if (!/^\d{1,2}:\d{2}$/.test(trimmed)) {
-      return Result.fail('SCHEDULE_SOURCE_INVALID', 'Clock value is not H:mm or HH:mm');
-    }
-    var parts = trimmed.split(':');
-    var hour = parseInt(parts[0], 10);
-    var minute = parseInt(parts[1], 10);
-    if (hour > 23 || minute > 59) {
-      return Result.fail('SCHEDULE_SOURCE_INVALID', 'Clock value is out of range');
-    }
-    return Result.ok(trimmed);
+    return Result.ok(normalized);
   },
 
   /**
