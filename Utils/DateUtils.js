@@ -25,11 +25,12 @@ const DateUtils = {
       typeof Utilities.formatDate === 'function') {
       return Utilities.formatDate(value, DateUtils.CLINIC_TIME_ZONE, 'yyyy-MM-dd');
     }
-    // Test-only/runtime-neutral fallback. Production Apps Script uses the
-    // explicit clinic timezone above; the script timezone is also pinned.
-    var mm = String(value.getMonth() + 1).padStart(2, '0');
-    var dd = String(value.getDate()).padStart(2, '0');
-    return value.getFullYear() + '-' + mm + '-' + dd;
+    // Pure fallback for VM/Node contract tests: clinic wall-clock = UTC+3.
+    // Production Apps Script uses Utilities with the explicit named timezone.
+    var clinicDate = new Date(value.getTime() + 180 * 60000);
+    var mm = String(clinicDate.getUTCMonth() + 1).padStart(2, '0');
+    var dd = String(clinicDate.getUTCDate()).padStart(2, '0');
+    return clinicDate.getUTCFullYear() + '-' + mm + '-' + dd;
   },
 
   _formatTimeObject(value) {
@@ -37,8 +38,11 @@ const DateUtils = {
       typeof Utilities.formatDate === 'function') {
       return Utilities.formatDate(value, DateUtils.CLINIC_TIME_ZONE, 'HH:mm');
     }
-    var hh = String(value.getHours()).padStart(2, '0');
-    var mm = String(value.getMinutes()).padStart(2, '0');
+    // Match the project's frozen Asia/Baghdad UTC+3 contract without
+    // depending on the host process timezone.
+    var clinicTime = new Date(value.getTime() + 180 * 60000);
+    var hh = String(clinicTime.getUTCHours()).padStart(2, '0');
+    var mm = String(clinicTime.getUTCMinutes()).padStart(2, '0');
     return hh + ':' + mm;
   },
 
