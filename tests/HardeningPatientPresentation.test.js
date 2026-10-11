@@ -61,6 +61,14 @@ function loadChangeForPresentation(settings) {
     fail: function(code, message) { return { ok: false, error: { code: code, message: message } }; }
   };
   sandbox.SettingsRepository = { getAll: function() { return settings; } };
+  sandbox.DateUtils = {
+    normalizeTime: function(value) {
+      if (typeof value !== 'string') return null;
+      var match = /^(\d{1,2}):(\d{2})$/.exec(value.trim());
+      if (!match || Number(match[1]) > 23 || Number(match[2]) > 59) return null;
+      return (Number(match[1]) < 10 ? '0' : '') + Number(match[1]) + ':' + match[2];
+    }
+  };
   vm.runInContext(source('Changeservice.js') + '\nthis.ChangeService = ChangeService;', sandbox);
   return sandbox.ChangeService;
 }
