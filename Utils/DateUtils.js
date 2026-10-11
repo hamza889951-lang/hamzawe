@@ -23,7 +23,10 @@ const DateUtils = {
   _formatDateObject(value) {
     if (typeof Utilities !== 'undefined' && Utilities &&
       typeof Utilities.formatDate === 'function') {
-      return Utilities.formatDate(value, DateUtils.CLINIC_TIME_ZONE, 'yyyy-MM-dd');
+      var formattedDate = Utilities.formatDate(value, DateUtils.CLINIC_TIME_ZONE, 'yyyy-MM-dd');
+      if (typeof formattedDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(formattedDate)) {
+        return formattedDate;
+      }
     }
     // Pure fallback for VM/Node contract tests: clinic wall-clock = UTC+3.
     // Production Apps Script uses Utilities with the explicit named timezone.
@@ -36,7 +39,10 @@ const DateUtils = {
   _formatTimeObject(value) {
     if (typeof Utilities !== 'undefined' && Utilities &&
       typeof Utilities.formatDate === 'function') {
-      return Utilities.formatDate(value, DateUtils.CLINIC_TIME_ZONE, 'HH:mm');
+      var formattedTime = Utilities.formatDate(value, DateUtils.CLINIC_TIME_ZONE, 'HH:mm');
+      if (typeof formattedTime === 'string' && /^\d{2}:\d{2}$/.test(formattedTime)) {
+        return formattedTime;
+      }
     }
     // Match the project's frozen Asia/Baghdad UTC+3 contract without
     // depending on the host process timezone.
