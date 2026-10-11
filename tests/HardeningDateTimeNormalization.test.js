@@ -78,6 +78,10 @@ const D = sandbox.DateUtils;
   const reminders = read('Reminderservice.js');
   const changes = read('Changeservice.js');
   const buses = read('BusNumberCalculator.js');
+  const booking = read('Application/BookingService.js');
+  const effectiveSchedule = read('Application/EffectiveScheduleService.js');
+  const scheduleRead = read('Application/DoctorScheduleReadService.js');
+  const metrics = read('Application/MetricsService.js');
   const doctorControl = read('Application/DoctorControlInteractionService.js');
 
   assert.ok(generator.includes('DateUtils.normalizeTime(settings && settings.work_start)'));
@@ -85,6 +89,10 @@ const D = sandbox.DateUtils;
   assert.strictEqual(generator.includes('settings.work_start.split'), false);
   assert.ok(reminders.includes('var normalized = DateUtils.normalizeTime(text);'));
   assert.ok(changes.includes('const normalized = DateUtils.normalizeTime(text);'));
+  assert.ok(booking.includes('const normalized = DateUtils.normalizeTime(text);'));
+  assert.ok(effectiveSchedule.includes('var normalized = DateUtils.normalizeTime(clock);'));
+  assert.ok(scheduleRead.includes('var normalized = DateUtils.normalizeTime(value);'));
+  assert.ok(metrics.includes('DateUtils.normalizeTime(settings.work_start)'));
   assert.ok(buses.includes('var normalized = DateUtils.normalizeTime(timeValue);'));
   assert.strictEqual(buses.includes('Utilities.formatDate('), false,
     'bus time interpretation must use the canonical timezone boundary');
