@@ -172,7 +172,13 @@ sandbox.DateUtils = {
   addMinutes: function(date, minutes) { return new Date(date.getTime() + minutes * 60000); },
   fromTimestamp: function(value) { return new Date(value); },
   formatDateDisplay: function(value) { return String(value); },
-  formatTimeDisplay: function(value) { return String(value); }
+  formatTimeDisplay: function(value) { return String(value); },
+  normalizeTime: function(value) {
+    if (typeof value !== 'string') return null;
+    var match = /^(\d{1,2}):(\d{2})$/.exec(value.trim());
+    if (!match || Number(match[1]) > 23 || Number(match[2]) > 59) return null;
+    return (Number(match[1]) < 10 ? '0' : '') + Number(match[1]) + ':' + match[2];
+  }
 };
 sandbox.LegacySlotTimeParser = { toComparableTime: function(value) { return typeof value === 'number' ? value : null; } };
 sandbox.SettingsRepository = {
