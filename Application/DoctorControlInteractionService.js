@@ -899,8 +899,6 @@ const DoctorControlInteractionService = {
   },
 
   _parseLocalDateTimeText: function(text) {
-    var m = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})$/.exec(text.trim());
-    if (!m) return null;
-    return m[1] + 'T' + m[2];
+    return DateUtils.normalizeLocalDateTime(text);
   }
 };
