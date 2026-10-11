@@ -120,6 +120,22 @@ const context = {
   },
   DateUtils: {
     formatLocalStamp: function() { return '2026-10-04T08:00'; },
+    normalizeDate: function(value) {
+      return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
+    },
+    normalizeTime: function(value) {
+      if (typeof value !== 'string') return null;
+      var match = /^(\d{1,2}):(\d{2})$/.exec(value);
+      if (!match || Number(match[1]) > 23 || Number(match[2]) > 59) return null;
+      return (Number(match[1]) < 10 ? '0' : '') + Number(match[1]) + ':' + match[2];
+    },
+    normalizeLocalDateTime: function(value) {
+      if (typeof value !== 'string') return null;
+      var match = /^(\d{4}-\d{2}-\d{2})[ T](\d{1,2}:\d{2})$/.exec(value);
+      if (!match) return null;
+      var time = this.normalizeTime(match[2]);
+      return time ? match[1] + 'T' + time : null;
+    },
     nextLocalDateString: function(value) { return value === '2026-10-20' ? '2026-10-21' : null; }
   },
   Clock: {
