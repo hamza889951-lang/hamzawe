@@ -13,6 +13,7 @@ const LogArchiveRepository = {
   ARCHIVE_SHEET_NAME: 'SYSTEM_LOG_ARCHIVE',
 
   findOlderThan: function(cutoffMs) {
+    var startedMs = Clock.now().getTime();
     var sourceName = Config.VOCABULARY.SHEETS.SYSTEM_LOG;
     var rows;
     try {
@@ -35,7 +36,7 @@ const LogArchiveRepository = {
       if (rowMs < cutoffMs) records.push(this._toRecord(row));
     }
 
-    return Result.ok({ records: records, totalCount: rows.length, malformedTimestamps: malformedTimestamps });
+    return Result.ok({ records: records, totalCount: rows.length, malformedTimestamps: malformedTimestamps, diagnostics: { totalDurationMs: Math.max(0, Clock.now().getTime() - startedMs), rowsScanned: rows.length, eligibleRecords: records.length } });
   },
 
   /**
@@ -43,7 +44,8 @@ const LogArchiveRepository = {
    * ambiguous duplicates block the operation and therefore block deletion.
    */
   archiveRecords: function(records) {
-    if (!records || records.length === 0) return Result.ok({ appended: 0, verified: 0 });
+    var startedMs = Clock.now().getTime();
+    if (!records || records.length === 0) return Result.ok({ appended: 0, verified: 0, durationMs: 0 });
 
     try {
       var sourceName = Config.VOCABULARY.SHEETS.SYSTEM_LOG;
@@ -91,7 +93,7 @@ const LogArchiveRepository = {
         }
       }
 
-      return Result.ok({ appended: toAppend.length, verified: records.length });
+      return Result.ok({ appended: toAppend.length, verified: records.length, durationMs: Math.max(0, Clock.now().getTime() - startedMs), archiveRowsScanned: archiveRows.length, verificationRowsScanned: verifiedRows.length });
     } catch (e) {
       return Result.fail('ARCHIVE_VERIFY_FAILED', 'SYSTEM_LOG archive operation failed before delete', { message: e.message });
     }
@@ -106,7 +108,8 @@ const LogArchiveRepository = {
    * Fresh reread and exact identity validation before delete.
    */
   deleteRecords: function(records) {
-    if (!records || records.length === 0) return Result.ok({ deleted: 0 });
+    var startedMs = Clock.now().getTime();
+    if (!records || records.length === 0) return Result.ok({ deleted: 0, durationMs: 0 });
 
     var sourceName = Config.VOCABULARY.SHEETS.SYSTEM_LOG;
     var currentRows;
@@ -156,7 +159,7 @@ const LogArchiveRepository = {
         'Could not verify SYSTEM_LOG deletion', { message: e3.message });
     }
 
-    return Result.ok({ deleted: rowNumbers.length });
+    return Result.ok({ deleted: rowNumbers.length, durationMs: Math.max(0, Clock.now().getTime() - startedMs), sourceRowsScannedForRevalidation: currentRows.length, sourceRowsScannedForPostDeleteVerification: remaining.length });
   },
 
   _toRecord: function(row) {
