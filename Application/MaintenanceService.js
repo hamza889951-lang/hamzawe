@@ -2,12 +2,20 @@ const MaintenanceService = {
 
   runCleanup: function() {
     var nowMs = Clock.now().getTime();
-    var expiredCandidates = SlotRepository.query(function(row) {
+    var candidateQuery = SlotRepository.queryResult(function(row) {
       if (row.status !== Config.VOCABULARY.STATUS.RESERVED) return false;
       var until = Number(row.reserved_until_unix);
       if (isNaN(until)) return false;
       return until < nowMs;
     });
+    if (!candidateQuery.ok) {
+      return Result.fail(
+        'MAINTENANCE_CLEANUP_QUERY_FAILED',
+        'Failed to read Availability while finding expired reservations',
+        candidateQuery.error
+      );
+    }
+    var expiredCandidates = candidateQuery.data;
 
     if (expiredCandidates.length === 0) {
       return Result.ok({ cleaned: 0, skipped: 0 });
@@ -39,12 +47,20 @@ const MaintenanceService = {
 
   runExpiration: function() {
     var nowMs = Clock.now().getTime();
-    var passedSlots = SlotRepository.query(function(row) {
+    var passedQuery = SlotRepository.queryResult(function(row) {
       if (row.status !== Config.VOCABULARY.STATUS.FREE) return false;
       var slotTime = LegacySlotTimeParser.toComparableTime(row.sort_key);
       if (slotTime === null) return false;
       return slotTime < nowMs;
     });
+    if (!passedQuery.ok) {
+      return Result.fail(
+        'MAINTENANCE_EXPIRATION_QUERY_FAILED',
+        'Failed to read Availability while finding expired slots',
+        passedQuery.error
+      );
+    }
+    var passedSlots = passedQuery.data;
     if (passedSlots.length === 0) return Result.ok({ expired: 0 });
     var updates = passedSlots.map(function(slot) {
       return { columnName: 'slot_id', value: slot.slot_id, fields: { status: Config.VOCABULARY.STATUS.EXPIRED } };
