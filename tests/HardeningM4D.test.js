@@ -993,13 +993,39 @@ test('M4D-K1 — horizon runs under AvailabilityHorizon lock', function() {
   assert.ok(state.lockKeys.indexOf('AvailabilityHorizon') !== -1);
 });
 
-test('M4D-K2 — reconciliation uses per-slot atomicUpdate lock', function() {
+
+test('M4D-K3 — partial reconciliation write failure is returned as horizon failure', function() {
   setupStandard();
   const slot = seedSlot({
     sort_key: '202609021000', time: '10:00', is_available: false
   });
-  HM.ensureHorizon(controlContext());
-  assert.ok(state.lockKeys.indexOf('slot:' + slot.slot_id) !== -1);
+  const originalUpdate = sandbox.GoogleSheets.updateRowByColumn;
+  sandbox.GoogleSheets.updateRowByColumn = function(name, column, value, fields) {
+    if (name === 'Availability' && column === 'slot_id' && value === slot.slot_id) return false;
+    return originalUpdate.call(sandbox.GoogleSheets, name, column, value, fields);
+  };
+  const result = HM.ensureHorizon(controlContext());
+  sandbox.GoogleSheets.updateRowByColumn = originalUpdate;
+  assert.strictEqual(result.ok, false, 'partial write failure must not report success');
+  assert.strictEqual(result.error.code, 'HORIZON_PARTIAL_FAILURE');
+  assert.ok(result.error.details.reconcileErrors > 0);
+  assert.strictEqual(result.error.details.reconcileStatus, 'OK',
+    'reconciliation returns structured partial data, but outer result must fail');
+  assert.ok(result.error.details.reconcileErrorDetails.some(e => e.slotId === slot.slot_id));
+});
+
+test('M4D-K2 — reconciliation writes under the existing script lock without nested lock acquisition', function() {
+  setupStandard();
+  const slot = seedSlot({
+    sort_key: '202609021000', time: '10:00', is_available: false
+  });
+  const result = HM.ensureHorizon(controlContext());
+  assert.strictEqual(result.ok, true, JSON.stringify(result.error));
+  assert.ok(state.lockKeys.indexOf('AvailabilityHorizon') !== -1);
+  assert.strictEqual(state.lockKeys.indexOf('slot:' + slot.slot_id), -1,
+    'reconciliation must not attempt to reacquire the script-wide lock');
+  const fresh = state.sheets['Availability'].rows.find(s => s.slot_id === slot.slot_id);
+  assert.strictEqual(fresh.is_available, true, 'required availability write must occur');
 });
 
 // ══════════════════════════════════════════════════════════
