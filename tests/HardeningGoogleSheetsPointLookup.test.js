@@ -171,9 +171,9 @@ function makeHarness(options = {}) {
 
   const typed = api._findRowNumberByColumnValue(
     { getRange: (row, col, numRows, numCols) => makeHarness().sheet.getRange(row, col, numRows, numCols) },
-    2, rows.length + 1, 1
+    3, rows.length + 1, 1
   );
-  assert.equal(typed, null, 'non-string keys must preserve strict typed comparison');
+  assert.equal(typed, null, 'numeric 1 must not match boolean true under strict typed comparison');
 }
 
 {
