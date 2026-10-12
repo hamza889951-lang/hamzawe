@@ -340,6 +340,16 @@ test('M4D-B3 — slot already in correct state skips atomicUpdate', function() {
   assert.strictEqual(r.ok, true, JSON.stringify(r.error));
   assert.strictEqual(r.data.reconciled, 0);
   assert.strictEqual(state.lockKeys.indexOf('slot:' + slot.slot_id), -1);
+  assert.ok(r.data.reconcileDiagnostics, 'reconciliation diagnostics should be returned');
+  assert.strictEqual(r.data.reconcileDiagnostics.skippedNoOp, 1);
+  assert.strictEqual(r.data.reconcileDiagnostics.atomicUpdateCalls, 0);
+  assert.strictEqual(r.data.reconcileDiagnostics.totalScanned, 1);
+  assert.strictEqual(
+    r.data.reconcileDiagnostics.totalScanned,
+    r.data.reconcileDiagnostics.skippedNoOp +
+      r.data.reconcileDiagnostics.atomicUpdateCalls +
+      r.data.reconcileDiagnostics.preAtomicErrors
+  );
 });
 
 test('M4D-B3b — string TRUE availability also skips atomicUpdate', function() {

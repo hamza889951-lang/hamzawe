@@ -49,14 +49,23 @@ const AvailabilityHorizonMaintainer = {
    */
   ensureHorizon: function(optionalControlContext) {
     return Lock.runExclusive('AvailabilityHorizon', function() {
+      // TEMPORARY DIAGNOSTICS: in-memory timings only; remove after identifying bottlenecks.
+      var horizonDiagnosticsStartedAtMs = Clock.now().getTime();
+      var horizonStageTimingsMs = {};
+      function horizonStageStart() { return Clock.now().getTime(); }
+      function horizonStageEnd(name, startedAtMs) {
+        horizonStageTimingsMs[name] = Math.max(0, Clock.now().getTime() - startedAtMs);
+      }
 
       // ── Step 1: Build control context ──
+      var stageStartedAtMs = horizonStageStart();
       var ccResult;
       if (optionalControlContext) {
         ccResult = Result.ok(optionalControlContext);
       } else {
         ccResult = AvailabilityHorizonMaintainer._buildSchedulerControlContext();
       }
+      horizonStageEnd('buildControlContext', stageStartedAtMs);
       if (!ccResult.ok) {
         LogRepository.write({
           timestamp: Clock.now(), command: 'GENERATE_AVAILABILITY', phone: '',
@@ -68,6 +77,7 @@ const AvailabilityHorizonMaintainer = {
       var controlContext = ccResult.data;
 
       // ── Step 2: Load Settings (once) ──
+      stageStartedAtMs = horizonStageStart();
       var settingsResult;
       try {
         settingsResult = SettingsRepository.getSettingsResult();
@@ -88,6 +98,7 @@ const AvailabilityHorizonMaintainer = {
         });
         return settingsResult;
       }
+      horizonStageEnd('readSettings', stageStartedAtMs);
       var settings = settingsResult.data;
 
       var durationInfo = SettingsRepository.getSlotDurationInfo(settings);
@@ -107,6 +118,7 @@ const AvailabilityHorizonMaintainer = {
       var slotDuration = durationInfo.minutes;
 
       // ── Step 3: Build EffectiveSchedule baseline from already-loaded Settings ──
+      stageStartedAtMs = horizonStageStart();
       var scopeResult = EffectiveScheduleService._scopeFromControlContext(controlContext);
       if (!scopeResult.ok) return scopeResult;
       
@@ -131,6 +143,7 @@ const AvailabilityHorizonMaintainer = {
         return listResult;
       }
       var records = listResult.data;
+      horizonStageEnd('loadEffectiveScheduleSources', stageStartedAtMs);
 
       // ── Step 4a: Validate slot_generation_days (M4-D fail-closed) ──
       var targetDays = parseInt(settings.slot_generation_days, 10);
@@ -149,6 +162,7 @@ const AvailabilityHorizonMaintainer = {
       }
 
       // ── Step 4b: Find latest sort key (for horizon calculation) ──
+      stageStartedAtMs = horizonStageStart();
       var latestResult = SlotRepository.findLatestSortKey();
       if (!latestResult.ok) {
         LogRepository.write({
@@ -159,8 +173,10 @@ const AvailabilityHorizonMaintainer = {
         return latestResult;
       }
       var latestSortKey = latestResult.data;
+      horizonStageEnd('findLatestSortKey', stageStartedAtMs);
 
       // ── Step 4c: Calculate generation plan using existing Horizon semantics ──
+      stageStartedAtMs = horizonStageStart();
       var planResult = SlotGenerator.calculateGenerationPlan(latestSortKey, settings);
       if (!planResult.ok) {
         LogRepository.write({
@@ -171,10 +187,12 @@ const AvailabilityHorizonMaintainer = {
         return planResult;
       }
       var plan = planResult.data;
+      horizonStageEnd('calculateGenerationPlan', stageStartedAtMs);
 
       // ── Step 4d: Read ALL slots in generation window (for deduplication) ──
       // This includes past slots from today if generation starts today
       var nowMs = Clock.now().getTime();
+      stageStartedAtMs = horizonStageStart();
       var allSlotsInWindow = [];
       if (plan.needsGeneration && plan.startDate) {
         // Calculate the end date for the generation window
@@ -205,6 +223,7 @@ const AvailabilityHorizonMaintainer = {
         
         allSlotsInWindow = queryResult.data;
       }
+      horizonStageEnd('queryGenerationWindowSlots', stageStartedAtMs);
 
       // ── Step 4e: Read future non-terminal slots (for reconciliation) ──
       // Reconciliation must be bounded by Horizon to match materialization window
@@ -245,6 +264,7 @@ const AvailabilityHorizonMaintainer = {
         reconciliationUpperBoundMs = reconciliationEndDate.getTime();
       }
 
+      stageStartedAtMs = horizonStageStart();
       var futureSlots;
       var futureQueryResult = SlotRepository.queryResult(function(row) {
         var sortValue = LegacySlotTimeParser.toComparableTime(row.sort_key);
@@ -268,16 +288,21 @@ const AvailabilityHorizonMaintainer = {
       }
       
       futureSlots = futureQueryResult.data;
+      horizonStageEnd('queryFutureReconciliationSlots', stageStartedAtMs);
 
       // ── Step 5: Reconcile existing non-terminal future slots ──
+      stageStartedAtMs = horizonStageStart();
       var reconcileResult = AvailabilityHorizonMaintainer._reconcileExistingSlots(
         baseline, records, slotDuration, nowMs, futureSlots
       );
+      horizonStageEnd('reconcileExistingSlots', stageStartedAtMs);
 
       // ── Step 6: Generate missing slots using generation plan ──
+      stageStartedAtMs = horizonStageStart();
       var generateResult = AvailabilityHorizonMaintainer._generateMissingSlots(
         controlContext, baseline, records, settings, slotDuration, plan, allSlotsInWindow
       );
+      horizonStageEnd('generateMissingSlots', stageStartedAtMs);
 
       // ── Step 7: Aggregate results ──
       var totalGenerated = generateResult.ok ? generateResult.data.generated : 0;
@@ -292,7 +317,22 @@ const AvailabilityHorizonMaintainer = {
         reconciled: totalReconciled,
         reconcileErrors: reconcileErrors,
         generateFailedDays: generateErrors,
-        deduplicatedSkipped: generateResult.ok ? (generateResult.data.deduplicatedSkipped || 0) : 0
+        deduplicatedSkipped: generateResult.ok ? (generateResult.data.deduplicatedSkipped || 0) : 0,
+        reconcileDiagnostics: reconcileResult.ok ? reconcileResult.data.diagnostics : null,
+        horizonDiagnostics: {
+          totalDurationMs: Math.max(0, Clock.now().getTime() - horizonDiagnosticsStartedAtMs),
+          stageTimingsMs: horizonStageTimingsMs,
+          counts: {
+            generationWindowSlots: allSlotsInWindow.length,
+            futureSlotsScannedForReconciliation: futureSlots.length,
+            scheduleChangeRecords: records.length
+          },
+          slowestMeasuredStage: (function() {
+            var names = Object.keys(horizonStageTimingsMs);
+            names.sort(function(a, b) { return horizonStageTimingsMs[b] - horizonStageTimingsMs[a]; });
+            return names.length ? { name: names[0], durationMs: horizonStageTimingsMs[names[0]] } : null;
+          })()
+        }
       };
 
       LogRepository.write({
@@ -300,6 +340,8 @@ const AvailabilityHorizonMaintainer = {
         slotId: '', stage: 'END', success: !hasErrors, durationMs: null,
         error: JSON.stringify(summary)
       });
+      // Dedicated Apps Script execution-log line for quick diagnosis; no extra Sheets I/O.
+      console.log('[HAMZAWE_HORIZON_DIAGNOSTICS] ' + JSON.stringify(summary.horizonDiagnostics));
 
       if (hasErrors && (!reconcileResult.ok || !generateResult.ok)) {
         return Result.fail(
@@ -354,15 +396,22 @@ const AvailabilityHorizonMaintainer = {
       return !TERMINAL_STATUSES[row.status];
     });
 
+    var reconcileStartedAtMs = Clock.now().getTime();
     var reconciled = 0;
     var errors = 0;
     var errorDetails = [];
+    var skippedNoOp = 0;
+    var atomicUpdateCalls = 0;
+    var preAtomicErrors = 0;
+    var atomicUpdateTotalMs = 0;
+    var atomicUpdateMaxMs = 0;
 
     for (var i = 0; i < futureSlots.length; i++) {
       var slot = futureSlots[i];
       var stampResult = AvailabilityHorizonMaintainer._slotToStamp(slot);
       if (!stampResult.ok) {
         errors += 1;
+        preAtomicErrors += 1;
         errorDetails.push({ slotId: slot.slot_id, reason: 'INVALID_STAMP' });
         continue;
       }
@@ -378,6 +427,7 @@ const AvailabilityHorizonMaintainer = {
 
       if (!evalResult.ok) {
         errors += 1;
+        preAtomicErrors += 1;
         errorDetails.push({
           slotId: slot.slot_id,
           reason: evalResult.error.code,
@@ -395,10 +445,13 @@ const AvailabilityHorizonMaintainer = {
       // Rows that need a change still go through atomicUpdate and its fresh
       // read, terminal-state guard, and final decision before writing.
       if (SlotRepository.isOperationallyAvailable(slot.is_available) === shouldBeAvailable) {
+        skippedNoOp += 1;
         continue;
       }
 
       // atomicUpdate reads fresh row and makes final decision inside atomic boundary
+      atomicUpdateCalls += 1;
+      var atomicUpdateStartedAtMs = Clock.now().getTime();
       var updateResult = SlotRepository.atomicUpdate(slot.slot_id, function(freshRow) {
         // Use fresh row to verify slot is still eligible for reconciliation
         if (!freshRow) {
@@ -426,6 +479,11 @@ const AvailabilityHorizonMaintainer = {
 
         return Result.ok({ is_available: shouldBeAvailable });
       });
+      var atomicUpdateDurationMs = Math.max(0, Clock.now().getTime() - atomicUpdateStartedAtMs);
+      atomicUpdateTotalMs += atomicUpdateDurationMs;
+      if (atomicUpdateDurationMs > atomicUpdateMaxMs) {
+        atomicUpdateMaxMs = atomicUpdateDurationMs;
+      }
 
       // Handle update result
       if (!updateResult.ok) {
@@ -446,11 +504,23 @@ const AvailabilityHorizonMaintainer = {
       // If data is empty {}, no change was needed - don't count as reconciled
     }
 
+    var reconcileDurationMs = Math.max(0, Clock.now().getTime() - reconcileStartedAtMs);
     return Result.ok({
       reconciled: reconciled,
       errors: errors,
       errorDetails: errorDetails,
-      totalScanned: futureSlots.length
+      totalScanned: futureSlots.length,
+      diagnostics: {
+        totalScanned: futureSlots.length,
+        skippedNoOp: skippedNoOp,
+        atomicUpdateCalls: atomicUpdateCalls,
+        preAtomicErrors: preAtomicErrors,
+        reconciled: reconciled,
+        errors: errors,
+        reconcileDurationMs: reconcileDurationMs,
+        atomicUpdateTotalMs: atomicUpdateTotalMs,
+        atomicUpdateMaxMs: atomicUpdateMaxMs
+      }
     });
   },
 
