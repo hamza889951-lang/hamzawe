@@ -113,9 +113,9 @@ const GoogleSheets = {
    * which use the original typed scan.
    */
   _findRowNumberByColumnValue: function(sheet, columnNumber, lastRow, value) {
-    if (typeof value === 'string') {
-      var match = sheet.getRange(2, columnNumber, lastRow - 1, 1)
-        .createTextFinder(value)
+    var keyRange = sheet.getRange(2, columnNumber, lastRow - 1, 1);
+    if (typeof value === 'string' && typeof keyRange.createTextFinder === 'function') {
+      var match = keyRange.createTextFinder(value)
         .matchEntireCell(true)
         .matchCase(true)
         .matchFormulaText(false)
@@ -124,7 +124,9 @@ const GoogleSheets = {
       return match ? match.getRow() : null;
     }
 
-    var values = sheet.getRange(2, columnNumber, lastRow - 1, 1).getValues();
+    // Retain compatibility with lightweight infrastructure mocks and any
+    // alternate Spreadsheet adapter that does not implement TextFinder.
+    var values = keyRange.getValues();
     for (var i = 0; i < values.length; i++) {
       if (values[i][0] === value) return i + 2;
     }
