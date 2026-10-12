@@ -62,9 +62,9 @@ function RUN_scheduler() {
 // ═══════════════════════════════════════
 // تشخيص Retention / Archive (لا يحذف البيانات في DRY_RUN)
 // ═══════════════════════════════════════
-/** تشغيل نقطة الدخول الفعلية المنفصلة الخاصة بـ SYSTEM_LOG retention. */
+/** فحص مصدري Retention معًا بوضع DRY_RUN الصريح لتجنب أي تعديل بيانات. */
 function RUN_retentionScheduler() {
-  var result = runRetentionScheduler();
+  var result = RetentionService.run({ mode: RetentionService.MODES.DRY_RUN, sources: [RetentionService.SOURCES.SYSTEM_LOG, RetentionService.SOURCES.AVAILABILITY] });
   Logger.log('RETENTION SCHEDULER DIAGNOSTICS:');
   Logger.log(JSON.stringify(result, null, 2));
   return result;
