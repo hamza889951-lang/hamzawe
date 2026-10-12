@@ -352,6 +352,26 @@ test('M4D-B3b — string TRUE availability also skips atomicUpdate', function() 
   assert.strictEqual(state.lockKeys.indexOf('slot:' + slot.slot_id), -1);
 });
 
+test('M4D-B3c — normalized whitespace string TRUE also skips atomicUpdate', function() {
+  setupStandard();
+  const slot = seedSlot({ sort_key: '202609021000', date: '2026/09/02', time: '10:00', is_available: ' true ' });
+  state.nowIso = '2026-09-01T06:00:00.000Z';
+  const r = HM.ensureHorizon(controlContext());
+  assert.strictEqual(r.ok, true, JSON.stringify(r.error));
+  assert.strictEqual(r.data.reconciled, 0);
+  assert.strictEqual(state.lockKeys.indexOf('slot:' + slot.slot_id), -1);
+});
+
+test('M4D-B3d — false availability on non-working day skips atomicUpdate', function() {
+  setupStandard();
+  const slot = seedSlot({ sort_key: '202609041000', date: '2026/09/04', time: '10:00', is_available: false });
+  state.nowIso = '2026-09-01T06:00:00.000Z';
+  const r = HM.ensureHorizon(controlContext());
+  assert.strictEqual(r.ok, true, JSON.stringify(r.error));
+  assert.strictEqual(r.data.reconciled, 0);
+  assert.strictEqual(state.lockKeys.indexOf('slot:' + slot.slot_id), -1);
+});
+
 test('M4D-B4 — slot exceeding work window is marked unavailable', function() {
   setupStandard();
   const slot = seedSlot({
