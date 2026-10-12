@@ -1009,8 +1009,8 @@ test('M4D-K3 — partial reconciliation write failure is returned as horizon fai
   assert.strictEqual(result.ok, false, 'partial write failure must not report success');
   assert.strictEqual(result.error.code, 'HORIZON_PARTIAL_FAILURE');
   assert.ok(result.error.details.reconcileErrors > 0);
-  assert.strictEqual(result.error.details.reconcileStatus, 'OK',
-    'reconciliation returns structured partial data, but outer result must fail');
+  assert.strictEqual(result.error.details.reconcileStatus, 'PARTIAL_FAILURE',
+    'partial reconciliation must be labeled accurately in the summary');
   assert.ok(result.error.details.reconcileErrorDetails.some(e => e.slotId === slot.slot_id));
 });
 
