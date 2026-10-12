@@ -82,7 +82,7 @@ assert.equal(
   'partial matches must not match a slot ID'
 );
 assert.equal(
-  sandbox.GoogleSheets.findRowByColumn('Availability', 'slot_id', 'slot-2'),
+  sandbox.GoogleSheets.findRowByColumn('Availability', 'slot_id', 'SLOT-2'),
   null,
   'string-key matching must preserve case-sensitive exact-match semantics'
 );
