@@ -11,7 +11,23 @@
  */
 const Scheduler = {
 
+  // Temporary timing diagnostics: execution logs preserve completed stages
+  // even if Apps Script terminates before the final SCHEDULER_RUN record.
+  _diagnosticEvent: function(event, runStartedMs, details) {
+    var payload = {
+      diagnostic: 'SCHEDULER_TIMING_V1',
+      event: event,
+      timestamp: new Date().toISOString(),
+      elapsedMs: runStartedMs == null ? null : new Date().getTime() - runStartedMs,
+      details: details || {}
+    };
+    try { console.log(JSON.stringify(payload)); }
+    catch (e) { try { Logger.log(JSON.stringify(payload)); } catch (ignored) {} }
+  },
+
   main: function() {
+    var diagnosticRunStartedMs = new Date().getTime();
+    this._diagnosticEvent('RUN_ENTER', diagnosticRunStartedMs, { entryPoint: 'RUN_scheduler' });
     // B5 — Scheduler orchestration serialization uses the UserLock, NOT the
     // global ScriptLock. Repository data atomicity keeps owning the ScriptLock
     // via Lock.runExclusive(); this Scheduler must therefore never hold the
@@ -27,8 +43,11 @@ const Scheduler = {
     // owner user.
     var schedulerLock = LockService.getUserLock();
     var hasLock = false;
+    var lockWaitStartedMs = new Date().getTime();
+    this._diagnosticEvent('LOCK_WAIT_START', diagnosticRunStartedMs, { timeoutMs: 1000 });
 
-    try { schedulerLock.waitLock(1000); hasLock = true; } catch (e) {
+    try { schedulerLock.waitLock(1000); hasLock = true; this._diagnosticEvent('LOCK_ACQUIRED', diagnosticRunStartedMs, { lockWaitMs: new Date().getTime() - lockWaitStartedMs }); } catch (e) {
+      this._diagnosticEvent('LOCK_SKIPPED', diagnosticRunStartedMs, { lockWaitMs: new Date().getTime() - lockWaitStartedMs, error: e.message || String(e) });
       LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_LOCKED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: 'Another Scheduler instance is already running' });
       return Result.ok({ status: 'SKIPPED', reason: 'Locked by concurrent run' });
     }
@@ -39,32 +58,43 @@ const Scheduler = {
       var stageDurationsMs = {};
 
       var stageStartedAt = Clock.now();
+      this._diagnosticEvent('STAGE_START', diagnosticRunStartedMs, { stage: 'maintenance', elapsedBeforeStageMs: new Date().getTime() - diagnosticRunStartedMs });
       try { var mResult = MaintenanceService.run(); if (mResult && mResult.ok) { S.maintenance.status = 'OK'; } else { S.maintenance.status = 'FAILED'; S.maintenance.error = mResult ? JSON.stringify(mResult.error) : 'null result'; LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_STAGE_FAILED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: JSON.stringify({ stage: 'maintenance', error: S.maintenance.error }) }); } } catch (e) { S.maintenance.status = 'FAILED'; S.maintenance.error = e.message || 'Exception'; LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_STAGE_FAILED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: JSON.stringify({ stage: 'maintenance', error: e.message }) }); }
       stageDurationsMs.maintenance = Clock.now().getTime() - stageStartedAt.getTime();
+      this._diagnosticEvent('STAGE_END', diagnosticRunStartedMs, { stage: 'maintenance', durationMs: stageDurationsMs.maintenance, status: S.maintenance.status, error: S.maintenance.error });
 
       stageStartedAt = Clock.now();
+      this._diagnosticEvent('STAGE_START', diagnosticRunStartedMs, { stage: 'horizon', elapsedBeforeStageMs: new Date().getTime() - diagnosticRunStartedMs });
       try { var hResult = AvailabilityHorizonMaintainer.ensureHorizon(); if (hResult && hResult.ok) { S.horizon.status = 'OK'; } else { S.horizon.status = 'FAILED'; S.horizon.error = hResult ? JSON.stringify(hResult.error) : 'null result'; LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_STAGE_FAILED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: JSON.stringify({ stage: 'horizon', error: S.horizon.error }) }); } } catch (e) { S.horizon.status = 'FAILED'; S.horizon.error = e.message || 'Exception'; LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_STAGE_FAILED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: JSON.stringify({ stage: 'horizon', error: e.message }) }); }
       stageDurationsMs.horizon = Clock.now().getTime() - stageStartedAt.getTime();
+      this._diagnosticEvent('STAGE_END', diagnosticRunStartedMs, { stage: 'horizon', durationMs: stageDurationsMs.horizon, status: S.horizon.status, error: S.horizon.error });
 
       // M4-F — Patient Disruption Processing (Contract §9): runs after the
       // availability/horizon materialization stage and before reminders.
       stageStartedAt = Clock.now();
+      this._diagnosticEvent('STAGE_START', diagnosticRunStartedMs, { stage: 'disruption', elapsedBeforeStageMs: new Date().getTime() - diagnosticRunStartedMs });
       try { var dResult = PatientDisruptionService.processDisruptions({ sendFn: function(phone, message, options) { return MessagingPolicyService.sendProactive(phone, message, options); } }); if (dResult && dResult.ok) { S.disruption.status = 'OK'; } else { S.disruption.status = 'FAILED'; S.disruption.error = dResult ? JSON.stringify(dResult.error) : 'null result'; LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_STAGE_FAILED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: JSON.stringify({ stage: 'disruption', error: S.disruption.error }) }); } } catch (e) { S.disruption.status = 'FAILED'; S.disruption.error = e.message || 'Exception'; LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_STAGE_FAILED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: JSON.stringify({ stage: 'disruption', error: e.message }) }); }
       stageDurationsMs.disruption = Clock.now().getTime() - stageStartedAt.getTime();
+      this._diagnosticEvent('STAGE_END', diagnosticRunStartedMs, { stage: 'disruption', durationMs: stageDurationsMs.disruption, status: S.disruption.status, error: S.disruption.error });
 
       stageStartedAt = Clock.now();
+      this._diagnosticEvent('STAGE_START', diagnosticRunStartedMs, { stage: 'reminders', elapsedBeforeStageMs: new Date().getTime() - diagnosticRunStartedMs });
       try { var rResult = ReminderService.processPendingReminders(function(phone, message, options) { return MessagingPolicyService.sendProactive(phone, message, options); }); if (rResult && rResult.ok) { S.reminders.status = 'OK'; } else { S.reminders.status = 'FAILED'; S.reminders.error = rResult ? JSON.stringify(rResult.error) : 'null result'; LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_STAGE_FAILED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: JSON.stringify({ stage: 'reminders', error: S.reminders.error }) }); } } catch (e) { S.reminders.status = 'FAILED'; S.reminders.error = e.message || 'Exception'; LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_STAGE_FAILED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: JSON.stringify({ stage: 'reminders', error: e.message }) }); }
       stageDurationsMs.reminders = Clock.now().getTime() - stageStartedAt.getTime();
+      this._diagnosticEvent('STAGE_END', diagnosticRunStartedMs, { stage: 'reminders', durationMs: stageDurationsMs.reminders, status: S.reminders.status, error: S.reminders.error });
 
       stageStartedAt = Clock.now();
+      this._diagnosticEvent('STAGE_START', diagnosticRunStartedMs, { stage: 'healthCheck', elapsedBeforeStageMs: new Date().getTime() - diagnosticRunStartedMs });
       try { var hcResult = HealthCheckService.run(); if (hcResult && hcResult.ok && hcResult.data && hcResult.data.healthy) { S.healthCheck.status = 'OK'; } else { S.healthCheck.status = 'FAILED'; S.healthCheck.error = (hcResult && hcResult.data) ? JSON.stringify(hcResult.data) : 'null result'; LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_STAGE_FAILED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: JSON.stringify({ stage: 'healthCheck', error: S.healthCheck.error }) }); } } catch (e) { S.healthCheck.status = 'FAILED'; S.healthCheck.error = e.message || 'Exception'; LogRepository.write({ timestamp: Clock.now(), command: 'SCHEDULER_STAGE_FAILED', phone: '', slotId: '', stage: 'END', success: false, durationMs: null, error: JSON.stringify({ stage: 'healthCheck', error: e.message }) }); }
       stageDurationsMs.healthCheck = Clock.now().getTime() - stageStartedAt.getTime();
+      this._diagnosticEvent('STAGE_END', diagnosticRunStartedMs, { stage: 'healthCheck', durationMs: stageDurationsMs.healthCheck, status: S.healthCheck.status, error: S.healthCheck.error });
 
       var operationalOk = S.maintenance.status === 'OK' && S.horizon.status === 'OK' && S.disruption.status === 'OK' && S.reminders.status === 'OK' && S.healthCheck.status === 'OK';
       var finishedAt = Clock.now();
       var durationMs = finishedAt.getTime() - startedAt.getTime();
       var summary = { maintenance: S.maintenance.status === 'OK' ? 'OK' : S.maintenance.error, horizon: S.horizon.status === 'OK' ? 'OK' : S.horizon.error, disruption: S.disruption.status === 'OK' ? 'OK' : S.disruption.error, reminders: S.reminders.status === 'OK' ? 'OK' : S.reminders.error, healthCheck: S.healthCheck.status === 'OK' ? 'OK' : S.healthCheck.error };
 
+      this._diagnosticEvent('RUN_COMPLETE', diagnosticRunStartedMs, { durationMs: durationMs, operationalOk: operationalOk, stageDurationsMs: stageDurationsMs, stages: summary });
       LogRepository.write({ timestamp: finishedAt, command: 'SCHEDULER_RUN', phone: '', slotId: '', stage: 'END', success: operationalOk, durationMs: durationMs, error: JSON.stringify({ stages: summary, stageDurationsMs: stageDurationsMs, retention: 'SEPARATED' }) });
 
       if (operationalOk) {
