@@ -295,8 +295,8 @@ const AvailabilityHorizonMaintainer = {
         reconcileErrorDetails: reconcileResult.ok ? (reconcileResult.data.errorDetails || []) : [],
         generateFailedDays: generateErrors,
         deduplicatedSkipped: generateResult.ok ? (generateResult.data.deduplicatedSkipped || 0) : 0,
-        reconcileStatus: reconcileResult.ok ? 'OK' : 'FAILED',
-        generationStatus: generateResult.ok ? 'OK' : 'FAILED'
+        reconcileStatus: !reconcileResult.ok ? 'FAILED' : (reconcileErrors > 0 ? 'PARTIAL_FAILURE' : 'OK'),
+        generationStatus: !generateResult.ok ? 'FAILED' : (generateErrors > 0 ? 'PARTIAL_FAILURE' : 'OK')
       };
 
       LogRepository.write({
