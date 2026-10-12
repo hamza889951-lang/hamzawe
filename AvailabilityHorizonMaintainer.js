@@ -355,7 +355,7 @@ const AvailabilityHorizonMaintainer = {
       return !TERMINAL_STATUSES[row.status];
     });
 
-    var reconcileStartedAtMs = Date.now();
+    var reconcileStartedAtMs = Clock.now().getTime();
     var reconciled = 0;
     var errors = 0;
     var errorDetails = [];
@@ -410,7 +410,7 @@ const AvailabilityHorizonMaintainer = {
 
       // atomicUpdate reads fresh row and makes final decision inside atomic boundary
       atomicUpdateCalls += 1;
-      var atomicUpdateStartedAtMs = Date.now();
+      var atomicUpdateStartedAtMs = Clock.now().getTime();
       var updateResult = SlotRepository.atomicUpdate(slot.slot_id, function(freshRow) {
         // Use fresh row to verify slot is still eligible for reconciliation
         if (!freshRow) {
@@ -438,7 +438,7 @@ const AvailabilityHorizonMaintainer = {
 
         return Result.ok({ is_available: shouldBeAvailable });
       });
-      var atomicUpdateDurationMs = Math.max(0, Date.now() - atomicUpdateStartedAtMs);
+      var atomicUpdateDurationMs = Math.max(0, Clock.now().getTime() - atomicUpdateStartedAtMs);
       atomicUpdateTotalMs += atomicUpdateDurationMs;
       if (atomicUpdateDurationMs > atomicUpdateMaxMs) {
         atomicUpdateMaxMs = atomicUpdateDurationMs;
@@ -463,7 +463,7 @@ const AvailabilityHorizonMaintainer = {
       // If data is empty {}, no change was needed - don't count as reconciled
     }
 
-    var reconcileDurationMs = Math.max(0, Date.now() - reconcileStartedAtMs);
+    var reconcileDurationMs = Math.max(0, Clock.now().getTime() - reconcileStartedAtMs);
     return Result.ok({
       reconciled: reconciled,
       errors: errors,
