@@ -292,7 +292,8 @@ const AvailabilityHorizonMaintainer = {
         reconciled: totalReconciled,
         reconcileErrors: reconcileErrors,
         generateFailedDays: generateErrors,
-        deduplicatedSkipped: generateResult.ok ? (generateResult.data.deduplicatedSkipped || 0) : 0
+        deduplicatedSkipped: generateResult.ok ? (generateResult.data.deduplicatedSkipped || 0) : 0,
+        reconcileDiagnostics: reconcileResult.ok ? reconcileResult.data.diagnostics : null
       };
 
       LogRepository.write({
@@ -354,15 +355,22 @@ const AvailabilityHorizonMaintainer = {
       return !TERMINAL_STATUSES[row.status];
     });
 
+    var reconcileStartedAtMs = Date.now();
     var reconciled = 0;
     var errors = 0;
     var errorDetails = [];
+    var skippedNoOp = 0;
+    var atomicUpdateCalls = 0;
+    var preAtomicErrors = 0;
+    var atomicUpdateTotalMs = 0;
+    var atomicUpdateMaxMs = 0;
 
     for (var i = 0; i < futureSlots.length; i++) {
       var slot = futureSlots[i];
       var stampResult = AvailabilityHorizonMaintainer._slotToStamp(slot);
       if (!stampResult.ok) {
         errors += 1;
+        preAtomicErrors += 1;
         errorDetails.push({ slotId: slot.slot_id, reason: 'INVALID_STAMP' });
         continue;
       }
@@ -378,6 +386,7 @@ const AvailabilityHorizonMaintainer = {
 
       if (!evalResult.ok) {
         errors += 1;
+        preAtomicErrors += 1;
         errorDetails.push({
           slotId: slot.slot_id,
           reason: evalResult.error.code,
@@ -395,10 +404,13 @@ const AvailabilityHorizonMaintainer = {
       // Rows that need a change still go through atomicUpdate and its fresh
       // read, terminal-state guard, and final decision before writing.
       if (SlotRepository.isOperationallyAvailable(slot.is_available) === shouldBeAvailable) {
+        skippedNoOp += 1;
         continue;
       }
 
       // atomicUpdate reads fresh row and makes final decision inside atomic boundary
+      atomicUpdateCalls += 1;
+      var atomicUpdateStartedAtMs = Date.now();
       var updateResult = SlotRepository.atomicUpdate(slot.slot_id, function(freshRow) {
         // Use fresh row to verify slot is still eligible for reconciliation
         if (!freshRow) {
@@ -426,6 +438,11 @@ const AvailabilityHorizonMaintainer = {
 
         return Result.ok({ is_available: shouldBeAvailable });
       });
+      var atomicUpdateDurationMs = Math.max(0, Date.now() - atomicUpdateStartedAtMs);
+      atomicUpdateTotalMs += atomicUpdateDurationMs;
+      if (atomicUpdateDurationMs > atomicUpdateMaxMs) {
+        atomicUpdateMaxMs = atomicUpdateDurationMs;
+      }
 
       // Handle update result
       if (!updateResult.ok) {
@@ -446,11 +463,23 @@ const AvailabilityHorizonMaintainer = {
       // If data is empty {}, no change was needed - don't count as reconciled
     }
 
+    var reconcileDurationMs = Math.max(0, Date.now() - reconcileStartedAtMs);
     return Result.ok({
       reconciled: reconciled,
       errors: errors,
       errorDetails: errorDetails,
-      totalScanned: futureSlots.length
+      totalScanned: futureSlots.length,
+      diagnostics: {
+        totalScanned: futureSlots.length,
+        skippedNoOp: skippedNoOp,
+        atomicUpdateCalls: atomicUpdateCalls,
+        preAtomicErrors: preAtomicErrors,
+        reconciled: reconciled,
+        errors: errors,
+        reconcileDurationMs: reconcileDurationMs,
+        atomicUpdateTotalMs: atomicUpdateTotalMs,
+        atomicUpdateMaxMs: atomicUpdateMaxMs
+      }
     });
   },
 
