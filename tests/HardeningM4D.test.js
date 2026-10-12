@@ -830,6 +830,38 @@ test('M4D-I4 — reconciliation marks slots correctly after TEMPORARY_CLOSE', fu
     state.sheets['Availability'].rows.find(s => s.slot_id === slot3.slot_id).is_available, true);
 });
 
+test('M4D-I6 — cancelling a committed temporary close restores the slot projection', function() {
+  setupStandard();
+  const slot = seedSlot({ sort_key: '202609021000', time: '10:00', is_available: true });
+
+  const closeResult = CMD.commitTemporaryClose(controlContext(), {
+    commandId: 'cmd-close-then-cancel',
+    asOf: '2026-09-01T00:00',
+    effectiveFrom: '2026-09-02T10:00',
+    effectiveTo: '2026-09-02T11:00'
+  });
+  assert.strictEqual(closeResult.ok, true, JSON.stringify(closeResult.error));
+  assert.strictEqual(closeResult.data.status, 'COMMITTED');
+  const targetChangeId = closeResult.data.record.changeId;
+
+  const cancelResult = CMD.cancelChange(controlContext(), {
+    commandId: 'cmd-cancel-close',
+    asOf: '2026-09-02T10:00',
+    targetChangeId: targetChangeId
+  });
+  assert.strictEqual(cancelResult.ok, true, JSON.stringify(cancelResult.error));
+  assert.strictEqual(cancelResult.data.status, 'COMMITTED');
+
+  state.nowIso = '2026-09-01T06:00:00.000Z';
+  const result = HM.ensureHorizon(controlContext());
+  assert.strictEqual(result.ok, true, JSON.stringify(result.error));
+
+  const reconciled = state.sheets['Availability'].rows.find(s => s.slot_id === slot.slot_id);
+  assert.strictEqual(reconciled.is_available, true,
+    'effective CANCEL must remove the temporary close from the materialized projection');
+  assert.strictEqual(reconciled.status, 'FREE', 'schedule cancellation must not mutate lifecycle status');
+});
+
 test('M4D-I5 — partial-day close: interval-level semantics with full generation', function() {
   setupStandard();
   
