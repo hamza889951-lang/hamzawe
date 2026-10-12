@@ -90,41 +90,55 @@ const SlotRepository = {
 
   atomicUpdate: function(slotId, decisionFn) {
     return Lock.runExclusive('slot:' + slotId, function() {
-      // TD-01: fresh read must distinguish "read succeeded, row absent"
-      // (→ SLOT_NOT_FOUND) from "storage read failed" (→ Result.fail).
-      // The legacy findById() swallowed storage exceptions into null and
-      // let a failure surface as SLOT_NOT_FOUND — unacceptable for the
-      // fresh-re-read / stale-evidence-rejection path M4-F depends on.
-      var readResult = SlotRepository.findByIdResult(slotId);
-      if (!readResult.ok) {
-        return readResult;
-      }
-      var slot = readResult.data;
-      if (!slot) {
-        return Result.fail('SLOT_NOT_FOUND', 'Slot ' + slotId + ' does not exist');
-      }
-      var decision = decisionFn(slot);
-      if (!decision.ok) return decision;
-
-      // Skip update if decision.data is empty (no fields to update)
-      if (!decision.data || Object.keys(decision.data).length === 0) {
-        return Result.ok({ slotId: slotId });
-      }
-
-      var updated = GoogleSheets.updateRowByColumn(
-        Config.VOCABULARY.SHEETS.AVAILABILITY, 'slot_id', slotId, decision.data
-      );
-
-      if (!updated) {
-        return Result.fail(
-          'UPDATE_FAILED',
-          'Failed to update slot ' + slotId + ' during atomicUpdate',
-          { slotId: slotId, data: decision.data }
-        );
-      }
-
-      return Result.ok(Object.assign({ slotId: slotId }, decision.data));
+      return SlotRepository._atomicUpdateWithoutLock(slotId, decisionFn);
     });
+  },
+
+  /**
+   * Internal mutation path for a caller that already owns the script-wide
+   * LockService lock. Do not call unless Lock.runExclusive is currently held.
+   * Keeps the same fresh-read, decision, and checked-write semantics as
+   * atomicUpdate without attempting to acquire the non-reentrant script lock.
+   */
+  atomicUpdateWithinScriptLock: function(slotId, decisionFn) {
+    return SlotRepository._atomicUpdateWithoutLock(slotId, decisionFn);
+  },
+
+  _atomicUpdateWithoutLock: function(slotId, decisionFn) {
+    // TD-01: fresh read must distinguish "read succeeded, row absent"
+    // (→ SLOT_NOT_FOUND) from "storage read failed" (→ Result.fail).
+    // The legacy findById() swallowed storage exceptions into null and
+    // let a failure surface as SLOT_NOT_FOUND — unacceptable for the
+    // fresh-re-read / stale-evidence-rejection path M4-F depends on.
+    var readResult = SlotRepository.findByIdResult(slotId);
+    if (!readResult.ok) {
+      return readResult;
+    }
+    var slot = readResult.data;
+    if (!slot) {
+      return Result.fail('SLOT_NOT_FOUND', 'Slot ' + slotId + ' does not exist');
+    }
+    var decision = decisionFn(slot);
+    if (!decision.ok) return decision;
+
+    // Skip update if decision.data is empty (no fields to update)
+    if (!decision.data || Object.keys(decision.data).length === 0) {
+      return Result.ok({ slotId: slotId });
+    }
+
+    var updated = GoogleSheets.updateRowByColumn(
+      Config.VOCABULARY.SHEETS.AVAILABILITY, 'slot_id', slotId, decision.data
+    );
+
+    if (!updated) {
+      return Result.fail(
+        'UPDATE_FAILED',
+        'Failed to update slot ' + slotId + ' during atomicUpdate',
+        { slotId: slotId, data: decision.data }
+      );
+    }
+
+    return Result.ok(Object.assign({ slotId: slotId }, decision.data));
   },
 
   cleanupExpiredReservation: function(slotId, nowMs) {
