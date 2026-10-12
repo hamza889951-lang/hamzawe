@@ -22,7 +22,8 @@
  *   ثم إعادة استخدام نفس snapshot عبر _evaluateSlotFromSources لكل slot.
  * - Gap filling: required starts - existing starts = missing starts only.
  * - Deduplication: sort_key كمفتاح deduplication قبل الإدراج.
- * - أي mutation لـ Slot تمر عبر SlotRepository.atomicUpdate.
+ * - كل mutation لـ Slot تمر عبر SlotRepository؛ المصالحة تستخدم مسارًا داخليًا
+ *   تحت ScriptLock الذي تملكه بالفعل لتجنب الاستحواذ المتداخل.
  * - لا rounding أو splitting أو shifting للـ slots الموجودة.
  * - Fail closed عند فشل مصدر الجدول.
  * - Single slot failure = اعزل الصف، أكمل الباقي، أرجع partial failure.
@@ -291,8 +292,11 @@ const AvailabilityHorizonMaintainer = {
         generated: totalGenerated,
         reconciled: totalReconciled,
         reconcileErrors: reconcileErrors,
+        reconcileErrorDetails: reconcileResult.ok ? (reconcileResult.data.errorDetails || []) : [],
         generateFailedDays: generateErrors,
-        deduplicatedSkipped: generateResult.ok ? (generateResult.data.deduplicatedSkipped || 0) : 0
+        deduplicatedSkipped: generateResult.ok ? (generateResult.data.deduplicatedSkipped || 0) : 0,
+        reconcileStatus: !reconcileResult.ok ? 'FAILED' : (reconcileErrors > 0 ? 'PARTIAL_FAILURE' : 'OK'),
+        generationStatus: !generateResult.ok ? 'FAILED' : (generateErrors > 0 ? 'PARTIAL_FAILURE' : 'OK')
       };
 
       LogRepository.write({
@@ -301,7 +305,7 @@ const AvailabilityHorizonMaintainer = {
         error: JSON.stringify(summary)
       });
 
-      if (hasErrors && (!reconcileResult.ok || !generateResult.ok)) {
+      if (hasErrors) {
         return Result.fail(
           'HORIZON_PARTIAL_FAILURE',
           'One or more horizon maintenance stages failed',
@@ -399,7 +403,7 @@ const AvailabilityHorizonMaintainer = {
       }
 
       // atomicUpdate reads fresh row and makes final decision inside atomic boundary
-      var updateResult = SlotRepository.atomicUpdate(slot.slot_id, function(freshRow) {
+      var updateResult = SlotRepository.atomicUpdateWithinScriptLock(slot.slot_id, function(freshRow) {
         // Use fresh row to verify slot is still eligible for reconciliation
         if (!freshRow) {
           return Result.fail('SLOT_NOT_FOUND', 'Slot no longer exists');
