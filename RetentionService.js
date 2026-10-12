@@ -166,7 +166,9 @@ const RetentionService = {
       DateUtils.fromTimestamp(nowMs),
       this.POLICIES.AVAILABILITY_DAYS
     );
+    var readStartedMs = Clock.now().getTime();
     var findResult = AvailabilityArchiveRepository.findOlderThan(cutoffDate);
+    var readDurationMs = Math.max(0, Clock.now().getTime() - readStartedMs);
     if (!findResult.ok) {
       this._stageFailure(this.SOURCES.AVAILABILITY, 'read', findResult);
       return findResult;
@@ -183,7 +185,8 @@ const RetentionService = {
       malformedSlotIds: findResult.data.malformedSlotIds || 0,
       malformedSortKeys: findResult.data.malformedSortKeys || 0,
       reservedSkipped: findResult.data.reservedSkipped || 0,
-      ambiguousSlotIds: findResult.data.ambiguousSlotIds || 0
+      ambiguousSlotIds: findResult.data.ambiguousSlotIds || 0,
+      diagnostics: { readDurationMs: readDurationMs, sourceRowsScanned: findResult.data.totalCount || 0 }
     };
 
     if (result.malformedSlotIds || result.malformedSortKeys || result.reservedSkipped || result.ambiguousSlotIds) {
@@ -212,7 +215,9 @@ const RetentionService = {
       return Result.ok(result);
     }
 
+    var archiveStartedMs = Clock.now().getTime();
     var archiveResult = AvailabilityArchiveRepository.archiveRecords(records);
+    result.diagnostics.archiveDurationMs = Math.max(0, Clock.now().getTime() - archiveStartedMs);
     if (!archiveResult.ok) {
       this._stageFailure(this.SOURCES.AVAILABILITY, 'archive', archiveResult);
       return archiveResult;
@@ -221,7 +226,9 @@ const RetentionService = {
 
     if (mode === this.MODES.ARCHIVE_ONLY) return Result.ok(result);
 
+    var deleteStartedMs = Clock.now().getTime();
     var deleteResult = AvailabilityArchiveRepository.deleteRecords(records, cutoffDate);
+    result.diagnostics.deleteDurationMs = Math.max(0, Clock.now().getTime() - deleteStartedMs);
     if (!deleteResult.ok) {
       this._stageFailure(this.SOURCES.AVAILABILITY, 'delete', deleteResult);
       return deleteResult;
