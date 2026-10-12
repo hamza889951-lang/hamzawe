@@ -41,6 +41,8 @@ const RetentionService = {
     if (!modeResult.ok) return modeResult;
 
     var mode = modeResult.data.mode;
+    var retentionStartedMs = Clock.now().getTime();
+    var sourceDiagnostics = {};
     var requestedSources = options.sources || [this.SOURCES.SYSTEM_LOG, this.SOURCES.AVAILABILITY];
     var startedAt = Clock.now();
     var startedMs = startedAt.getTime();
@@ -49,6 +51,7 @@ const RetentionService = {
 
     for (var i = 0; i < requestedSources.length; i++) {
       var source = requestedSources[i];
+      var sourceStartedMs = Clock.now().getTime();
       var sourceResult;
 
       if (source === this.SOURCES.SYSTEM_LOG) {
@@ -59,6 +62,7 @@ const RetentionService = {
         sourceResult = Result.fail('RETENTION_SOURCE_UNKNOWN', 'Unknown retention source', { source: source });
       }
 
+      sourceDiagnostics[source] = { durationMs: Math.max(0, Clock.now().getTime() - sourceStartedMs), ok: !!(sourceResult && sourceResult.ok) };
       results[source] = sourceResult && sourceResult.ok
         ? sourceResult.data
         : { status: 'FAILED', error: sourceResult ? sourceResult.error : 'null result' };
@@ -70,7 +74,8 @@ const RetentionService = {
     var summary = {
       mode: mode,
       durationMs: finishedAt.getTime() - startedMs,
-      sources: results
+      sources: results,
+      diagnostics: { totalDurationMs: Math.max(0, Clock.now().getTime() - retentionStartedMs), sourceTimings: sourceDiagnostics }
     };
 
     this._log('RETENTION_RUN', allOk, summary);
@@ -92,7 +97,9 @@ const RetentionService = {
       -this.POLICIES.SYSTEM_LOG_DAYS * 24 * 60
     );
     var cutoffMs = cutoffDate.getTime();
+    var readStartedMs = Clock.now().getTime();
     var findResult = LogArchiveRepository.findOlderThan(cutoffMs);
+    var readDurationMs = Math.max(0, Clock.now().getTime() - readStartedMs);
     if (!findResult.ok) {
       this._stageFailure(this.SOURCES.SYSTEM_LOG, 'read', findResult);
       return findResult;
@@ -106,7 +113,8 @@ const RetentionService = {
       archived: 0,
       deleted: 0,
       cutoffMs: cutoffMs,
-      malformedTimestamps: findResult.data.malformedTimestamps || 0
+      malformedTimestamps: findResult.data.malformedTimestamps || 0,
+      diagnostics: { readDurationMs: readDurationMs, sourceRowsScanned: findResult.data.totalCount || 0 }
     };
 
     if (result.malformedTimestamps) {
@@ -130,7 +138,9 @@ const RetentionService = {
       return Result.ok(result);
     }
 
+    var archiveStartedMs = Clock.now().getTime();
     var archiveResult = LogArchiveRepository.archiveRecords(records);
+    result.diagnostics.archiveDurationMs = Math.max(0, Clock.now().getTime() - archiveStartedMs);
     if (!archiveResult.ok) {
       this._stageFailure(this.SOURCES.SYSTEM_LOG, 'archive', archiveResult);
       return archiveResult;
@@ -139,7 +149,9 @@ const RetentionService = {
 
     if (mode === this.MODES.ARCHIVE_ONLY) return Result.ok(result);
 
+    var deleteStartedMs = Clock.now().getTime();
     var deleteResult = LogArchiveRepository.deleteRecords(records);
+    result.diagnostics.deleteDurationMs = Math.max(0, Clock.now().getTime() - deleteStartedMs);
     if (!deleteResult.ok) {
       this._stageFailure(this.SOURCES.SYSTEM_LOG, 'delete', deleteResult);
       return deleteResult;
