@@ -58,6 +58,18 @@ function RUN_scheduler() {
   return result;
 }
 
+
+// ═══════════════════════════════════════
+// تشخيص Retention / Archive (لا يحذف البيانات في DRY_RUN)
+// ═══════════════════════════════════════
+/** تشغيل نقطة الدخول الفعلية المنفصلة الخاصة بـ SYSTEM_LOG retention. */
+function RUN_retentionScheduler() {
+  var result = runRetentionScheduler();
+  Logger.log('RETENTION SCHEDULER DIAGNOSTICS:');
+  Logger.log(JSON.stringify(result, null, 2));
+  return result;
+}
+
 // ═══════════════════════════════════════
 // أدوات تشخيصية مساعدة
 // ═══════════════════════════════════════
