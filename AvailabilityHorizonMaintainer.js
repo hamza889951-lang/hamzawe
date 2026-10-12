@@ -48,7 +48,11 @@ const AvailabilityHorizonMaintainer = {
    * @returns {Result}
    */
   ensureHorizon: function(optionalControlContext) {
+    var horizonStartedMs = new Date().getTime();
+    AvailabilityHorizonMaintainer._diag('HORIZON_ENTER', horizonStartedMs, {});
     return Lock.runExclusive('AvailabilityHorizon', function() {
+      var phaseStartedMs = new Date().getTime();
+      AvailabilityHorizonMaintainer._diag('HORIZON_PHASE_START', horizonStartedMs, { phase: 'controlContext' });
 
       // ── Step 1: Build control context ──
       var ccResult;
@@ -66,8 +70,11 @@ const AvailabilityHorizonMaintainer = {
         return ccResult;
       }
       var controlContext = ccResult.data;
+      AvailabilityHorizonMaintainer._diag('HORIZON_PHASE_END', horizonStartedMs, { phase: 'controlContext', durationMs: new Date().getTime() - phaseStartedMs, status: 'OK' });
 
       // ── Step 2: Load Settings (once) ──
+      phaseStartedMs = new Date().getTime();
+      AvailabilityHorizonMaintainer._diag('HORIZON_PHASE_START', horizonStartedMs, { phase: 'settings' });
       var settingsResult;
       try {
         settingsResult = SettingsRepository.getSettingsResult();
@@ -89,6 +96,7 @@ const AvailabilityHorizonMaintainer = {
         return settingsResult;
       }
       var settings = settingsResult.data;
+      AvailabilityHorizonMaintainer._diag('HORIZON_PHASE_END', horizonStartedMs, { phase: 'settings', durationMs: new Date().getTime() - phaseStartedMs, status: 'OK' });
 
       var durationInfo = SettingsRepository.getSlotDurationInfo(settings);
       if (!durationInfo || durationInfo.source !== 'CONFIGURED') {
@@ -121,6 +129,8 @@ const AvailabilityHorizonMaintainer = {
       }
       var baseline = baselineResult.data;
 
+      phaseStartedMs = new Date().getTime();
+      AvailabilityHorizonMaintainer._diag('HORIZON_PHASE_START', horizonStartedMs, { phase: 'scheduleChangeRead' });
       var listResult = ScheduleChangeRepository.listByScopeResult(scopeResult.data.doctorId, scopeResult.data.clinicId);
       if (!listResult.ok) {
         LogRepository.write({
@@ -131,6 +141,7 @@ const AvailabilityHorizonMaintainer = {
         return listResult;
       }
       var records = listResult.data;
+      AvailabilityHorizonMaintainer._diag('HORIZON_PHASE_END', horizonStartedMs, { phase: 'scheduleChangeRead', durationMs: new Date().getTime() - phaseStartedMs, status: 'OK', recordCount: records.length });
 
       // ── Step 4a: Validate slot_generation_days (M4-D fail-closed) ──
       var targetDays = parseInt(settings.slot_generation_days, 10);
@@ -149,6 +160,8 @@ const AvailabilityHorizonMaintainer = {
       }
 
       // ── Step 4b: Find latest sort key (for horizon calculation) ──
+      phaseStartedMs = new Date().getTime();
+      AvailabilityHorizonMaintainer._diag('HORIZON_PHASE_START', horizonStartedMs, { phase: 'findLatestSortKey' });
       var latestResult = SlotRepository.findLatestSortKey();
       if (!latestResult.ok) {
         LogRepository.write({
@@ -159,6 +172,7 @@ const AvailabilityHorizonMaintainer = {
         return latestResult;
       }
       var latestSortKey = latestResult.data;
+      AvailabilityHorizonMaintainer._diag('HORIZON_PHASE_END', horizonStartedMs, { phase: 'findLatestSortKey', durationMs: new Date().getTime() - phaseStartedMs, status: 'OK', hasLatestSortKey: !!latestSortKey });
 
       // ── Step 4c: Calculate generation plan using existing Horizon semantics ──
       var planResult = SlotGenerator.calculateGenerationPlan(latestSortKey, settings);
@@ -183,6 +197,8 @@ const AvailabilityHorizonMaintainer = {
         var windowEndMs = windowEndDate.getTime();
         var windowStartMs = plan.startDate.getTime();
 
+        phaseStartedMs = new Date().getTime();
+        AvailabilityHorizonMaintainer._diag('HORIZON_PHASE_START', horizonStartedMs, { phase: 'generationWindowQuery' });
         var queryResult = SlotRepository.queryResult(function(row) {
           var sortValue = LegacySlotTimeParser.toComparableTime(row.sort_key);
           if (sortValue === null) return false;
@@ -204,6 +220,7 @@ const AvailabilityHorizonMaintainer = {
         }
         
         allSlotsInWindow = queryResult.data;
+        AvailabilityHorizonMaintainer._diag('HORIZON_PHASE_END', horizonStartedMs, { phase: 'generationWindowQuery', durationMs: new Date().getTime() - phaseStartedMs, status: 'OK', slotCount: allSlotsInWindow.length });
       }
 
       // ── Step 4e: Read future non-terminal slots (for reconciliation) ──
@@ -246,6 +263,8 @@ const AvailabilityHorizonMaintainer = {
       }
 
       var futureSlots;
+      phaseStartedMs = new Date().getTime();
+      AvailabilityHorizonMaintainer._diag('HORIZON_PHASE_START', horizonStartedMs, { phase: 'futureSlotsQuery' });
       var futureQueryResult = SlotRepository.queryResult(function(row) {
         var sortValue = LegacySlotTimeParser.toComparableTime(row.sort_key);
         if (sortValue === null) return false;
@@ -268,16 +287,23 @@ const AvailabilityHorizonMaintainer = {
       }
       
       futureSlots = futureQueryResult.data;
+      AvailabilityHorizonMaintainer._diag('HORIZON_PHASE_END', horizonStartedMs, { phase: 'futureSlotsQuery', durationMs: new Date().getTime() - phaseStartedMs, status: 'OK', slotCount: futureSlots.length });
 
       // ── Step 5: Reconcile existing non-terminal future slots ──
+      phaseStartedMs = new Date().getTime();
+      AvailabilityHorizonMaintainer._diag('HORIZON_PHASE_START', horizonStartedMs, { phase: 'reconcile', inputSlotCount: futureSlots.length });
       var reconcileResult = AvailabilityHorizonMaintainer._reconcileExistingSlots(
-        baseline, records, slotDuration, nowMs, futureSlots
+        baseline, records, slotDuration, nowMs, futureSlots, horizonStartedMs
       );
+      AvailabilityHorizonMaintainer._diag('HORIZON_PHASE_END', horizonStartedMs, { phase: 'reconcile', durationMs: new Date().getTime() - phaseStartedMs, status: reconcileResult.ok ? 'OK' : 'FAILED', result: reconcileResult.ok ? reconcileResult.data : reconcileResult.error });
 
       // ── Step 6: Generate missing slots using generation plan ──
+      phaseStartedMs = new Date().getTime();
+      AvailabilityHorizonMaintainer._diag('HORIZON_PHASE_START', horizonStartedMs, { phase: 'generateMissingSlots', generationNeeded: !!plan.needsGeneration, existingWindowSlotCount: allSlotsInWindow.length, daysCount: plan.daysCount || 0 });
       var generateResult = AvailabilityHorizonMaintainer._generateMissingSlots(
-        controlContext, baseline, records, settings, slotDuration, plan, allSlotsInWindow
+        controlContext, baseline, records, settings, slotDuration, plan, allSlotsInWindow, horizonStartedMs
       );
+      AvailabilityHorizonMaintainer._diag('HORIZON_PHASE_END', horizonStartedMs, { phase: 'generateMissingSlots', durationMs: new Date().getTime() - phaseStartedMs, status: generateResult.ok ? 'OK' : 'FAILED', result: generateResult.ok ? generateResult.data : generateResult.error });
 
       // ── Step 7: Aggregate results ──
       var totalGenerated = generateResult.ok ? generateResult.data.generated : 0;
@@ -313,6 +339,18 @@ const AvailabilityHorizonMaintainer = {
     });
   },
 
+  _diag: function(event, horizonStartedMs, details) {
+    var payload = {
+      diagnostic: 'HORIZON_TIMING_V1',
+      event: event,
+      timestamp: new Date().toISOString(),
+      elapsedMs: horizonStartedMs == null ? null : new Date().getTime() - horizonStartedMs,
+      details: details || {}
+    };
+    try { console.log(JSON.stringify(payload)); }
+    catch (e) { try { Logger.log(JSON.stringify(payload)); } catch (ignored) {} }
+  },
+
   /**
    * Build a control context from the configured doctor identity.
    * Used when ensureHorizon is called from Scheduler (no user context).
@@ -341,7 +379,7 @@ const AvailabilityHorizonMaintainer = {
    *   (is_available is an EffectiveSchedule projection, independent of status)
    * Terminal statuses (never touched): EXPIRED, CANCELLED, COMPLETED, NO_SHOW
    */
-  _reconcileExistingSlots: function(baseline, records, slotDuration, nowMs, futureSlots) {
+  _reconcileExistingSlots: function(baseline, records, slotDuration, nowMs, futureSlots, horizonStartedMs) {
     // futureSlots is the pre-loaded snapshot (read once in ensureHorizon)
     var TERMINAL_STATUSES = {
       EXPIRED: true,
@@ -357,6 +395,13 @@ const AvailabilityHorizonMaintainer = {
     var reconciled = 0;
     var errors = 0;
     var errorDetails = [];
+
+    var loopStartedMs = new Date().getTime();
+    var atomicUpdateTotalMs = 0;
+    var atomicUpdateMaxMs = 0;
+    var atomicUpdateCalls = 0;
+    var lastProgressLogMs = loopStartedMs;
+    AvailabilityHorizonMaintainer._diag('HORIZON_RECONCILE_LOOP_START', horizonStartedMs, { slotCount: futureSlots.length });
 
     for (var i = 0; i < futureSlots.length; i++) {
       var slot = futureSlots[i];
@@ -389,6 +434,7 @@ const AvailabilityHorizonMaintainer = {
       var shouldBeAvailable = evalResult.data.available;
 
       // atomicUpdate reads fresh row and makes final decision inside atomic boundary
+      var atomicStartedMs = new Date().getTime();
       var updateResult = SlotRepository.atomicUpdate(slot.slot_id, function(freshRow) {
         // Use fresh row to verify slot is still eligible for reconciliation
         if (!freshRow) {
@@ -417,6 +463,28 @@ const AvailabilityHorizonMaintainer = {
         return Result.ok({ is_available: shouldBeAvailable });
       });
 
+      var atomicDurationMs = new Date().getTime() - atomicStartedMs;
+      atomicUpdateCalls += 1;
+      atomicUpdateTotalMs += atomicDurationMs;
+      if (atomicDurationMs > atomicUpdateMaxMs) atomicUpdateMaxMs = atomicDurationMs;
+
+      // Periodic progress makes a timeout diagnosable without logging every slot.
+      var progressNowMs = new Date().getTime();
+      if ((i + 1) % 10 === 0 || progressNowMs - lastProgressLogMs >= 10000 || i === futureSlots.length - 1) {
+        AvailabilityHorizonMaintainer._diag('HORIZON_RECONCILE_PROGRESS', horizonStartedMs, {
+          processed: i + 1,
+          total: futureSlots.length,
+          lastSlotId: slot.slot_id || null,
+          elapsedLoopMs: progressNowMs - loopStartedMs,
+          atomicUpdateCalls: atomicUpdateCalls,
+          atomicUpdateTotalMs: atomicUpdateTotalMs,
+          atomicUpdateMaxMs: atomicUpdateMaxMs,
+          errors: errors,
+          reconciled: reconciled
+        });
+        lastProgressLogMs = progressNowMs;
+      }
+
       // Handle update result
       if (!updateResult.ok) {
         // Update failed
@@ -436,6 +504,15 @@ const AvailabilityHorizonMaintainer = {
       // If data is empty {}, no change was needed - don't count as reconciled
     }
 
+    AvailabilityHorizonMaintainer._diag('HORIZON_RECONCILE_LOOP_END', horizonStartedMs, {
+      durationMs: new Date().getTime() - loopStartedMs,
+      totalScanned: futureSlots.length,
+      reconciled: reconciled,
+      errors: errors,
+      atomicUpdateCalls: atomicUpdateCalls,
+      atomicUpdateTotalMs: atomicUpdateTotalMs,
+      atomicUpdateMaxMs: atomicUpdateMaxMs
+    });
     return Result.ok({
       reconciled: reconciled,
       errors: errors,
@@ -449,7 +526,7 @@ const AvailabilityHorizonMaintainer = {
    * required operational starts - existing operational starts = missing starts.
    * Uses pre-loaded source snapshot. Deduplicates by sort_key before insert.
    */
-  _generateMissingSlots: function(controlContext, baseline, records, settings, slotDuration, plan, allSlotsInWindow) {
+  _generateMissingSlots: function(controlContext, baseline, records, settings, slotDuration, plan, allSlotsInWindow, horizonStartedMs) {
     // Use the generation plan from SlotGenerator.calculateGenerationPlan()
     // This preserves existing Horizon semantics (calendar-day based)
     if (!plan || !plan.needsGeneration) {
@@ -470,6 +547,8 @@ const AvailabilityHorizonMaintainer = {
     }
 
     // Generate missing slots for each date
+    var generationStartedMs = new Date().getTime();
+    AvailabilityHorizonMaintainer._diag('HORIZON_GENERATION_LOOP_START', horizonStartedMs, { needsGeneration: !!plan.needsGeneration, daysCount: plan.daysCount || 0 });
     var missingSlots = [];
     var failedDays = 0;
     var deduplicatedSkipped = 0;
@@ -567,6 +646,13 @@ const AvailabilityHorizonMaintainer = {
       }
     }
 
+    AvailabilityHorizonMaintainer._diag('HORIZON_GENERATION_LOOP_END', horizonStartedMs, {
+      durationMs: new Date().getTime() - generationStartedMs,
+      generated: totalGenerated,
+      missingCandidates: missingSlots.length,
+      failedDays: failedDays,
+      deduplicatedSkipped: deduplicatedSkipped
+    });
     return Result.ok({
       generated: totalGenerated,
       failedDays: failedDays,
