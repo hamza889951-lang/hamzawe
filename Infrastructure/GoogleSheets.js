@@ -97,13 +97,36 @@ const GoogleSheets = {
     var columnIndex = headers.indexOf(columnName);
     if (columnIndex === -1) throw new Error('COLUMN_NOT_FOUND: ' + columnName);
 
-    var columnValues = sheet.getRange(2, columnIndex + 1, lastRow - 1, 1).getValues();
-    for (var i = 0; i < columnValues.length; i++) {
-      if (columnValues[i][0] === value) {
-        var rowNumber = i + 2;
-        var rowValues = sheet.getRange(rowNumber, 1, 1, lastColumn).getValues()[0];
-        return this._rowToObject(headers, rowValues, rowNumber);
-      }
+    var rowNumber = this._findRowNumberByColumnValue(
+      sheet, columnIndex + 1, lastRow, value
+    );
+    if (rowNumber === null) return null;
+
+    var rowValues = sheet.getRange(rowNumber, 1, 1, lastColumn).getValues()[0];
+    return this._rowToObject(headers, rowValues, rowNumber);
+  },
+
+  /**
+   * Locate a row by an exact key match. TextFinder performs the search inside
+   * Sheets instead of transferring the entire key column to Apps Script on
+   * every atomic update. Keep strict value semantics for non-string keys,
+   * which use the original typed scan.
+   */
+  _findRowNumberByColumnValue: function(sheet, columnNumber, lastRow, value) {
+    if (typeof value === 'string') {
+      var match = sheet.getRange(2, columnNumber, lastRow - 1, 1)
+        .createTextFinder(value)
+        .matchEntireCell(true)
+        .matchCase(true)
+        .matchFormulaText(false)
+        .useRegularExpression(false)
+        .findNext();
+      return match ? match.getRow() : null;
+    }
+
+    var values = sheet.getRange(2, columnNumber, lastRow - 1, 1).getValues();
+    for (var i = 0; i < values.length; i++) {
+      if (values[i][0] === value) return i + 2;
     }
     return null;
   },
@@ -139,14 +162,9 @@ const GoogleSheets = {
     var columnIndex = headers.indexOf(columnName);
     if (columnIndex === -1) throw new Error('COLUMN_NOT_FOUND: ' + columnName);
 
-    var columnValues = sheet.getRange(2, columnIndex + 1, lastRow - 1, 1).getValues();
-    var rowNumber = null;
-    for (var i = 0; i < columnValues.length; i++) {
-      if (columnValues[i][0] === value) {
-        rowNumber = i + 2;
-        break;
-      }
-    }
+    var rowNumber = this._findRowNumberByColumnValue(
+      sheet, columnIndex + 1, lastRow, value
+    );
     if (rowNumber === null) return false;
 
     Object.keys(fields).forEach(function(key) {
