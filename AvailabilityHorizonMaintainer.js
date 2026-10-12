@@ -388,6 +388,16 @@ const AvailabilityHorizonMaintainer = {
 
       var shouldBeAvailable = evalResult.data.available;
 
+      // ensureHorizon already holds the script-wide lock for this complete
+      // reconciliation pass. For rows whose loaded availability projection
+      // is already correct, skip the nested atomicUpdate (which would acquire
+      // the same script lock again and re-read the row) entirely.
+      // Rows that need a change still go through atomicUpdate and its fresh
+      // read, terminal-state guard, and final decision before writing.
+      if (SlotRepository.isOperationallyAvailable(slot.is_available) === shouldBeAvailable) {
+        continue;
+      }
+
       // atomicUpdate reads fresh row and makes final decision inside atomic boundary
       var updateResult = SlotRepository.atomicUpdate(slot.slot_id, function(freshRow) {
         // Use fresh row to verify slot is still eligible for reconciliation
