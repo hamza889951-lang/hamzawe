@@ -43,6 +43,8 @@ jobs:
           node --check Domain/Validators.js
           node --check tests/HardeningPatientNameValidation.test.js
           node --check tests/HardeningRetentionArchive.test.js
+          node --check Reminderservice.js
+          node --check tests/ReminderServiceReliability.test.js
 
       - name: Targeted Calendar verification test
         shell: bash
@@ -73,6 +75,12 @@ jobs:
         run: |
           set -euo pipefail
           node tests/HardeningRetentionArchive.test.js
+
+      - name: Targeted Reminder Service reliability test
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tests/ReminderServiceReliability.test.js
 
       - name: Full hardening regression
         shell: bash
