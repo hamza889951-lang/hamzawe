@@ -124,15 +124,7 @@ const BookingService = {
   _handleFirstContact(phone) {
     ConversationRepository.startNew(phone);
 
-    let clinicName = '';
-    try {
-      clinicName = SettingsRepository.get('clinic_name') || '';
-    } catch (e) {
-      clinicName = '';
-    }
-
-    const text = 'أهلاً بك' + (clinicName ? ' في ' + clinicName : '') +
-      '. للبدء بحجز موعد، أرسل أي رسالة.';
+    const text = this._buildWelcomeMessage();
 
     return Result.ok({
       reply: text,
@@ -144,6 +136,64 @@ const BookingService = {
         }]
       }
     });
+  },
+
+  /**
+   * Builds first-contact greeting from the existing Settings row.
+   * Missing or malformed optional values are omitted rather than guessed.
+   */
+  _buildWelcomeMessage() {
+    let settings = null;
+    try {
+      const result = SettingsRepository.getSettingsResult();
+      if (result && result.ok && result.data) settings = result.data;
+    } catch (e) {
+      settings = null;
+    }
+
+    if (!settings) {
+      return 'أهلاً وسهلاً بك في عيادتنا 🌷\n' +
+        'يسعدنا خدمتك. يمكنك البدء بحجز موعد من الزر أدناه.';
+    }
+
+    const clinicName = this._welcomeTextValue(settings.clinic_name);
+    const doctorName = this._welcomeTextValue(settings.doctor_name);
+    const dayNames = [
+      ['sunday', 'الأحد'],
+      ['monday', 'الاثنين'],
+      ['tuesday', 'الثلاثاء'],
+      ['wednesday', 'الأربعاء'],
+      ['thursday', 'الخميس'],
+      ['friday', 'الجمعة'],
+      ['saturday', 'السبت']
+    ];
+    const workingDays = [];
+    for (let i = 0; i < dayNames.length; i++) {
+      const value = settings[dayNames[i][0]];
+      if (value === true || (typeof value === 'string' && value.trim().toUpperCase() === 'TRUE')) {
+        workingDays.push(dayNames[i][1]);
+      }
+    }
+
+    const start = (typeof settings.work_start === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(settings.work_start.trim()) ? settings.work_start.trim() : '');
+    const lines = ['أهلاً وسهلاً بك' + (clinicName ? ' في ' + clinicName : '') + ' 🌷'];
+    if (doctorName) lines.push('يسعدنا استقبالكم لدى د. ' + doctorName + '.');
+    else lines.push('يسعدنا خدمتك.');
+
+    lines.push('معلومات الدوام لتسهيل حجز موعدك:');
+    if (workingDays.length) lines.push('📅 أيام الدوام: ' + workingDays.join('، '));
+    if (start) lines.push('🕘 بداية الدوام: ' + start);
+
+    lines.push('يمكنك البدء بحجز موعدك من الزر أدناه، وسيعرض النظام المواعيد المتاحة وفق جدول العيادة والحجوزات القائمة.');
+    lines.push('نتمنى لك دوام الصحة والعافية.');
+    return lines.join('\n');
+  },
+
+  _welcomeTextValue(value) {
+    if (typeof value !== 'string' && typeof value !== 'number') return '';
+    const text = String(value).trim();
+    if (!text || /^undefined|null$/i.test(text)) return '';
+    return text;
   },
 
   _handleMenuMain(phone) {

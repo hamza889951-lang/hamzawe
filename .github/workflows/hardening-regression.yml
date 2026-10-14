@@ -31,6 +31,7 @@ jobs:
           set -euo pipefail
           node --check Infrastructure/GoogleCalendar.js
           node --check Infrastructure/GoogleSheets.js
+          node --check Application/BookingService.js
           node --check Application/B6LifecycleService.js
           node --check AvailabilityArchiveRepository.js
           node --check RetentionService.js
