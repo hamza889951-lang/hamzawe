@@ -175,7 +175,7 @@ const BookingService = {
       }
     }
 
-    const start = DateUtils.normalizeTime(settings.work_start);
+    const start = (typeof settings.work_start === 'string' && /^([01]\\d|2[0-3]):[0-5]\\d$/.test(settings.work_start.trim()) ? settings.work_start.trim() : '');
     const lines = ['أهلاً وسهلاً بك' + (clinicName ? ' في ' + clinicName : '') + ' 🌷'];
     if (doctorName) lines.push('يسعدنا استقبالكم لدى د. ' + doctorName + '.');
     else lines.push('يسعدنا خدمتك.');
