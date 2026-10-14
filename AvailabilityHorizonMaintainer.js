@@ -18,6 +18,7 @@
  * - Terminal lifecycle slots (EXPIRED, CANCELLED, COMPLETED, NO_SHOW) لا تُلمس إطلاقًا.
  * - FREE/RESERVED/CONFIRMED → is_available يُعاد معايَرته وفق EffectiveSchedule
  *   مع الحفاظ على status كما هو (status ملك StateMachine، is_available projection).
+ * - Existing patient/lifecycle/calendar data is preserved; reconciliation writes is_available only.
  * - Source snapshot: تحميل Settings + ScheduleChange records مرة واحدة في كل run،
  *   ثم إعادة استخدام نفس snapshot عبر _evaluateSlotFromSources لكل slot.
  * - Gap filling: required starts - existing starts = missing starts only.
@@ -173,39 +174,12 @@ const AvailabilityHorizonMaintainer = {
       }
       var plan = planResult.data;
 
-      // ── Step 4d: Read ALL slots in generation window (for deduplication) ──
-      // This includes past slots from today if generation starts today
-      var nowMs = Clock.now().getTime();
-      var allSlotsInWindow = [];
-      if (plan.needsGeneration && plan.startDate) {
-        // Calculate the end date for the generation window
-        var windowEndDate = new Date(plan.startDate.getTime());
-        windowEndDate.setDate(windowEndDate.getDate() + plan.daysCount);
-        var windowEndMs = windowEndDate.getTime();
-        var windowStartMs = plan.startDate.getTime();
+      // Gap detection reuses the future-slot snapshot loaded below.
+      // Do not issue a second full Availability query solely for deduplication:
+      // on a complete horizon, gap filling still runs but adds no storage scan.
 
-        var queryResult = SlotRepository.queryResult(function(row) {
-          var sortValue = LegacySlotTimeParser.toComparableTime(row.sort_key);
-          if (sortValue === null) return false;
-          return sortValue >= windowStartMs && sortValue < windowEndMs;
-        });
-        
-        if (!queryResult.ok) {
-          var slotsFail = Result.fail(
-            'SLOT_QUERY_FAILED',
-            'Failed to query slots in generation window',
-            queryResult.error
-          );
-          LogRepository.write({
-            timestamp: Clock.now(), command: 'GENERATE_AVAILABILITY', phone: '',
-            slotId: '', stage: 'END', success: false, durationMs: null,
-            error: JSON.stringify({ reason: slotsFail.error.code })
-          });
-          return slotsFail;
-        }
-        
-        allSlotsInWindow = queryResult.data;
-      }
+      // Capture one operation time for both reconciliation and gap generation.
+      var nowMs = Clock.now().getTime();
 
       // ── Step 4e: Read future non-terminal slots (for reconciliation) ──
       // Reconciliation must be bounded by Horizon to match materialization window
@@ -275,9 +249,21 @@ const AvailabilityHorizonMaintainer = {
         baseline, records, slotDuration, nowMs, futureSlots
       );
 
-      // ── Step 6: Generate missing slots using generation plan ──
+      // ── Step 6: Fill gaps across the configured horizon ──
+      // Keep the existing horizon end semantics (today + targetDays), but
+      // evaluate from today so internal gaps are repaired even when the latest
+      // slot already reaches the horizon. Reuse futureSlots as the dedup snapshot.
+      var generationStart = new Date(nowMs);
+      generationStart.setHours(0, 0, 0, 0);
+      var gapPlan = {
+        needsGeneration: true,
+        startDate: generationStart,
+        daysCount: targetDays,
+        notBeforeMs: nowMs,
+        reason: 'Reconcile missing starts throughout the configured horizon'
+      };
       var generateResult = AvailabilityHorizonMaintainer._generateMissingSlots(
-        controlContext, baseline, records, settings, slotDuration, plan, allSlotsInWindow
+        controlContext, baseline, records, settings, slotDuration, gapPlan, futureSlots
       );
 
       // ── Step 7: Aggregate results ──
@@ -464,14 +450,14 @@ const AvailabilityHorizonMaintainer = {
    * Uses pre-loaded source snapshot. Deduplicates by sort_key before insert.
    */
   _generateMissingSlots: function(controlContext, baseline, records, settings, slotDuration, plan, allSlotsInWindow) {
-    // Use the generation plan from SlotGenerator.calculateGenerationPlan()
-    // This preserves existing Horizon semantics (calendar-day based)
-    if (!plan || !plan.needsGeneration) {
-      return Result.ok({
-        generated: 0,
-        failedDays: 0,
-        deduplicatedSkipped: 0
-      });
+    // The caller supplies a bounded horizon window, not only an extension plan.
+    // This is intentional: a complete horizon may still contain internal gaps.
+    if (!plan || !plan.needsGeneration || !plan.startDate ||
+        !(plan.daysCount > 0) || !Array.isArray(allSlotsInWindow)) {
+      return Result.fail(
+        'INVALID_GENERATION_WINDOW',
+        'Gap filling requires a valid bounded window and an existing-slot snapshot'
+      );
     }
 
     var startDate = plan.startDate;
@@ -523,6 +509,14 @@ const AvailabilityHorizonMaintainer = {
           while (currentMinutes + slotDuration <= wEnd) {
             var slotTime = new Date(currentDate.getTime());
             slotTime.setHours(Math.floor(currentMinutes / 60), currentMinutes % 60, 0, 0);
+
+            // Do not materialize starts that have already elapsed today.
+            // Maintenance ran before Horizon; past starts must not be created as
+            // fresh bookable rows just because an earlier slot is missing.
+            if (typeof plan.notBeforeMs === 'number' && slotTime.getTime() < plan.notBeforeMs) {
+              currentMinutes += slotDuration;
+              continue;
+            }
 
             var sortKey = DateUtils.formatSortKey(slotTime);
 

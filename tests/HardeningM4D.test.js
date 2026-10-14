@@ -1351,8 +1351,61 @@ test('M4D-Q5 — Gap filling: respects Horizon semantics (start after latest slo
   
   assert.ok(sept3Slots.length > 0, 'Should generate slots for Sept 3 (day after latest)');
   
-  // Verify: no slots generated for Sept 2 (already materialized)
-  assert.strictEqual(sept2Slots.length, 2, 'Should not generate additional slots for Sept 2');
+  // Internal gaps on Sept 2 must be filled, while existing starts remain unique.
+  assert.strictEqual(sept2Slots.length, 10, 'Should fill all required 30-minute starts from 09:00 to 13:30');
+  assert.strictEqual(
+    sept2Slots.filter(function(slot) { return slot.time === '09:30'; }).length,
+    1,
+    'Should fill the missing 09:30 start exactly once'
+  );
+});
+
+test('M4D-Q6 — complete horizon still fills a missing earlier start without a second slot scan', function() {
+  setupStandard();
+  // Existing slots reach the configured horizon, but the day contains internal gaps.
+  seedSlot({ date: '2026/09/02', time: '09:00', status: 'FREE', sort_key: '202609020900', is_available: true });
+  seedSlot({ date: '2026/09/02', time: '10:00', status: 'FREE', sort_key: '202609021000', is_available: true });
+  state.nowIso = '2026-09-01T06:00:00.000Z';
+
+  var queryCalls = 0;
+  var originalQuery = sandbox.SlotRepository.queryResult;
+  sandbox.SlotRepository.queryResult = function(predicate) {
+    queryCalls += 1;
+    return originalQuery.call(sandbox.SlotRepository, predicate);
+  };
+
+  var result = HM.ensureHorizon(controlContext());
+  sandbox.SlotRepository.queryResult = originalQuery;
+
+  assert.strictEqual(result.ok, true, JSON.stringify(result.error));
+  var daySlots = state.sheets['Availability'].rows.filter(function(slot) {
+    return slot.date === '2026/09/02';
+  });
+  assert.strictEqual(daySlots.filter(function(slot) { return slot.time === '09:30'; }).length, 1);
+  assert.strictEqual(daySlots.filter(function(slot) { return slot.time === '10:00'; }).length, 1);
+  // One future-slot snapshot for reconciliation + gap deduplication; no separate generation-window scan.
+  assert.strictEqual(queryCalls, 1, 'Should reuse the reconciliation snapshot instead of querying Availability again');
+});
+
+test('M4D-Q7 — earlier work-window expansion creates new starts without duplicating existing slots', function() {
+  setupStandard();
+  var settings = standardSettings({ work_start: '15:00', work_end: '21:00' });
+  state.sheets['Settings'] = {
+    headers: Object.keys(settings),
+    rows: [Object.assign({}, settings)]
+  };
+  seedSlot({ date: '2026/09/02', time: '16:00', status: 'FREE', sort_key: '202609021600', is_available: true });
+  state.nowIso = '2026-09-01T06:00:00.000Z';
+
+  var result = HM.ensureHorizon(controlContext());
+  assert.strictEqual(result.ok, true, JSON.stringify(result.error));
+
+  var daySlots = state.sheets['Availability'].rows.filter(function(slot) {
+    return slot.date === '2026/09/02';
+  });
+  assert.strictEqual(daySlots.filter(function(slot) { return slot.time === '15:00'; }).length, 1);
+  assert.strictEqual(daySlots.filter(function(slot) { return slot.time === '15:30'; }).length, 1);
+  assert.strictEqual(daySlots.filter(function(slot) { return slot.time === '16:00'; }).length, 1);
 });
 
 test('M4D-PREV-1 — preview: invalid slot_generation_days fails closed', function() {
