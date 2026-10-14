@@ -1,6 +1,6 @@
 /**
  * ReminderService.gs — كامل
- * أُضيفت: processPendingReminders(sendFn)
+ * Reliability hardening: surface read, send, and marker-persistence failures.
  *
  * Patient presentation rule:
  * - show appointment date + derived bus number + clinic work-start
@@ -14,12 +14,11 @@ const ReminderService = {
     var nowMs = now.getTime();
     var windowEndMs = DateUtils.addMinutes(now, Config.SYSTEM_POLICY.REMINDER_LEAD_MINUTES).getTime();
 
-    var candidates = SlotRepository.query(function(row) {
+    // Use the Result-based repository boundary: query() intentionally maps
+    // storage errors to [], which would make a failed read look like no work.
+    var queryResult = SlotRepository.queryResult(function(row) {
       if (row.status !== Config.VOCABULARY.STATUS.CONFIRMED) return false;
-      // M4-C Continuation §15: operational availability gate — a reminder
-      // is suppressed while is_available=false. No new reminder state; if
-      // the slot reopens inside the window and Reminder_sent is still not
-      // TRUE, the existing process sends normally.
+      // M4-C Continuation §15: suppress reminders while operationally closed.
       if (!SlotRepository.isOperationallyAvailable(row.is_available)) return false;
       if (ReminderService._isReminderAlreadySent(row.Reminder_sent)) return false;
       var startMs = LegacySlotTimeParser.toComparableTime(row.sort_key);
@@ -27,39 +26,152 @@ const ReminderService = {
       if (startMs <= nowMs) return false;
       return startMs <= windowEndMs;
     });
+    if (!queryResult || !queryResult.ok) {
+      return queryResult || Result.fail(
+        'REMINDER_CANDIDATE_READ_FAILED',
+        'Reminder candidate query returned no result'
+      );
+    }
 
-    var jobs = candidates.map(function(slot) {
-      return {
-        slotId: slot.slot_id,
-        phone: slot.phone,
-        message: ReminderService._buildReminderMessage(slot),
-        deliveryOptions: ReminderService._buildReminderDeliveryOptions(slot)
-      };
-    });
-
-    return Result.ok(jobs);
+    try {
+      var jobs = queryResult.data.map(function(slot) {
+        return {
+          slotId: slot.slot_id,
+          phone: slot.phone,
+          message: ReminderService._buildReminderMessage(slot),
+          deliveryOptions: ReminderService._buildReminderDeliveryOptions(slot)
+        };
+      });
+      return Result.ok(jobs);
+    } catch (e) {
+      return Result.fail(
+        'REMINDER_CANDIDATE_PREPARATION_FAILED',
+        'Failed to prepare one or more reminder jobs',
+        { message: e.message || String(e) }
+      );
+    }
   },
 
   processPendingReminders: function(sendFn) {
+    if (typeof sendFn !== 'function') {
+      return Result.fail('REMINDER_SEND_FUNCTION_INVALID', 'A reminder send function is required');
+    }
+
     var jobsResult = this.collectPendingReminders();
-    if (!jobsResult.ok) return jobsResult;
-    var jobs = jobsResult.data;
+    if (!jobsResult || !jobsResult.ok) return jobsResult || Result.fail(
+      'REMINDER_CANDIDATE_READ_FAILED',
+      'Unable to collect pending reminders'
+    );
+
+    var jobs = jobsResult.data || [];
     var sent = 0;
+    var sendFailed = 0;
+    var markFailed = 0;
+    var failures = [];
+
     for (var i = 0; i < jobs.length; i++) {
       var job = jobs[i];
-      var sendResult = sendFn(job.phone, job.message, job.deliveryOptions);
-      if (sendResult.ok) {
-        var markResult = ReminderService.markReminderSent(job.slotId);
-        if (markResult.ok) sent++;
+      var sendResult;
+      try {
+        sendResult = sendFn(job.phone, job.message, job.deliveryOptions);
+      } catch (e) {
+        sendFailed++;
+        var thrownFailure = {
+          slotId: job.slotId || null,
+          phase: 'SEND',
+          code: 'REMINDER_SEND_EXCEPTION',
+          message: e && e.message ? e.message : String(e)
+        };
+        failures.push(thrownFailure);
+        this._writeFailureLog(thrownFailure);
+        continue;
+      }
+
+      if (!sendResult || sendResult.ok !== true) {
+        sendFailed++;
+        var sendError = sendResult && sendResult.error ? sendResult.error : {};
+        var sendFailure = {
+          slotId: job.slotId || null,
+          phase: 'SEND',
+          code: sendError.code || 'REMINDER_SEND_FAILED',
+          message: sendError.message || 'Send function did not confirm success'
+        };
+        failures.push(sendFailure);
+        this._writeFailureLog(sendFailure);
+        continue;
+      }
+
+      // Sending and persisting Reminder_sent are not atomic. Do not claim
+      // completion unless both operations succeed; marker failure can permit
+      // a later retry and therefore a duplicate provider send.
+      var markResult;
+      try {
+        markResult = ReminderService.markReminderSent(job.slotId);
+      } catch (e) {
+        markResult = Result.fail(
+          'REMINDER_MARK_EXCEPTION',
+          e && e.message ? e.message : String(e)
+        );
+      }
+
+      if (markResult && markResult.ok === true) {
+        sent++;
+      } else {
+        markFailed++;
+        var markError = markResult && markResult.error ? markResult.error : {};
+        var markFailure = {
+          slotId: job.slotId || null,
+          phase: 'MARK',
+          code: markError.code || 'REMINDER_MARK_FAILED',
+          message: markError.message || 'Reminder was sent but its sent marker was not confirmed'
+        };
+        failures.push(markFailure);
+        this._writeFailureLog(markFailure);
       }
     }
-    return Result.ok({ sent: sent, total: jobs.length });
+
+    var summary = {
+      sent: sent,
+      total: jobs.length,
+      sendFailed: sendFailed,
+      markFailed: markFailed,
+      failed: sendFailed + markFailed
+    };
+
+    if (summary.failed > 0) {
+      return Result.fail(
+        'REMINDER_PARTIAL_FAILURE',
+        'One or more reminders could not be completed',
+        { counts: summary, failures: failures }
+      );
+    }
+    return Result.ok(summary);
   },
 
   markReminderSent: function(slotId) {
     return SlotRepository.atomicUpdate(slotId, function(freshSlot) {
       return Result.ok({ Reminder_sent: 'TRUE' });
     });
+  },
+
+  _writeFailureLog: function(failure) {
+    try {
+      LogRepository.write({
+        timestamp: Clock.now(),
+        command: 'REMINDER_' + failure.phase + '_FAILED',
+        phone: '',
+        slotId: failure.slotId || '',
+        stage: 'REMINDERS',
+        success: false,
+        durationMs: null,
+        error: JSON.stringify({
+          code: failure.code,
+          message: failure.message
+        })
+      });
+    } catch (e) {
+      // Logging is best-effort and must not prevent processing other jobs.
+    }
   },
 
   _isReminderAlreadySent: function(value) {
@@ -106,8 +218,7 @@ const ReminderService = {
         '. يرجى الحضور ضمن وقت دوام العيادة.';
     }
 
-    // Fail closed for patient presentation: never reveal slot.time as a
-    // fallback. Keep the reminder useful without exposing the exact slot.
+    // Fail closed for patient presentation: never reveal slot.time as a fallback.
     return 'تذكير: موعدك اقترب بتاريخ ' + dateDisplay +
       '. تعذّر تحديد رقم الباص حاليًا؛ يرجى التواصل مع العيادة.';
   },
