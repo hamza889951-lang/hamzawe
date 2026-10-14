@@ -177,6 +177,9 @@ const AvailabilityHorizonMaintainer = {
       // Do not issue a second full Availability query solely for deduplication:
       // on a complete horizon, gap filling still runs but adds no storage scan.
 
+      // Capture one operation time for both reconciliation and gap generation.
+      var nowMs = Clock.now().getTime();
+
       // ── Step 4e: Read future non-terminal slots (for reconciliation) ──
       // Reconciliation must be bounded by Horizon to match materialization window
       // Calculate reconciliation upper bound based on Horizon semantics
