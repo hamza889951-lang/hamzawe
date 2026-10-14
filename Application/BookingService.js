@@ -152,7 +152,7 @@ const BookingService = {
     }
 
     if (!settings) {
-      return 'أهلاً وسهلاً بك في عيادتنا 🌷\\n' +
+      return 'أهلاً وسهلاً بك في عيادتنا 🌷\n' +
         'يسعدنا خدمتك. يمكنك البدء بحجز موعد من الزر أدناه.';
     }
 
@@ -186,7 +186,7 @@ const BookingService = {
 
     lines.push('يمكنك البدء بحجز موعدك من الزر أدناه، وسيعرض النظام المواعيد المتاحة وفق جدول العيادة والحجوزات القائمة.');
     lines.push('نتمنى لك دوام الصحة والعافية.');
-    return lines.join('\\n');
+    return lines.join('\n');
   },
 
   _welcomeTextValue(value) {
