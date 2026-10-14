@@ -18,6 +18,7 @@
  * - Terminal lifecycle slots (EXPIRED, CANCELLED, COMPLETED, NO_SHOW) لا تُلمس إطلاقًا.
  * - FREE/RESERVED/CONFIRMED → is_available يُعاد معايَرته وفق EffectiveSchedule
  *   مع الحفاظ على status كما هو (status ملك StateMachine، is_available projection).
+ * - Existing patient/lifecycle/calendar data is preserved; reconciliation writes is_available only.
  * - Source snapshot: تحميل Settings + ScheduleChange records مرة واحدة في كل run،
  *   ثم إعادة استخدام نفس snapshot عبر _evaluateSlotFromSources لكل slot.
  * - Gap filling: required starts - existing starts = missing starts only.
