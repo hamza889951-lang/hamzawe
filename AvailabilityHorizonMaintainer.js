@@ -255,6 +255,7 @@ const AvailabilityHorizonMaintainer = {
         needsGeneration: true,
         startDate: generationStart,
         daysCount: targetDays,
+        notBeforeMs: nowMs,
         reason: 'Reconcile missing starts throughout the configured horizon'
       };
       var generateResult = AvailabilityHorizonMaintainer._generateMissingSlots(
@@ -504,6 +505,14 @@ const AvailabilityHorizonMaintainer = {
           while (currentMinutes + slotDuration <= wEnd) {
             var slotTime = new Date(currentDate.getTime());
             slotTime.setHours(Math.floor(currentMinutes / 60), currentMinutes % 60, 0, 0);
+
+            // Do not materialize starts that have already elapsed today.
+            // Maintenance ran before Horizon; past starts must not be created as
+            // fresh bookable rows just because an earlier slot is missing.
+            if (typeof plan.notBeforeMs === 'number' && slotTime.getTime() < plan.notBeforeMs) {
+              currentMinutes += slotDuration;
+              continue;
+            }
 
             var sortKey = DateUtils.formatSortKey(slotTime);
 
