@@ -167,7 +167,7 @@ function assertMainMenu(result) {
     JSON.stringify(result.data.deliveryOptions.interactiveButtons.map(function(button) {
       return button.id;
     })),
-    JSON.stringify(['VIEW_SCHEDULE', 'CHANGE_SCHEDULE', 'MORE'])
+    JSON.stringify(['VIEW_SCHEDULE', 'CHANGE_SCHEDULE', 'REPORTS'])
   );
 }
 
