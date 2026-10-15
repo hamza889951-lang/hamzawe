@@ -159,7 +159,7 @@ const DoctorControlInteractionService = {
     // Send the report as plain text; the doctor can request another report
     // by tapping the report button from the control menu.
     return Result.ok({
-      reply: generated.data.reply + '\\n\\nلطلب تقرير آخر، ارجع إلى لوحة الطبيب واختر «التقارير».',
+      reply: generated.data.reply + '\n\nلطلب تقرير آخر، ارجع إلى لوحة الطبيب واختر «التقارير».',
       controlState: Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_MENU
     });
   },
