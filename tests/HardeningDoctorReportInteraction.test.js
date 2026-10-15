@@ -74,12 +74,9 @@ function load(rel, sandbox, name) {
     'REPORT_RUN_MONTHLY_SUMMARY', 'REPORT_RUN_MONTHLY_FULL'
   ];
   ids.forEach(function(id) {
-    assert.ok(source.indexOf(id + ': \'DOCTOR_' + id + '\'') !== -1,
+    assert.ok(source.indexOf(id + ": 'DOCTOR_" + id + "'") !== -1,
       'missing outbound Meta mapping for ' + id);
-    assert.ok(source.indexOf('DOCTOR_' + id + ': \' ' + id + '\'') !== -1 ||
-      source.indexOf('DOCTOR_' + id + ': \' ' + id + '\'') !== -1 ||
-      source.indexOf('DOCTOR_' + id + ': \' ' + id + '\'') !== -1 ||
-      source.indexOf('DOCTOR_' + id + ': \' ' + id + '\'') !== -1,
+    assert.ok(source.indexOf('DOCTOR_' + id + ": '" + id + "'") !== -1,
       'missing inbound mapping for ' + id);
   });
   assert.ok(interaction.indexOf("id: 'REPORT_PERIOD_DAILY'") !== -1);
