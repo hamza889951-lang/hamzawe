@@ -104,6 +104,7 @@ const DoctorControlInteractionService = {
       '3) إغلاق مؤقت\n' +
       '4) فتح استثنائي ليوم مغلق\n' +
       '5) إلغاء تغيير مجدول\n' +
+      'زر «التقارير» لعرض تقارير الأداء، أو أرسل «المزيد» لبقية العمليات.\n' +
       'أرسل رقم الخيار.';
   },
 
@@ -111,8 +112,56 @@ const DoctorControlInteractionService = {
     return [
       { id: 'VIEW_SCHEDULE', title: 'عرض الجدول' },
       { id: 'CHANGE_SCHEDULE', title: 'تغيير الجدول' },
-      { id: 'MORE', title: 'المزيد' }
+      { id: 'REPORTS', title: 'التقارير' }
     ];
+  },
+
+  _showReportPeriods: function(phone, prefix) {
+    return Result.ok({
+      reply: (prefix ? prefix + '\n\n' : '') + 'تقارير العيادة: اختر الفترة المطلوبة. سيُعرض الملخص أولاً، ويمكنك اختيار التقرير الكامل بعد ذلك.',
+      controlState: Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_MENU,
+      deliveryOptions: {
+        interactiveButtons: [
+          { id: 'REPORT_PERIOD_DAILY', title: 'يومي' },
+          { id: 'REPORT_PERIOD_WEEKLY', title: 'أسبوعي' },
+          { id: 'REPORT_PERIOD_MONTHLY', title: 'شهري' }
+        ],
+        fallbackToText: true
+      }
+    });
+  },
+
+  _showReportRepresentations: function(phone, reportType) {
+    if (['DAILY', 'WEEKLY', 'MONTHLY'].indexOf(reportType) === -1) {
+      return this._showReportPeriods(phone, 'الفترة المطلوبة غير صالحة.');
+    }
+    return Result.ok({
+      reply: 'الفترة المختارة: ' + ({ DAILY: 'يومي', WEEKLY: 'أسبوعي', MONTHLY: 'شهري' }[reportType]) + '. اختر شكل التقرير:',
+      controlState: Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_MENU,
+      deliveryOptions: {
+        interactiveButtons: [
+          { id: 'REPORT_RUN_' + reportType + '_SUMMARY', title: 'ملخص' },
+          { id: 'REPORT_RUN_' + reportType + '_FULL', title: 'تقرير كامل' },
+          { id: 'REPORTS', title: 'رجوع للفترات' }
+        ],
+        fallbackToText: true
+      }
+    });
+  },
+
+  _generateDoctorReport: function(phone, reportType, representation) {
+    var generated = DoctorReportService.generate(reportType, representation);
+    if (!generated.ok) {
+      return this._showReportPeriods(phone,
+        'تعذر إنشاء التقرير حالياً (' + generated.error.code + '). لم تُعرض بيانات بديلة أو أصفار افتراضية.');
+    }
+    // FULL reports can exceed Meta's interactive-message body limit.
+    // Send the report as plain text; the doctor can request another report
+    // by tapping the report button from the control menu.
+    return Result.ok({
+      reply: generated.data.reply + '\n\nلطلب تقرير آخر، ارجع إلى لوحة الطبيب واختر «التقارير».',
+      controlState: Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_MENU
+    });
   },
 
   _moreMenuText: function() {
@@ -202,8 +251,19 @@ const DoctorControlInteractionService = {
     if (text === '5' || text === 'CANCEL_CHANGE') {
       return this._promptCancelList(controlContext, phone);
     }
-    if (text === 'MORE') {
+    if (text === 'REPORTS') {
+      return this._showReportPeriods(phone);
+    }
+    if (text === 'MORE' || text === 'المزيد') {
       return this._showMoreMenu(phone);
+    }
+    if (text.indexOf('REPORT_PERIOD_') === 0) {
+      return this._showReportRepresentations(phone, text.substring('REPORT_PERIOD_'.length));
+    }
+    if (text.indexOf('REPORT_RUN_') === 0) {
+      var reportParts = text.substring('REPORT_RUN_'.length).split('_');
+      if (reportParts.length !== 2) return this._showReportPeriods(phone, 'اختيار التقرير غير صالح.');
+      return this._generateDoctorReport(phone, reportParts[0], reportParts[1]);
     }
     return this._showMenu(phone);
   },
