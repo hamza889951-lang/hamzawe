@@ -95,7 +95,7 @@ const DoctorReportService = {
         continue;
       }
       if (line.indexOf('Availability: ') === 0) {
-        lines[i] = 'توفر البيانات: ' + this._translateLeadingStatus(line.substring(13), statuses);
+        lines[i] = 'توفر البيانات: ' + this._translateLeadingStatus(line.substring(14), statuses);
         continue;
       }
       var pair = line.match(/^([^:]+):(.*)$/);
