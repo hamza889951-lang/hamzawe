@@ -71,8 +71,8 @@ function load(rel, sandbox, name) {
   assert.ok(reply.includes('الإلغاءات المسجلة: 0'), 'measured zero is preserved');
   assert.ok(reply.includes('معدل الإلغاء: متاح: 0 [سياسة التقييم غير مهيأة: policy AVAILABLE not configured]'),
     'status label is translated but rule reason is unchanged');
-  assert.ok(reply.includes('OTHER_METRIC: INSUFFICIENT_SAMPLE (reason contains AVAILABLE and RULE_NOT_CONFIGURED)'),
-    'unknown identifiers/statuses are retained rather than guessed');
+  assert.ok(reply.includes('OTHER_METRIC: العينة غير كافية (reason contains AVAILABLE and RULE_NOT_CONFIGURED)'),
+    'unknown metric identifier and dynamic reason are retained while the known status is translated');
   assert.ok(reply.includes('Source says AVAILABLE and RULE_NOT_CONFIGURED; preserve this narrative.'),
     'dynamic narrative must not be globally rewritten');
 
