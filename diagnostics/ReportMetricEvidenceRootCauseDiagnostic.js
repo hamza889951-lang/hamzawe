@@ -104,7 +104,7 @@ function runHamzaweReportMetricEvidenceDiagnostic() {
           isFiniteNumber: typeof ts === 'number' && isFinite(ts),
           isNonEmptyString: typeof ts === 'string' && ts.length > 0,
           stringLooksIsoLike: typeof ts === 'string' &&
-            /^\\d{4}-\\d{2}-\\d{2}(?:T|$)/.test(ts),
+            /^\d{4}-\d{2}-\d{2}(?:T|$)/.test(ts),
           stringLength: typeof ts === 'string' ? ts.length : null,
           acceptedByMetricsRowMs: metricEpochMs !== null,
           epochMsAvailable: metricEpochMs !== null ? metricEpochMs : null
@@ -207,7 +207,7 @@ function _hamzaweReportDiagFailure(result) {
       out.timestampValueRedacted = true;
       out.timestampValueType = 'string';
       out.timestampValueLength = details.timestampValue.length;
-      out.timestampValueLooksIsoLike = /^\\d{4}-\\d{2}-\\d{2}(?:T|$)/.test(details.timestampValue);
+      out.timestampValueLooksIsoLike = /^\d{4}-\d{2}-\d{2}(?:T|$)/.test(details.timestampValue);
     }
     if (typeof details.startMs === 'number') out.startMs = details.startMs;
     if (typeof details.endMs === 'number') out.endMs = details.endMs;
