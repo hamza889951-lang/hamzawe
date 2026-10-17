@@ -1,9 +1,31 @@
 /**
  * Webhook.gs — Meta Cloud / B2 trusted ingress.
+ * Temporary diagnostic trace: execution log only; never logs phone, payload,
+ * message text, tokens, or other user data. Remove after incident closure.
  */
-function doPost(e) {
+function webhookDoctorTrace(stage, startedAt, details) {
   try {
+    console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({
+      component: 'Webhook',
+      stage: stage,
+      elapsedMs: startedAt ? Clock.now().getTime() - startedAt : null,
+      details: details || null
+    }));
+  } catch (ignored) {}
+}
+
+function doPost(e) {
+  var traceStartedAt = null;
+  try { traceStartedAt = Clock.now().getTime(); } catch (ignored) {}
+  webhookDoctorTrace('POST_ENTER', traceStartedAt);
+  try {
+    webhookDoctorTrace('BEFORE_PARSE', traceStartedAt);
     const parsed = WhatsAppAdapter.parseIncomingPayload(e);
+    webhookDoctorTrace('AFTER_PARSE', traceStartedAt, parsed ? {
+      eventType: parsed.eventType || null,
+      messageType: parsed.messageType || null,
+      hasMessageId: !!parsed.messageId
+    } : { parsed: false });
 
     if (!parsed) {
       LogRepository.write({
@@ -50,11 +72,17 @@ function doPost(e) {
       return ContentService.createTextOutput('OK');
     }
 
+    webhookDoctorTrace('BEFORE_CLAIM', traceStartedAt);
     var claimResult = ProcessedMessagesService.claim(
       parsed.messageId || null,
       parsed.phone,
       parsed.message
     );
+    webhookDoctorTrace('AFTER_CLAIM', traceStartedAt, {
+      ok: !!claimResult.ok,
+      status: claimResult.data && claimResult.data.status || null,
+      errorCode: claimResult.error && claimResult.error.code || null
+    });
 
     if (!claimResult.ok) {
       LogRepository.write({
@@ -74,20 +102,31 @@ function doPost(e) {
       return ContentService.createTextOutput('OK');
     }
 
+    webhookDoctorTrace('BEFORE_ROUTER_DISPATCH', traceStartedAt);
     const result = Router.dispatch({
       phone: parsed.phone,
       message: parsed.message,
       messageId: parsed.messageId,
       timestampMs: parsed.timestampMs
     });
+    webhookDoctorTrace('AFTER_ROUTER_DISPATCH', traceStartedAt, {
+      ok: !!result.ok,
+      errorCode: result.error && result.error.code || null,
+      hasReply: !!(result.data && result.data.reply)
+    });
 
     if (typeof ConversationRepository !== 'undefined' &&
         typeof ConversationRepository.recordInboundMessage === 'function') {
+      webhookDoctorTrace('BEFORE_INBOUND_METADATA', traceStartedAt);
       var inboundRecorded = ConversationRepository.recordInboundMessage(
         parsed.phone,
         parsed.messageId,
         parsed.timestampMs
       );
+      webhookDoctorTrace('AFTER_INBOUND_METADATA', traceStartedAt, {
+        ok: !!inboundRecorded.ok,
+        errorCode: inboundRecorded.error && inboundRecorded.error.code || null
+      });
       if (!inboundRecorded.ok) {
         LogRepository.write({
           timestamp: Clock.now(),
@@ -117,11 +156,16 @@ function doPost(e) {
     }
 
     if (result.data && result.data.reply) {
+      webhookDoctorTrace('BEFORE_SEND_REPLY', traceStartedAt);
       const sendResult = MessagingPolicyService.sendReply(
         parsed.phone,
         result.data.reply,
         result.data.deliveryOptions || null
       );
+      webhookDoctorTrace('AFTER_SEND_REPLY', traceStartedAt, {
+        ok: !!sendResult.ok,
+        errorCode: sendResult.error && sendResult.error.code || null
+      });
       if (!sendResult.ok) {
         LogRepository.write({
           timestamp: Clock.now(),
@@ -138,6 +182,10 @@ function doPost(e) {
 
     return ContentService.createTextOutput('OK');
   } catch (err) {
+    webhookDoctorTrace('WEBHOOK_CATCH', traceStartedAt, {
+      errorName: err && err.name || null,
+      errorMessage: err && err.message ? String(err.message).slice(0, 180) : 'unknown'
+    });
     try {
       LogRepository.write({
         timestamp: Clock.now(),

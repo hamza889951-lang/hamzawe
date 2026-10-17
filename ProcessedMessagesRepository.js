@@ -43,12 +43,16 @@ const ProcessedMessagesRepository = {
    *   fail('CLAIM_PERSISTENCE_FAILED', ...)  — فشل كتابة claim جديد
    */
   claim: function(key, nowMs, duplicateWindowMs) {
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'ProcessedMessagesRepository',stage:'CLAIM_ENTER',atMs:Clock.now().getTime()})); } catch (ignored) {}
     return Lock.runExclusive('idempotency', function() {
+      try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'ProcessedMessagesRepository',stage:'LOCK_ACQUIRED',atMs:Clock.now().getTime()})); } catch (ignored) {}
       // ── read existing claim ──
       var stored = null;
       try {
         var props = PropertiesService.getScriptProperties();
+        try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'ProcessedMessagesRepository',stage:'BEFORE_CLAIM_PROPERTY_READ',atMs:Clock.now().getTime()})); } catch (ignored) {}
         var raw = props.getProperty(key);
+        try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'ProcessedMessagesRepository',stage:'AFTER_CLAIM_PROPERTY_READ',atMs:Clock.now().getTime(),existing:raw!=null})); } catch (ignored) {}
         stored = (raw !== undefined && raw !== null) ? raw : null;
       } catch (e) {
         return Result.fail(
@@ -74,7 +78,9 @@ const ProcessedMessagesRepository = {
       // Cleanup is housekeeping, not an ownership precondition. Any failure
       // here is intentionally swallowed so a valid current claim can proceed.
       try {
+        try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'ProcessedMessagesRepository',stage:'BEFORE_CLAIM_CLEANUP_SNAPSHOT',atMs:Clock.now().getTime()})); } catch (ignored) {}
         var allProperties = PropertiesService.getScriptProperties().getProperties();
+        try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'ProcessedMessagesRepository',stage:'AFTER_CLAIM_CLEANUP_SNAPSHOT',atMs:Clock.now().getTime(),propertyCount:Object.keys(allProperties).length})); } catch (ignored) {}
         var removed = 0;
         var keys = Object.keys(allProperties);
         var inspected = 0;
@@ -112,7 +118,9 @@ const ProcessedMessagesRepository = {
       // ── establish ownership ──
       try {
         var props = PropertiesService.getScriptProperties();
+        try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'ProcessedMessagesRepository',stage:'BEFORE_CLAIM_PROPERTY_WRITE',atMs:Clock.now().getTime()})); } catch (ignored) {}
         props.setProperty(key, String(nowMs));
+        try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'ProcessedMessagesRepository',stage:'AFTER_CLAIM_PROPERTY_WRITE',atMs:Clock.now().getTime()})); } catch (ignored) {}
       } catch (e) {
         return Result.fail(
           'CLAIM_PERSISTENCE_FAILED',

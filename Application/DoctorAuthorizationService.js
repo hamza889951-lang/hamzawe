@@ -44,7 +44,9 @@ const DoctorAuthorizationService = {
    *   fail('DOCTOR_UNAUTHORIZED')
    */
   authorizeDoctor: function(rawPhone) {
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'DoctorAuthorizationService',stage:'AUTH_ENTER',atMs:Clock.now().getTime()})); } catch (ignored) {}
     var normalized = PhoneUtils.normalize(rawPhone);
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'DoctorAuthorizationService',stage:'AFTER_PHONE_NORMALIZE',atMs:Clock.now().getTime()})); } catch (ignored) {}
     var phoneCheck = Validators.validatePhone(normalized);
     if (!phoneCheck.ok) {
       return Result.fail(
@@ -53,8 +55,11 @@ const DoctorAuthorizationService = {
       );
     }
     var phone = phoneCheck.data;
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'DoctorAuthorizationService',stage:'AFTER_PHONE_VALIDATION',atMs:Clock.now().getTime(),valid:!!phoneCheck.ok})); } catch (ignored) {}
 
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'DoctorAuthorizationService',stage:'BEFORE_IDENTITY_READ',atMs:Clock.now().getTime()})); } catch (ignored) {}
     var sourceResult = DoctorIdentityRepository.readConfiguredDoctorPhone();
+    try { console.log('[HAMZAWE_DOCTOR_TRACE] ' + JSON.stringify({component:'DoctorAuthorizationService',stage:'AFTER_IDENTITY_READ',atMs:Clock.now().getTime(),ok:!!sourceResult.ok,errorCode:sourceResult.error&&sourceResult.error.code||null,configured:!!(sourceResult.data)})); } catch (ignored) {}
     if (!sourceResult.ok) {
       return Result.fail(
         'DOCTOR_IDENTITY_SOURCE_UNAVAILABLE',
