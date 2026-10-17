@@ -70,7 +70,7 @@ function runHamzaweReportMetricEvidenceDiagnostic() {
     if (!auditResult || auditResult.ok !== true || !Array.isArray(auditResult.data)) {
       report.checks.attendanceAuditRead = {
         ok: false,
-        failure: this._hamzaweReportDiagFailure(auditResult)
+        failure: _hamzaweReportDiagFailure(auditResult)
       };
     } else {
       var rows = auditResult.data;
@@ -129,13 +129,13 @@ function runHamzaweReportMetricEvidenceDiagnostic() {
           endMs: periodResult.data.endMs
         } : {
           ok: false,
-          failure: this._hamzaweReportDiagFailure(periodResult)
+          failure: _hamzaweReportDiagFailure(periodResult)
         };
 
         var m1 = ReportService.generate(type, referenceMs);
         run.m1ReportService = m1 && m1.ok === true
           ? { ok: true, status: m1.data.status, metricNames: Object.keys(m1.data.metrics || {}) }
-          : { ok: false, failure: this._hamzaweReportDiagFailure(m1) };
+          : { ok: false, failure: _hamzaweReportDiagFailure(m1) };
 
         var full = EnhancedReportService.generateFull(type, referenceMs, { includeTrend: false });
         run.enhancedFull = full && full.ok === true
@@ -144,7 +144,7 @@ function runHamzaweReportMetricEvidenceDiagnostic() {
               availability: full.data && full.data.availability
                 ? full.data.availability.status : null
             }
-          : { ok: false, failure: this._hamzaweReportDiagFailure(full) };
+          : { ok: false, failure: _hamzaweReportDiagFailure(full) };
 
         // Run the same M1 batch directly to preserve the exact foundation
         // failure result independently of M3 composition.
@@ -155,7 +155,7 @@ function runHamzaweReportMetricEvidenceDiagnostic() {
           );
           run.metricsBatch = batch && batch.ok === true
             ? { ok: true, metricNames: Object.keys(batch.data.results || {}) }
-            : { ok: false, failure: this._hamzaweReportDiagFailure(batch) };
+            : { ok: false, failure: _hamzaweReportDiagFailure(batch) };
         }
       } catch (e) {
         run.unhandledException = {
