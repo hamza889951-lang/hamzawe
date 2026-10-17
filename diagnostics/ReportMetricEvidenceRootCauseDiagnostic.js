@@ -106,8 +106,7 @@ function runHamzaweReportMetricEvidenceDiagnostic() {
           stringLooksIsoLike: typeof ts === 'string' &&
             /^\d{4}-\d{2}-\d{2}(?:T|$)/.test(ts),
           stringLength: typeof ts === 'string' ? ts.length : null,
-          acceptedByMetricsRowMs: metricEpochMs !== null,
-          epochMsAvailable: metricEpochMs !== null ? metricEpochMs : null
+          acceptedByMetricsRowMs: metricEpochMs !== null
         } : null,
         semantics: 'The first APPLIED row is selected by the same _rowOrder rule as MetricsService; no later row is substituted.'
       };
