@@ -103,11 +103,23 @@ function runHamzaweReportMetricEvidenceDiagnostic() {
         var timestampColumn = auditHeaders.indexOf('timestamp') + 1;
         if (firstApplied && firstApplied._rowNumber > 1 && timestampColumn > 0) {
           var timestampCell = auditSheet.getRange(firstApplied._rowNumber, timestampColumn);
+          var rawCellValue = timestampCell.getValue();
           var displayValue = timestampCell.getDisplayValue();
           var formulaValue = timestampCell.getFormula();
           var numberFormat = timestampCell.getNumberFormat();
+          var rawCellType = rawCellValue instanceof Date ? 'Date'
+            : (rawCellValue === null ? 'null' : typeof rawCellValue);
+          var rawCellString = typeof rawCellValue === 'string' ? rawCellValue.trim() : '';
+          var rawCellLooksDateOnly = rawCellString.length === 10 &&
+            (rawCellString.charAt(4) === '/' || rawCellString.charAt(4) === '-') &&
+            (rawCellString.charAt(7) === '/' || rawCellString.charAt(7) === '-');
           timestampStorageProbe = {
             ok: true,
+            directCellValueType: rawCellType,
+            directCellValueLength: typeof rawCellValue === 'string' ? rawCellValue.length : null,
+            directCellValueLooksDateOnly: rawCellLooksDateOnly,
+            directCellValueIsValidDate: rawCellValue instanceof Date && isFinite(rawCellValue.getTime()),
+            directCellValueIsFiniteNumber: typeof rawCellValue === 'number' && isFinite(rawCellValue),
             cellNumberFormat: typeof numberFormat === 'string' ? numberFormat.slice(0, 40) : null,
             displayValueType: typeof displayValue,
             displayValueLength: typeof displayValue === 'string' ? displayValue.length : null,
@@ -145,12 +157,14 @@ function runHamzaweReportMetricEvidenceDiagnostic() {
         if (MetricsService._rowMs(value) !== null) appliedTimestampAcceptedCount++;
       }
 
-      var sheetsApiTimestampProbe = _hamzaweReportDiagSheetsApiTimestampProbe(rows, firstApplied);
+      var appliedTimestampInventory = _hamzaweReportDiagTimestampInventory(rows);
+      var timestampOriginAssessment = _hamzaweReportDiagTimestampOriginAssessment(appliedTimestampInventory);
 
       report.checks.attendanceAuditRead = {
         ok: true,
         timestampStorageProbe: timestampStorageProbe,
-        sheetsApiTimestampProbe: sheetsApiTimestampProbe,
+        appliedTimestampInventory: appliedTimestampInventory,
+        timestampOriginAssessment: timestampOriginAssessment,
         appliedTimestampTypes: appliedTimestampTypes,
         appliedStringShapes: appliedStringShapes,
         appliedTimestampAcceptedCount: appliedTimestampAcceptedCount,
@@ -295,195 +309,101 @@ function _hamzaweReportDiagFailure(result) {
  * service. If the API is unavailable, the result says why and does not fail
  * the report diagnostic.
  */
-function _hamzaweReportDiagSheetsApiTimestampProbe(rows, firstApplied) {
-  var result = {
-    attempted: false,
-    available: false,
-    method: 'Sheets REST API read-only grid metadata',
-    rawValuesLogged: false
-  };
-
-  try {
-    if (typeof UrlFetchApp === 'undefined' ||
-        typeof ScriptApp === 'undefined' ||
-        typeof ScriptApp.getOAuthToken !== 'function') {
-      result.reason = 'URLFETCH_OR_SCRIPT_TOKEN_API_UNAVAILABLE';
-      return result;
-    }
-
-    var spreadsheet = GoogleSheets._openSpreadsheet();
-    var spreadsheetId = spreadsheet && typeof spreadsheet.getId === 'function'
-      ? spreadsheet.getId() : '';
-    if (!spreadsheetId) {
-      result.reason = 'SPREADSHEET_ID_UNAVAILABLE';
-      return result;
-    }
-
-    var headers = GoogleSheets.getHeaders('ATTENDANCE_AUDIT');
-    var timestampColumn = headers.indexOf('timestamp') + 1;
-    var sheet = GoogleSheets._getSheet('ATTENDANCE_AUDIT');
-    var lastRow = sheet.getLastRow();
-    if (timestampColumn < 1 || lastRow < 2) {
-      result.reason = 'TIMESTAMP_COLUMN_OR_DATA_ROWS_UNAVAILABLE';
-      return result;
-    }
-
-    var columnLetter = '';
-    var n = timestampColumn;
-    while (n > 0) {
-      var rem = (n - 1) % 26;
-      columnLetter = String.fromCharCode(65 + rem) + columnLetter;
-      n = Math.floor((n - 1) / 26);
-    }
-
-    var a1Range = "'ATTENDANCE_AUDIT'!" + columnLetter + "2:" + columnLetter + lastRow;
-    var fields = 'sheets(data(startRow,rowData(values(userEnteredValue,effectiveValue,userEnteredFormat(numberFormat),effectiveFormat(numberFormat)))))';
-    var url = 'https://sheets.googleapis.com/v4/spreadsheets/' +
-      encodeURIComponent(spreadsheetId) +
-      '?includeGridData=true&ranges=' + encodeURIComponent(a1Range) +
-      '&fields=' + encodeURIComponent(fields);
-
-    result.attempted = true;
-    var response = UrlFetchApp.fetch(url, {
-      method: 'get',
-      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
-      muteHttpExceptions: true
+/**
+ * Enumerate every APPLIED timestamp in physical-row order without exposing
+ * raw values or identifiers. This determines whether malformed values form
+ * an older contiguous block followed by typed Date writes, a mixed/interleaved
+ * pattern, or no observable transition.
+ */
+function _hamzaweReportDiagTimestampInventory(rows) {
+  var items = [];
+  var counts = { date: 0, number: 0, dateOnlyString: 0, otherString: 0, nullish: 0, other: 0 };
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    if (!row || row.outcome !== MetricsService.AUDIT_OUTCOMES.APPLIED) continue;
+    var value = row.timestamp;
+    var type = value instanceof Date ? 'Date'
+      : (value === null || typeof value === 'undefined' || value === '' ? 'nullish' : typeof value);
+    var s = typeof value === 'string' ? value.trim() : '';
+    var dateOnly = s.length === 10 &&
+      (s.charAt(4) === '/' || s.charAt(4) === '-') &&
+      (s.charAt(7) === '/' || s.charAt(7) === '-');
+    if (type === 'Date') counts.date++;
+    else if (type === 'number') counts.number++;
+    else if (type === 'string' && dateOnly) counts.dateOnlyString++;
+    else if (type === 'string') counts.otherString++;
+    else if (type === 'nullish') counts.nullish++;
+    else counts.other++;
+    items.push({
+      rowNumber: typeof row._rowNumber === 'number' ? row._rowNumber : null,
+      rowOrder: MetricsService._rowOrder(row, i),
+      type: type,
+      dateOnlyString: dateOnly,
+      acceptedByMetricParser: MetricsService._rowMs(value) !== null
     });
-    var status = response.getResponseCode();
-    result.httpStatus = status;
-    if (status < 200 || status >= 300) {
-      result.reason = status === 403 ? 'SHEETS_API_PERMISSION_OR_API_DISABLED'
-        : (status === 401 ? 'OAUTH_TOKEN_REJECTED' : 'SHEETS_API_REQUEST_FAILED');
-      return result;
-    }
-
-    var payload = JSON.parse(response.getContentText());
-    var grid = payload && payload.sheets && payload.sheets[0] &&
-      payload.sheets[0].data && payload.sheets[0].data[0];
-    var gridRows = grid && Array.isArray(grid.rowData) ? grid.rowData : null;
-    if (!gridRows) {
-      result.reason = 'SHEETS_API_GRID_DATA_MISSING';
-      return result;
-    }
-
-    function valueType(value) {
-      if (!value || typeof value !== 'object') return 'unset';
-      if (Object.prototype.hasOwnProperty.call(value, 'stringValue')) return 'string';
-      if (Object.prototype.hasOwnProperty.call(value, 'numberValue')) return 'number';
-      if (Object.prototype.hasOwnProperty.call(value, 'formulaValue')) return 'formula';
-      if (Object.prototype.hasOwnProperty.call(value, 'boolValue')) return 'boolean';
-      if (Object.prototype.hasOwnProperty.call(value, 'errorValue')) return 'error';
-      return 'other';
-    }
-
-    function dateOnlyShape(value) {
-      if (typeof value !== 'string') return false;
-      var s = value.trim();
-      return s.length === 10 &&
-        (s.charAt(4) === '/' || s.charAt(4) === '-') &&
-        (s.charAt(7) === '/' || s.charAt(7) === '-');
-    }
-
-    var appliedRows = [];
-    for (var i = 0; i < rows.length; i++) {
-      var row = rows[i];
-      if (row && row.outcome === MetricsService.AUDIT_OUTCOMES.APPLIED &&
-          typeof row._rowNumber === 'number') {
-        appliedRows.push(row._rowNumber);
-      }
-    }
-
-    var counts = {
-      userEnteredString: 0,
-      userEnteredNumber: 0,
-      userEnteredFormula: 0,
-      userEnteredUnset: 0,
-      userEnteredOther: 0,
-      effectiveString: 0,
-      effectiveNumber: 0,
-      effectiveUnset: 0,
-      effectiveOther: 0,
-      dateOnlyTextCells: 0,
-      dateFormattedNumericCells: 0
-    };
-    var samples = [];
-
-    for (var a = 0; a < appliedRows.length; a++) {
-      var rowNumber = appliedRows[a];
-      var cellRow = gridRows[rowNumber - 2];
-      var cell = cellRow && cellRow.values && cellRow.values[0] ? cellRow.values[0] : {};
-      var enteredType = valueType(cell.userEnteredValue);
-      var effectiveType = valueType(cell.effectiveValue);
-      if (enteredType === 'string') counts.userEnteredString++;
-      else if (enteredType === 'number') counts.userEnteredNumber++;
-      else if (enteredType === 'formula') counts.userEnteredFormula++;
-      else if (enteredType === 'unset') counts.userEnteredUnset++;
-      else counts.userEnteredOther++;
-      if (effectiveType === 'string') counts.effectiveString++;
-      else if (effectiveType === 'number') counts.effectiveNumber++;
-      else if (effectiveType === 'unset') counts.effectiveUnset++;
-      else counts.effectiveOther++;
-
-      var enteredString = cell.userEnteredValue &&
-        typeof cell.userEnteredValue.stringValue === 'string'
-        ? cell.userEnteredValue.stringValue : null;
-      if (dateOnlyShape(enteredString)) counts.dateOnlyTextCells++;
-
-      var userFormat = cell.userEnteredFormat && cell.userEnteredFormat.numberFormat;
-      var effectiveFormat = cell.effectiveFormat && cell.effectiveFormat.numberFormat;
-      var formatType = userFormat && userFormat.type ? userFormat.type
-        : (effectiveFormat && effectiveFormat.type ? effectiveFormat.type : null);
-      if (enteredType === 'number' && formatType === 'DATE') {
-        counts.dateFormattedNumericCells++;
-      }
-
-      samples.push({
-        rowNumber: rowNumber,
-        userEnteredValueType: enteredType,
-        effectiveValueType: effectiveType,
-        userEnteredDateOnlyText: dateOnlyShape(enteredString),
-        userNumberFormatType: userFormat && userFormat.type ? userFormat.type : null,
-        effectiveNumberFormatType: effectiveFormat && effectiveFormat.type ? effectiveFormat.type : null,
-        formulaPresent: enteredType === 'formula'
-      });
-    }
-
-    result.available = true;
-    result.appliedRowCountInspected = samples.length;
-    result.typeCounts = counts;
-    result.appliedRowCellMetadata = samples;
-    result.firstAppliedDiagnosis = samples.length ? (function() {
-      var first = null;
-      for (var k = 0; k < samples.length; k++) {
-        if (!first || samples[k].rowNumber < first.rowNumber) first = samples[k];
-      }
-      if (!first) return 'NO_APPLIED_ROWS';
-      if (first.userEnteredValueType === 'string' && first.userEnteredDateOnlyText) {
-        return 'FIRST_APPLIED_TIMESTAMP_IS_EXPLICIT_DATE_ONLY_TEXT_IN_SHEET';
-      }
-      if (first.userEnteredValueType === 'number' &&
-          (first.userNumberFormatType === 'DATE' || first.effectiveNumberFormatType === 'DATE')) {
-        return 'FIRST_APPLIED_TIMESTAMP_IS_NUMERIC_DATE_CELL_BUT_RUNTIME_READS_STRING_CHECK_DEPLOYMENT_OR_READER_DRIFT';
-      }
-      if (first.userEnteredValueType === 'formula') {
-        return 'FIRST_APPLIED_TIMESTAMP_IS_FORMULA_DERIVED';
-      }
-      return 'CELL_STORAGE_TYPE_RECORDED_REQUIRES_CORRELATION_WITH_RUNTIME_TYPE';
-    })() : 'NO_APPLIED_ROWS';
-
-    result.limits = [
-      'Cell metadata can establish text-versus-number/formula storage, not the identity or time of the actor who wrote it.',
-      'A text cell alone cannot distinguish manual editing, import, legacy code, or a different deployed writer.'
-    ];
-    return result;
-  } catch (e) {
-    result.reason = 'PROBE_EXCEPTION';
-    result.errorName = e && e.name ? String(e.name).slice(0, 60) : 'Error';
-    result.errorMessage = e && e.message ? String(e.message).slice(0, 180) : 'No message';
-    result.errorDetails = e && e.details ? String(e.details).slice(0, 180) : null;
-    result.errorCode = e && e.code ? String(e.code).slice(0, 80) : null;
-    return result;
   }
+  items.sort(function(a, b) {
+    if (a.rowOrder !== b.rowOrder) return a.rowOrder - b.rowOrder;
+    return (a.rowNumber || 0) - (b.rowNumber || 0);
+  });
+  var firstDateIndex = -1;
+  var lastDateOnlyStringIndex = -1;
+  var firstDateOnlyStringIndex = -1;
+  for (var j = 0; j < items.length; j++) {
+    if (items[j].type === 'Date' && firstDateIndex === -1) firstDateIndex = j;
+    if (items[j].dateOnlyString) {
+      if (firstDateOnlyStringIndex === -1) firstDateOnlyStringIndex = j;
+      lastDateOnlyStringIndex = j;
+    }
+  }
+  var sequencePattern = 'MIXED_TYPES_NO_CLEAR_ORDER';
+  if (!items.length) sequencePattern = 'NO_APPLIED_ROWS';
+  else if (counts.dateOnlyString === items.length) sequencePattern = 'ALL_APPLIED_TIMESTAMPS_ARE_DATE_ONLY_STRINGS';
+  else if (counts.dateOnlyString > 0 && counts.date > 0 &&
+           lastDateOnlyStringIndex < firstDateIndex) sequencePattern = 'DATE_ONLY_STRINGS_PRECEDE_DATE_VALUES';
+  else if (counts.dateOnlyString > 0 && counts.date > 0 &&
+           firstDateIndex < firstDateOnlyStringIndex) sequencePattern = 'DATE_VALUES_PRECEDE_DATE_ONLY_STRINGS';
+  else if (counts.dateOnlyString > 0 && counts.date > 0) sequencePattern = 'MIXED_TYPES_INTERLEAVED';
+  return {
+    counts: counts,
+    sequencePattern: sequencePattern,
+    firstDateRowNumber: firstDateIndex >= 0 ? items[firstDateIndex].rowNumber : null,
+    firstDateOnlyStringRowNumber: firstDateOnlyStringIndex >= 0 ? items[firstDateOnlyStringIndex].rowNumber : null,
+    appliedRows: items.map(function(item) {
+      return {
+        rowNumber: item.rowNumber,
+        type: item.type,
+        dateOnlyString: item.dateOnlyString,
+        acceptedByMetricParser: item.acceptedByMetricParser
+      };
+    })
+  };
+}
+
+/**
+ * Classify what the current evidence proves. Never claim a historical writer
+ * identity: Sheets cell values do not retain the actor/path that wrote them.
+ */
+function _hamzaweReportDiagTimestampOriginAssessment(inventory) {
+  var firstApplied = inventory && inventory.appliedRows && inventory.appliedRows.length
+    ? inventory.appliedRows[0] : null;
+  var assessment = {
+    reportFailureRootCause: firstApplied && firstApplied.dateOnlyString && !firstApplied.acceptedByMetricParser
+      ? 'CONFIRMED_FIRST_APPLIED_TIMESTAMP_IS_UNPARSEABLE_DATE_ONLY_TEXT'
+      : (firstApplied && !firstApplied.acceptedByMetricParser
+        ? 'CONFIRMED_FIRST_APPLIED_TIMESTAMP_IS_UNPARSEABLE_NON_DATE_VALUE'
+        : (firstApplied ? 'FIRST_APPLIED_TIMESTAMP_PARSER_ACCEPTED' : 'NO_APPLIED_TIMESTAMP_EVIDENCE')),
+    historicalWriterIdentity: 'NOT_RECOVERABLE_FROM_CURRENT_CELL_VALUES_ALONE',
+    nextInferenceLimit: 'Sequence can show a type-transition pattern, but cannot distinguish legacy code, manual edit, import, or external writer without edit/revision evidence.'
+  };
+  if (inventory && inventory.sequencePattern === 'DATE_ONLY_STRINGS_PRECEDE_DATE_VALUES') {
+    assessment.writePathTransitionEvidence = 'OLDER_DATE_ONLY_TEXT_ROWS_PRECEDE_LATER_DATE_OBJECT_ROWS; CONSISTENT_WITH_LEGACY_OR_EXTERNAL_WRITES_FOLLOWED_BY_TYPED_WRITES';
+  } else if (inventory && inventory.sequencePattern === 'MIXED_TYPES_INTERLEAVED') {
+    assessment.writePathTransitionEvidence = 'MIXED_OR_INTERLEAVED_TIMESTAMP_TYPES; NO_SINGLE_CLEAN_TRANSITION';
+  } else {
+    assessment.writePathTransitionEvidence = inventory ? inventory.sequencePattern : 'INVENTORY_UNAVAILABLE';
+  }
+  return assessment;
 }
 
 
