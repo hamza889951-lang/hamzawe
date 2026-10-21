@@ -67,7 +67,7 @@ const AttendanceAuditRepository = {
     // Reject an invalid clock value before persistence so no new row can
     // introduce an unparseable activation-boundary timestamp.
     var timestamp = Clock.now();
-    if (!(timestamp instanceof Date) || !isFinite(timestamp.getTime())) {
+    if (!timestamp || typeof timestamp.getTime !== 'function' || !isFinite(timestamp.getTime())) {
       return Result.fail(
         'ATTENDANCE_AUDIT_TIMESTAMP_INVALID',
         'Attendance audit timestamp must be a valid Date before persistence',
