@@ -499,7 +499,7 @@ function _hamzaweReportDiagRuntimeCodePathSignature() {
     var writer = Function.prototype.toString.call(AttendanceAuditRepository.append);
     var appender = Function.prototype.toString.call(GoogleSheets.appendRows);
     var reader = Function.prototype.toString.call(GoogleSheets.queryRows);
-    var rowParser = Function.prototype.toString.call(MetricsService._rowMs);
+    var rowParser = Function.prototype.toString.call(MetricsService._toEpochMs);
     var clock = Function.prototype.toString.call(Clock.now);
     out.available = true;
     out.signatures = {
