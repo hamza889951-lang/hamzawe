@@ -223,19 +223,22 @@ var HAMZAWE_ATTENDANCE_AUDIT_TIMESTAMP_REPAIR = {
     if (!finalCheck.ok) return finalCheck;
 
     // Preflight is complete for all target rows before the first write.
+    // All eight target rows are contiguous (2..9), so persist their timestamp
+    // column in one setValues call rather than eight independent cell writes.
     var written = [];
+    var needsRepair = plan.some(function(item) { return item.action === 'REPAIR'; });
     try {
-      for (var p = 0; p < plan.length; p++) {
-        if (plan[p].action !== 'REPAIR') continue;
-        var cell = sheet.getRange(plan[p].rowNumber, columns.timestamp + 1);
-        cell.setValue(plan[p].date);
-        cell.setNumberFormat('yyyy-mm-dd hh:mm:ss.000');
-        written.push(plan[p].rowNumber);
+      if (needsRepair) {
+        var timestampValues = plan.map(function(item) { return [item.date]; });
+        sheet.getRange(2, columns.timestamp + 1, plan.length, 1).setValues(timestampValues);
+        sheet.getRange(2, columns.timestamp + 1, plan.length, 1)
+          .setNumberFormat('yyyy-mm-dd hh:mm:ss.000');
+        written = plan.map(function(item) { return item.rowNumber; });
       }
     } catch (writeError) {
       return this._fail('REPAIR_WRITE_INCOMPLETE',
-        'A write failed after preflight. Do not rerun reports; inspect the listed rows before retrying.',
-        { writtenRows: written });
+        'The timestamp-column write failed after preflight. Do not rerun reports; inspect rows 2–9 before retrying.',
+        { writeAttempted: needsRepair, rowRange: '2:9' });
     }
 
     var verificationFailures = [];
