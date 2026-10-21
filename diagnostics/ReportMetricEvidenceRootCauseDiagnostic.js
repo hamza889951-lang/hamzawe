@@ -250,7 +250,57 @@ function runHamzaweReportMetricEvidenceDiagnostic() {
   report.finishedAtUtc = finishedAt.toISOString();
   report.elapsedMs = finishedAt.getTime() - startedAt.getTime();
 
-  var serialized = JSON.stringify(report, null, 2);
+  // Emit a compact, actionable summary. The previous full report repeated
+  // identical nested errors and was truncated by Apps Script's execution log.
+  var audit = report.checks && report.checks.attendanceAuditRead
+    ? report.checks.attendanceAuditRead : {};
+  var compactRuns = (report.reportRuns || []).map(function(run) {
+    function failureSummary(branch) {
+      var item = run[branch];
+      if (!item) return { present: false };
+      if (item.ok) return { ok: true };
+      var failure = item.failure || {};
+      return {
+        ok: false,
+        code: failure.code || 'UNKNOWN_FAILURE',
+        metric: failure.metric || null,
+        source: failure.source || null,
+        rowNumber: failure.rowNumber || null,
+        timestampValueType: failure.timestampValueType || null
+      };
+    }
+    return {
+      reportType: run.reportType,
+      m1: failureSummary('m1ReportService'),
+      full: failureSummary('enhancedFull'),
+      batch: failureSummary('metricsBatch')
+    };
+  });
+  var output = {
+    diagnostic: report.diagnostic,
+    startedAtUtc: report.startedAtUtc,
+    finishedAtUtc: report.finishedAtUtc,
+    elapsedMs: report.elapsedMs,
+    mode: report.mode,
+    productionCalculationsChanged: report.productionCalculationsChanged,
+    sheetWrites: report.sheetWrites,
+    messagesSent: report.messagesSent,
+    sourceCommitSha: report.sourceCommitSha,
+    runtimeCodePathSignature: report.checks ? report.checks.runtimeCodePathSignature : null,
+    attendanceAuditRead: {
+      ok: audit.ok === true,
+      rowCount: audit.rowCount || 0,
+      appliedRowCount: audit.appliedRowCount || 0,
+      timestampStorageProbe: audit.timestampStorageProbe || null,
+      firstAppliedRow: audit.firstAppliedRow || null,
+      appliedTimestampInventory: audit.appliedTimestampInventory || null,
+      timestampOriginAssessment: audit.timestampOriginAssessment || null,
+      readFailure: audit.failure || null
+    },
+    reportRuns: compactRuns,
+    outputNote: 'Compact root-cause output; raw cell values, identifiers, spreadsheet ID, and repeated failure messages are intentionally omitted.'
+  };
+  var serialized = JSON.stringify(output, null, 2);
   console.log(serialized);
   return serialized;
 }
