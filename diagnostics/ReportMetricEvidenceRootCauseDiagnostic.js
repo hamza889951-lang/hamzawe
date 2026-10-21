@@ -58,6 +58,8 @@ function runHamzaweReportMetricEvidenceDiagnostic() {
       note: 'Global property probes can be false negatives for top-level const; direct calls below determine availability.'
     };
 
+    report.checks.runtimeCodePathSignature = _hamzaweReportDiagRuntimeCodePathSignature();
+
     var reference = Clock.now();
     var referenceMs = reference.getTime();
     report.reference = {
@@ -478,5 +480,49 @@ function _hamzaweReportDiagSheetsApiTimestampProbe(rows, firstApplied) {
     result.errorName = e && e.name ? String(e.name).slice(0, 60) : 'Error';
     result.errorMessage = e && e.message ? String(e.message).slice(0, 180) : 'No message';
     return result;
+  }
+}
+
+
+/**
+ * Structural signature checks against the canonical checked-in write/read
+ * path. This is NOT a source SHA or cryptographic deployment attestation;
+ * it detects material method-shape drift that can explain text timestamps.
+ */
+function _hamzaweReportDiagRuntimeCodePathSignature() {
+  var out = {
+    available: false,
+    sourceShaVerified: false,
+    interpretation: 'STRUCTURAL_SIGNATURE_ONLY_NOT_EXACT_DEPLOYMENT_IDENTITY'
+  };
+  try {
+    var writer = Function.prototype.toString.call(AttendanceAuditRepository.append);
+    var appender = Function.prototype.toString.call(GoogleSheets.appendRows);
+    var reader = Function.prototype.toString.call(GoogleSheets.queryRows);
+    var rowParser = Function.prototype.toString.call(MetricsService._rowMs);
+    var clock = Function.prototype.toString.call(Clock.now);
+    out.available = true;
+    out.signatures = {
+      attendanceWriterUsesClockNow: /timestamp\s*:\s*Clock\.now\s*\(\s*\)/.test(writer),
+      attendanceWriterUsesCanonicalAppendRows: /GoogleSheets\.appendRows\s*\(/.test(writer),
+      appendRowsUsesSetValues: /setValues\s*\(\s*rows\s*\)/.test(appender),
+      queryRowsReadsGetValues: /getDataRange\s*\(\s*\)\.getValues\s*\(\s*\)/.test(reader),
+      rowMsHasExplicitStringRejection: /typeof\s+value\s*===?\s*['"]string['"]/.test(rowParser),
+      clockReturnsDate: /new\s+Date\s*\(\s*\)/.test(clock)
+    };
+    var checks = out.signatures;
+    out.canonicalPathShapeMatches =
+      checks.attendanceWriterUsesClockNow &&
+      checks.attendanceWriterUsesCanonicalAppendRows &&
+      checks.appendRowsUsesSetValues &&
+      checks.queryRowsReadsGetValues &&
+      checks.clockReturnsDate;
+    out.rowParserShapeMatches = checks.rowMsHasExplicitStringRejection;
+    out.note = 'A matching shape does not prove the entire deployed project equals main; a mismatch is strong evidence of runtime code-path drift.';
+    return out;
+  } catch (e) {
+    out.reason = 'RUNTIME_FUNCTION_SOURCE_UNAVAILABLE';
+    out.errorName = e && e.name ? String(e.name).slice(0, 60) : 'Error';
+    return out;
   }
 }
