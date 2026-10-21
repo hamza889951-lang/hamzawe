@@ -109,8 +109,9 @@ function runHamzaweReportMetricEvidenceDiagnostic() {
             cellNumberFormat: typeof numberFormat === 'string' ? numberFormat.slice(0, 40) : null,
             displayValueType: typeof displayValue,
             displayValueLength: typeof displayValue === 'string' ? displayValue.length : null,
-            displayLooksDateOnly: typeof displayValue === 'string' &&
-              /^\\d{4}[\\/-]\\d{2}[\\/-]\\d{2}$/.test(displayValue.trim()),
+            displayLooksDateOnly: typeof displayValue === 'string' && displayValue.trim().length === 10 &&
+              (displayValue.trim().charAt(4) === '/' || displayValue.trim().charAt(4) === '-') &&
+              (displayValue.trim().charAt(7) === '/' || displayValue.trim().charAt(7) === '-'),
             formulaPresent: typeof formulaValue === 'string' && formulaValue.length > 0
           };
         } else {
@@ -134,7 +135,7 @@ function runHamzaweReportMetricEvidenceDiagnostic() {
         else if (typeof value === 'number') appliedTimestampTypes.number++;
         else if (typeof value === 'string') {
           appliedTimestampTypes.string++;
-          if (/^\\d{4}[\\/-]\\d{2}[\\/-]\\d{2}$/.test(value.trim())) appliedStringShapes.dateOnlySlashOrDash++;
+          if (value.trim().length === 10 && (value.trim().charAt(4) === '/' || value.trim().charAt(4) === '-') && (value.trim().charAt(7) === '/' || value.trim().charAt(7) === '-')) appliedStringShapes.dateOnlySlashOrDash++;
           else if (/^\\d{4}-\\d{2}-\\d{2}T/.test(value.trim())) appliedStringShapes.isoLike++;
           else appliedStringShapes.other++;
         } else if (value === null || typeof value === 'undefined' || value === '') appliedTimestampTypes.nullish++;
