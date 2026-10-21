@@ -66,12 +66,22 @@ function createEnvironment(timeZone) {
       error_code: '', timestamp: x[8]
     });
   });
-  row(3, { slot_id: 'SLT_01KZHNKVTE4JPJ4SSJWFGY0S6F', decision: 'MARK_NO_SHOW',
-    from_status: 'COMPLETED', outcome: 'REJECTED_INVALID_TRANSITION',
-    error_code: 'INVALID_TRANSITION', timestamp: '2026-09-07' });
-  row(6, { slot_id: 'SLT_01KZYNSGQAADPNSND9H882WB5G', decision: 'MARK_COMPLETED',
-    from_status: 'NO_SHOW', outcome: 'REJECTED_INVALID_TRANSITION',
-    error_code: 'INVALID_TRANSITION', timestamp: '2026-09-17' });
+  row(3, {
+    operator_id: 'hamza889951@gmail.com',
+    calendar_event_id: 'kfvboca5v1pmeaopuqbbg09k04@google.com',
+    calendar_id: 'hamza889951@gmail.com',
+    slot_id: 'SLT_01KZHNKVTE4JPJ4SSJWFGY0S6F', decision: 'MARK_NO_SHOW',
+    from_status: 'COMPLETED', to_status: '', outcome: 'REJECTED_INVALID_TRANSITION',
+    error_code: 'INVALID_TRANSITION', timestamp: '2026-09-07'
+  });
+  row(6, {
+    operator_id: 'hamzaalking158@gmail.com',
+    calendar_event_id: 'rsgl2i8m5pvsgv7feghguvap84@google.com',
+    calendar_id: 'hamza889951@gmail.com',
+    slot_id: 'SLT_01KZYNSGQAADPNSND9H882WB5G', decision: 'MARK_COMPLETED',
+    from_status: 'NO_SHOW', to_status: '', outcome: 'REJECTED_INVALID_TRANSITION',
+    error_code: 'INVALID_TRANSITION', timestamp: '2026-09-17'
+  });
   row(10, {
     operator_id: 'hamzaalking158@gmail.com',
     calendar_event_id: '4oota1f12reg31anm7ct71d9uc@google.com',
@@ -122,17 +132,19 @@ function testRepairsSixVerifiedTimestampsAndVerifiesReadback() {
   const env = createEnvironment();
   const result = env.run();
   assert.strictEqual(result.ok, true, JSON.stringify(result));
-  assert.strictEqual(result.repairedRowNumbers.join(','), '2,4,5,7,8,9');
-  assert.strictEqual(result.verifiedTimestampCount, 6);
-  assert.strictEqual(env.getWrites(), 6);
-  [2, 4, 5, 7, 8, 9].forEach(function(rowNumber) {
+  assert.strictEqual(result.repairedRowNumbers.join(','), '2,3,4,5,6,7,8,9');
+  assert.strictEqual(result.verifiedTimestampCount, 8);
+  assert.strictEqual(env.getWrites(), 8);
+  [2, 3, 4, 5, 6, 7, 8, 9].forEach(function(rowNumber) {
     const value = env.rows[rowNumber - 1][9];
     assert.ok(value instanceof Date, 'row ' + rowNumber + ' must be stored as Date');
     assert.strictEqual(formatLocal(value, 'yyyy-MM-dd HH:mm:ss.SSS'),
       ({
         2: '2026-09-07 22:43:35.773',
+        3: '2026-09-07 22:49:44.278',
         4: '2026-09-13 04:47:59.849',
         5: '2026-09-17 00:20:11.777',
+        6: '2026-09-17 00:35:31.222',
         7: '2026-09-17 00:35:57.354',
         8: '2026-09-17 03:46:59.021',
         9: '2026-10-02 06:03:54.209'
@@ -149,7 +161,7 @@ function testRepairIsIdempotent() {
   assert.strictEqual(second.ok, true, JSON.stringify(second));
   assert.strictEqual(env.getWrites(), writesAfterFirstRun);
   assert.strictEqual(second.repairedRowNumbers.length, 0);
-  assert.strictEqual(second.alreadyCorrectRowNumbers.length, 6);
+  assert.strictEqual(second.alreadyCorrectRowNumbers.length, 8);
 }
 
 function testIdentityMismatchBlocksAllWrites() {
