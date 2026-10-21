@@ -28,7 +28,7 @@ function formatLocal(value, format) {
   return format === 'yyyy-MM-dd' ? date : date + ' ' + time;
 }
 
-function createEnvironment() {
+function createEnvironment(timeZone) {
   const rows = Array.from({ length: 10 }, function() {
     return Array(10).fill('');
   });
@@ -100,7 +100,7 @@ function createEnvironment() {
     }
   };
   const spreadsheet = {
-    getSpreadsheetTimeZone: function() { return 'Asia/Baghdad'; },
+    getSpreadsheetTimeZone: function() { return timeZone || 'Asia/Baghdad'; },
     getSheetByName: function(name) { return name === 'ATTENDANCE_AUDIT' ? sheet : null; }
   };
   const context = {
@@ -162,11 +162,10 @@ function testIdentityMismatchBlocksAllWrites() {
 }
 
 function testTimezoneMismatchBlocksAllWrites() {
-  const env = createEnvironment();
-  // The context is deliberately not exposed; change the source timezone guard
-  // in a separate context-free source assertion as a contract check.
-  assert.ok(source.includes("ss.getSpreadsheetTimeZone() !== this.TIME_ZONE"));
-  assert.ok(source.includes("TIME_ZONE: 'Asia/Baghdad'"));
+  const env = createEnvironment('UTC');
+  const result = env.run();
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.code, 'REPAIR_TIME_ZONE_MISMATCH');
   assert.strictEqual(env.getWrites(), 0);
 }
 
