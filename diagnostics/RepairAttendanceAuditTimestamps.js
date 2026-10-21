@@ -85,7 +85,7 @@ var HAMZAWE_ATTENDANCE_AUDIT_TIMESTAMP_REPAIR = {
       operator_id: 'hamzaalking158@gmail.com',
       calendar_event_id: '445d1mq40kshj9kjj849jjmcik@google.com',
       calendar_id: 'hamza889951@gmail.com',
-      slot_id: 'SLT_01M0BHSAMKS09WFYVKMS4GCQ',
+      slot_id: 'SLT_01M0BHSAMKS09WFYVK79MS4GCQ',
       decision: 'MARK_NO_SHOW',
       from_status: 'CONFIRMED',
       to_status: 'NO_SHOW',
