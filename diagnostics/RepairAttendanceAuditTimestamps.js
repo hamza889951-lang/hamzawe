@@ -37,6 +37,20 @@ var HAMZAWE_ATTENDANCE_AUDIT_TIMESTAMP_REPAIR = {
       error_code: ''
     },
     {
+      rowNumber: 3,
+      dateOnly: '2026-09-07',
+      localTimestamp: '2026-09-07 22:49:44.278',
+      operator_id: 'hamza889951@gmail.com',
+      calendar_event_id: 'kfvboca5v1pmeaopuqbbg09k04@google.com',
+      calendar_id: 'hamza889951@gmail.com',
+      slot_id: 'SLT_01KZHNKVTE4JPJ4SSJWFGY0S6F',
+      decision: 'MARK_NO_SHOW',
+      from_status: 'COMPLETED',
+      to_status: '',
+      outcome: 'REJECTED_INVALID_TRANSITION',
+      error_code: 'INVALID_TRANSITION'
+    },
+    {
       rowNumber: 4,
       dateOnly: '2026-09-13',
       localTimestamp: '2026-09-13 04:47:59.849',
@@ -63,6 +77,20 @@ var HAMZAWE_ATTENDANCE_AUDIT_TIMESTAMP_REPAIR = {
       to_status: 'NO_SHOW',
       outcome: 'APPLIED',
       error_code: ''
+    },
+    {
+      rowNumber: 6,
+      dateOnly: '2026-09-17',
+      localTimestamp: '2026-09-17 00:35:31.222',
+      operator_id: 'hamzaalking158@gmail.com',
+      calendar_event_id: 'rsgl2i8m5pvsgv7feghguvap84@google.com',
+      calendar_id: 'hamza889951@gmail.com',
+      slot_id: 'SLT_01KZYNSGQAADPNSND9H882WB5G',
+      decision: 'MARK_COMPLETED',
+      from_status: 'NO_SHOW',
+      to_status: '',
+      outcome: 'REJECTED_INVALID_TRANSITION',
+      error_code: 'INVALID_TRANSITION'
     },
     {
       rowNumber: 7,
