@@ -27,7 +27,7 @@
 var HAMZAWE_REPORT_DIAGNOSTIC_MARKER = 'REPORT-METRIC-EVIDENCE-DIAG-v1';
 
 function runHamzaweReportMetricEvidenceDiagnostic() {
-  var startedAt = new Date();
+  var startedAt = Clock.now();
   var report = {
     diagnostic: HAMZAWE_REPORT_DIAGNOSTIC_MARKER,
     startedAtUtc: startedAt.toISOString(),
@@ -232,8 +232,9 @@ function runHamzaweReportMetricEvidenceDiagnostic() {
     };
   }
 
-  report.finishedAtUtc = new Date().toISOString();
-  report.elapsedMs = new Date(report.finishedAtUtc).getTime() - startedAt.getTime();
+  var finishedAt = Clock.now();
+  report.finishedAtUtc = finishedAt.toISOString();
+  report.elapsedMs = finishedAt.getTime() - startedAt.getTime();
 
   var serialized = JSON.stringify(report, null, 2);
   console.log(serialized);
