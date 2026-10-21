@@ -91,8 +91,63 @@ function runHamzaweReportMetricEvidenceDiagnostic() {
       var dateMs = ts instanceof Date ? ts.getTime() : null;
       var metricEpochMs = firstApplied ? MetricsService._rowMs(ts) : null;
 
+      // Read-only storage probe: distinguish a date-only text cell from
+      // a Date-backed cell merely displayed without a time. No raw value,
+      // formula, identifiers, or row content is logged.
+      var timestampStorageProbe = null;
+      try {
+        var auditSheet = GoogleSheets._getSheet('ATTENDANCE_AUDIT');
+        var auditHeaders = GoogleSheets.getHeaders('ATTENDANCE_AUDIT');
+        var timestampColumn = auditHeaders.indexOf('timestamp') + 1;
+        if (firstApplied && firstApplied._rowNumber > 1 && timestampColumn > 0) {
+          var timestampCell = auditSheet.getRange(firstApplied._rowNumber, timestampColumn);
+          var displayValue = timestampCell.getDisplayValue();
+          var formulaValue = timestampCell.getFormula();
+          var numberFormat = timestampCell.getNumberFormat();
+          timestampStorageProbe = {
+            ok: true,
+            cellNumberFormat: typeof numberFormat === 'string' ? numberFormat.slice(0, 40) : null,
+            displayValueType: typeof displayValue,
+            displayValueLength: typeof displayValue === 'string' ? displayValue.length : null,
+            displayLooksDateOnly: typeof displayValue === 'string' &&
+              /^\\d{4}[\\/-]\\d{2}[\\/-]\\d{2}$/.test(displayValue.trim()),
+            formulaPresent: typeof formulaValue === 'string' && formulaValue.length > 0
+          };
+        } else {
+          timestampStorageProbe = { ok: false, reason: 'FIRST_APPLIED_ROW_OR_TIMESTAMP_COLUMN_NOT_RESOLVED' };
+        }
+      } catch (probeError) {
+        timestampStorageProbe = {
+          ok: false,
+          errorName: probeError && probeError.name ? String(probeError.name).slice(0, 60) : 'Error'
+        };
+      }
+
+      var appliedTimestampTypes = { date: 0, number: 0, string: 0, nullish: 0, other: 0 };
+      var appliedStringShapes = { dateOnlySlashOrDash: 0, isoLike: 0, other: 0 };
+      var appliedTimestampAcceptedCount = 0;
+      for (var p = 0; p < rows.length; p++) {
+        var candidate = rows[p];
+        if (!candidate || candidate.outcome !== MetricsService.AUDIT_OUTCOMES.APPLIED) continue;
+        var value = candidate.timestamp;
+        if (value instanceof Date) appliedTimestampTypes.date++;
+        else if (typeof value === 'number') appliedTimestampTypes.number++;
+        else if (typeof value === 'string') {
+          appliedTimestampTypes.string++;
+          if (/^\\d{4}[\\/-]\\d{2}[\\/-]\\d{2}$/.test(value.trim())) appliedStringShapes.dateOnlySlashOrDash++;
+          else if (/^\\d{4}-\\d{2}-\\d{2}T/.test(value.trim())) appliedStringShapes.isoLike++;
+          else appliedStringShapes.other++;
+        } else if (value === null || typeof value === 'undefined' || value === '') appliedTimestampTypes.nullish++;
+        else appliedTimestampTypes.other++;
+        if (MetricsService._rowMs(value) !== null) appliedTimestampAcceptedCount++;
+      }
+
       report.checks.attendanceAuditRead = {
         ok: true,
+        timestampStorageProbe: timestampStorageProbe,
+        appliedTimestampTypes: appliedTimestampTypes,
+        appliedStringShapes: appliedStringShapes,
+        appliedTimestampAcceptedCount: appliedTimestampAcceptedCount,
         rowCount: rows.length,
         appliedRowCount: rows.filter(function(row) {
           return row && row.outcome === MetricsService.AUDIT_OUTCOMES.APPLIED;
