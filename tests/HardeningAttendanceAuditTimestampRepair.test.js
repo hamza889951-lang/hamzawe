@@ -105,6 +105,14 @@ function createEnvironment(timeZone) {
         },
         getValue: function() { return rows[r - 1][c - 1]; },
         setValue: function(value) { rows[r - 1][c - 1] = value; writes += 1; },
+        setValues: function(values) {
+          values.forEach(function(valueRow, rowOffset) {
+            valueRow.forEach(function(value, colOffset) {
+              rows[r - 1 + rowOffset][c - 1 + colOffset] = value;
+            });
+          });
+          writes += 1;
+        },
         setNumberFormat: function() {}
       };
     }
@@ -134,7 +142,7 @@ function testRepairsSixVerifiedTimestampsAndVerifiesReadback() {
   assert.strictEqual(result.ok, true, JSON.stringify(result));
   assert.strictEqual(result.repairedRowNumbers.join(','), '2,3,4,5,6,7,8,9');
   assert.strictEqual(result.verifiedTimestampCount, 8);
-  assert.strictEqual(env.getWrites(), 8);
+  assert.strictEqual(env.getWrites(), 1, 'timestamp column is persisted in one batch');
   [2, 3, 4, 5, 6, 7, 8, 9].forEach(function(rowNumber) {
     const value = env.rows[rowNumber - 1][9];
     assert.ok(value instanceof Date, 'row ' + rowNumber + ' must be stored as Date');
