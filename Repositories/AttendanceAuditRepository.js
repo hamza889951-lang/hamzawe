@@ -63,6 +63,18 @@ const AttendanceAuditRepository = {
     var storeResult = this.ensureStore();
     if (!storeResult.ok) return storeResult;
 
+    // Attendance audit timestamps are evidence, not presentation strings.
+    // Reject an invalid clock value before persistence so no new row can
+    // introduce an unparseable activation-boundary timestamp.
+    var timestamp = Clock.now();
+    if (!timestamp || typeof timestamp.getTime !== 'function' || !isFinite(timestamp.getTime())) {
+      return Result.fail(
+        'ATTENDANCE_AUDIT_TIMESTAMP_INVALID',
+        'Attendance audit timestamp must be a valid Date before persistence',
+        { timestampType: timestamp === null ? 'null' : typeof timestamp }
+      );
+    }
+
     var normalized = {
       operator_id: record.operator_id || '',
       calendar_event_id: record.calendar_event_id || '',
@@ -73,7 +85,7 @@ const AttendanceAuditRepository = {
       to_status: record.to_status || '',
       outcome: record.outcome || '',
       error_code: record.error_code || '',
-      timestamp: Clock.now()
+      timestamp: timestamp
     };
 
     try {
