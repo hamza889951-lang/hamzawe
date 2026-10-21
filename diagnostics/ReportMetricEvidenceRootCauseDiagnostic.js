@@ -143,9 +143,12 @@ function runHamzaweReportMetricEvidenceDiagnostic() {
         if (MetricsService._rowMs(value) !== null) appliedTimestampAcceptedCount++;
       }
 
+      var sheetsApiTimestampProbe = _hamzaweReportDiagSheetsApiTimestampProbe(rows, firstApplied);
+
       report.checks.attendanceAuditRead = {
         ok: true,
         timestampStorageProbe: timestampStorageProbe,
+        sheetsApiTimestampProbe: sheetsApiTimestampProbe,
         appliedTimestampTypes: appliedTimestampTypes,
         appliedStringShapes: appliedStringShapes,
         appliedTimestampAcceptedCount: appliedTimestampAcceptedCount,
@@ -271,4 +274,209 @@ function _hamzaweReportDiagFailure(result) {
   // Some Result implementations store code/message/details directly on
   // result.data or result.error; report only known fields above.
   return out;
+}
+
+
+/**
+ * Read-only raw-cell metadata probe using the Sheets REST API.
+ *
+ * Why this exists:
+ * SpreadsheetApp.getValues() tells the runtime type, but not conclusively
+ * whether the underlying cell was explicitly stored as text or as a numeric
+ * date serial. This probe reads only typed cell metadata and never returns
+ * cell values, spreadsheet IDs, formulas, or row identifiers beyond row
+ * numbers already used by the diagnostic.
+ *
+ * Requires the existing spreadsheets OAuth scope and UrlFetchApp /
+ * ScriptApp runtime APIs. It does not require enabling the Advanced Sheets
+ * service. If the API is unavailable, the result says why and does not fail
+ * the report diagnostic.
+ */
+function _hamzaweReportDiagSheetsApiTimestampProbe(rows, firstApplied) {
+  var result = {
+    attempted: false,
+    available: false,
+    method: 'Sheets REST API read-only grid metadata',
+    rawValuesLogged: false
+  };
+
+  try {
+    if (typeof UrlFetchApp === 'undefined' ||
+        typeof ScriptApp === 'undefined' ||
+        typeof ScriptApp.getOAuthToken !== 'function') {
+      result.reason = 'URLFETCH_OR_SCRIPT_TOKEN_API_UNAVAILABLE';
+      return result;
+    }
+
+    var spreadsheet = GoogleSheets._openSpreadsheet();
+    var spreadsheetId = spreadsheet && typeof spreadsheet.getId === 'function'
+      ? spreadsheet.getId() : '';
+    if (!spreadsheetId) {
+      result.reason = 'SPREADSHEET_ID_UNAVAILABLE';
+      return result;
+    }
+
+    var headers = GoogleSheets.getHeaders('ATTENDANCE_AUDIT');
+    var timestampColumn = headers.indexOf('timestamp') + 1;
+    var sheet = GoogleSheets._getSheet('ATTENDANCE_AUDIT');
+    var lastRow = sheet.getLastRow();
+    if (timestampColumn < 1 || lastRow < 2) {
+      result.reason = 'TIMESTAMP_COLUMN_OR_DATA_ROWS_UNAVAILABLE';
+      return result;
+    }
+
+    var columnLetter = '';
+    var n = timestampColumn;
+    while (n > 0) {
+      var rem = (n - 1) % 26;
+      columnLetter = String.fromCharCode(65 + rem) + columnLetter;
+      n = Math.floor((n - 1) / 26);
+    }
+
+    var a1Range = "'ATTENDANCE_AUDIT'!" + columnLetter + "2:" + columnLetter + lastRow;
+    var fields = 'sheets(data(startRow,rowData(values(userEnteredValue,effectiveValue,userEnteredFormat(numberFormat),effectiveFormat(numberFormat)))))';
+    var url = 'https://sheets.googleapis.com/v4/spreadsheets/' +
+      encodeURIComponent(spreadsheetId) +
+      '?includeGridData=true&ranges=' + encodeURIComponent(a1Range) +
+      '&fields=' + encodeURIComponent(fields);
+
+    result.attempted = true;
+    var response = UrlFetchApp.fetch(url, {
+      method: 'get',
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+      muteHttpExceptions: true
+    });
+    var status = response.getResponseCode();
+    result.httpStatus = status;
+    if (status < 200 || status >= 300) {
+      result.reason = status === 403 ? 'SHEETS_API_PERMISSION_OR_API_DISABLED'
+        : (status === 401 ? 'OAUTH_TOKEN_REJECTED' : 'SHEETS_API_REQUEST_FAILED');
+      return result;
+    }
+
+    var payload = JSON.parse(response.getContentText());
+    var grid = payload && payload.sheets && payload.sheets[0] &&
+      payload.sheets[0].data && payload.sheets[0].data[0];
+    var gridRows = grid && Array.isArray(grid.rowData) ? grid.rowData : null;
+    if (!gridRows) {
+      result.reason = 'SHEETS_API_GRID_DATA_MISSING';
+      return result;
+    }
+
+    function valueType(value) {
+      if (!value || typeof value !== 'object') return 'unset';
+      if (Object.prototype.hasOwnProperty.call(value, 'stringValue')) return 'string';
+      if (Object.prototype.hasOwnProperty.call(value, 'numberValue')) return 'number';
+      if (Object.prototype.hasOwnProperty.call(value, 'formulaValue')) return 'formula';
+      if (Object.prototype.hasOwnProperty.call(value, 'boolValue')) return 'boolean';
+      if (Object.prototype.hasOwnProperty.call(value, 'errorValue')) return 'error';
+      return 'other';
+    }
+
+    function dateOnlyShape(value) {
+      if (typeof value !== 'string') return false;
+      var s = value.trim();
+      return s.length === 10 &&
+        (s.charAt(4) === '/' || s.charAt(4) === '-') &&
+        (s.charAt(7) === '/' || s.charAt(7) === '-');
+    }
+
+    var appliedRows = [];
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      if (row && row.outcome === MetricsService.AUDIT_OUTCOMES.APPLIED &&
+          typeof row._rowNumber === 'number') {
+        appliedRows.push(row._rowNumber);
+      }
+    }
+
+    var counts = {
+      userEnteredString: 0,
+      userEnteredNumber: 0,
+      userEnteredFormula: 0,
+      userEnteredUnset: 0,
+      userEnteredOther: 0,
+      effectiveString: 0,
+      effectiveNumber: 0,
+      effectiveUnset: 0,
+      effectiveOther: 0,
+      dateOnlyTextCells: 0,
+      dateFormattedNumericCells: 0
+    };
+    var samples = [];
+
+    for (var a = 0; a < appliedRows.length; a++) {
+      var rowNumber = appliedRows[a];
+      var cellRow = gridRows[rowNumber - 2];
+      var cell = cellRow && cellRow.values && cellRow.values[0] ? cellRow.values[0] : {};
+      var enteredType = valueType(cell.userEnteredValue);
+      var effectiveType = valueType(cell.effectiveValue);
+      if (enteredType === 'string') counts.userEnteredString++;
+      else if (enteredType === 'number') counts.userEnteredNumber++;
+      else if (enteredType === 'formula') counts.userEnteredFormula++;
+      else if (enteredType === 'unset') counts.userEnteredUnset++;
+      else counts.userEnteredOther++;
+      if (effectiveType === 'string') counts.effectiveString++;
+      else if (effectiveType === 'number') counts.effectiveNumber++;
+      else if (effectiveType === 'unset') counts.effectiveUnset++;
+      else counts.effectiveOther++;
+
+      var enteredString = cell.userEnteredValue &&
+        typeof cell.userEnteredValue.stringValue === 'string'
+        ? cell.userEnteredValue.stringValue : null;
+      if (dateOnlyShape(enteredString)) counts.dateOnlyTextCells++;
+
+      var userFormat = cell.userEnteredFormat && cell.userEnteredFormat.numberFormat;
+      var effectiveFormat = cell.effectiveFormat && cell.effectiveFormat.numberFormat;
+      var formatType = userFormat && userFormat.type ? userFormat.type
+        : (effectiveFormat && effectiveFormat.type ? effectiveFormat.type : null);
+      if (enteredType === 'number' && formatType === 'DATE') {
+        counts.dateFormattedNumericCells++;
+      }
+
+      samples.push({
+        rowNumber: rowNumber,
+        userEnteredValueType: enteredType,
+        effectiveValueType: effectiveType,
+        userEnteredDateOnlyText: dateOnlyShape(enteredString),
+        userNumberFormatType: userFormat && userFormat.type ? userFormat.type : null,
+        effectiveNumberFormatType: effectiveFormat && effectiveFormat.type ? effectiveFormat.type : null,
+        formulaPresent: enteredType === 'formula'
+      });
+    }
+
+    result.available = true;
+    result.appliedRowCountInspected = samples.length;
+    result.typeCounts = counts;
+    result.appliedRowCellMetadata = samples;
+    result.firstAppliedDiagnosis = samples.length ? (function() {
+      var first = null;
+      for (var k = 0; k < samples.length; k++) {
+        if (!first || samples[k].rowNumber < first.rowNumber) first = samples[k];
+      }
+      if (!first) return 'NO_APPLIED_ROWS';
+      if (first.userEnteredValueType === 'string' && first.userEnteredDateOnlyText) {
+        return 'FIRST_APPLIED_TIMESTAMP_IS_EXPLICIT_DATE_ONLY_TEXT_IN_SHEET';
+      }
+      if (first.userEnteredValueType === 'number' &&
+          (first.userNumberFormatType === 'DATE' || first.effectiveNumberFormatType === 'DATE')) {
+        return 'FIRST_APPLIED_TIMESTAMP_IS_NUMERIC_DATE_CELL_BUT_RUNTIME_READS_STRING_CHECK_DEPLOYMENT_OR_READER_DRIFT';
+      }
+      if (first.userEnteredValueType === 'formula') {
+        return 'FIRST_APPLIED_TIMESTAMP_IS_FORMULA_DERIVED';
+      }
+      return 'CELL_STORAGE_TYPE_RECORDED_REQUIRES_CORRELATION_WITH_RUNTIME_TYPE';
+    })() : 'NO_APPLIED_ROWS';
+
+    result.limits = [
+      'Cell metadata can establish text-versus-number/formula storage, not the identity or time of the actor who wrote it.',
+      'A text cell alone cannot distinguish manual editing, import, legacy code, or a different deployed writer.'
+    ];
+    return result;
+  } catch (e) {
+    result.reason = 'PROBE_EXCEPTION';
+    result.errorName = e && e.name ? String(e.name).slice(0, 60) : 'Error';
+    result.errorMessage = e && e.message ? String(e.message).slice(0, 180) : 'No message';
+    return result;
+  }
 }
