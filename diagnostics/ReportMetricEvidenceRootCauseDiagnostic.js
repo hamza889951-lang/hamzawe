@@ -480,6 +480,8 @@ function _hamzaweReportDiagSheetsApiTimestampProbe(rows, firstApplied) {
     result.reason = 'PROBE_EXCEPTION';
     result.errorName = e && e.name ? String(e.name).slice(0, 60) : 'Error';
     result.errorMessage = e && e.message ? String(e.message).slice(0, 180) : 'No message';
+    result.errorDetails = e && e.details ? String(e.details).slice(0, 180) : null;
+    result.errorCode = e && e.code ? String(e.code).slice(0, 80) : null;
     return result;
   }
 }
@@ -508,7 +510,8 @@ function _hamzaweReportDiagRuntimeCodePathSignature() {
       attendanceWriterUsesCanonicalAppendRows: /GoogleSheets\.appendRows\s*\(/.test(writer),
       appendRowsUsesSetValues: /setValues\s*\(\s*rows\s*\)/.test(appender),
       queryRowsReadsGetValues: /getDataRange\s*\(\s*\)\.getValues\s*\(\s*\)/.test(reader),
-      rowMsHasExplicitStringRejection: /typeof\s+value\s*===?\s*['"]string['"]/.test(rowParser),
+      timestampParserRejectsDateOnlyString: MetricsService._toEpochMs('2026/09/07') === null,
+      timestampParserAcceptsDateObject: MetricsService._toEpochMs(Clock.now()) !== null,
       clockReturnsDate: /new\s+Date\s*\(\s*\)/.test(clock)
     };
     var checks = out.signatures;
@@ -518,7 +521,7 @@ function _hamzaweReportDiagRuntimeCodePathSignature() {
       checks.appendRowsUsesSetValues &&
       checks.queryRowsReadsGetValues &&
       checks.clockReturnsDate;
-    out.rowParserShapeMatches = checks.rowMsHasExplicitStringRejection;
+    out.timestampParserBehaviorMatchesContract = checks.timestampParserRejectsDateOnlyString && checks.timestampParserAcceptsDateObject;
     out.note = 'A matching shape does not prove the entire deployed project equals main; a mismatch is strong evidence of runtime code-path drift.';
     return out;
   } catch (e) {
