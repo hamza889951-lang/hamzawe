@@ -124,6 +124,7 @@ function createEnvironment(timeZone) {
   const context = {
     Date,
     isFinite,
+    Logger: { log: function() {} },
     GoogleSheets: { _openSpreadsheet: function() { return spreadsheet; } },
     Utilities: { parseDate: parseLocal, formatDate: formatLocal }
   };
