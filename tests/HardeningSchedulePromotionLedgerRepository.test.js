@@ -50,7 +50,7 @@ function load(headers = HEADERS, rows = []) {
   const env = load([]);
   const result = env.repo.listByScopeResult('doctor-1', null);
   assert.equal(result.ok, true);
-  assert.deepEqual(env.sheet.headers, HEADERS);
+  assert.deepEqual(Array.from(env.sheet.headers), HEADERS);
 }
 
 // Existing compatible ledger is readable.
@@ -65,7 +65,7 @@ function load(headers = HEADERS, rows = []) {
   assert.equal(result.ok, true);
   assert.equal(result.data.length, 1);
   assert.equal(result.data[0].state, 'COMPLETED');
-  assert.deepEqual(result.data[0].detail, { verified: true });
+  assert.equal(JSON.stringify(result.data[0].detail), JSON.stringify({ verified: true }));
 }
 
 // An incompatible existing schema fails closed; it is not silently rewritten.
@@ -74,7 +74,7 @@ function load(headers = HEADERS, rows = []) {
   const result = env.repo.listByScopeResult('doctor-1', null);
   assert.equal(result.ok, false);
   assert.equal(result.error.code, 'SCHEDULE_PROMOTION_LEDGER_READ_FAILED');
-  assert.deepEqual(env.sheet.headers, ['changeId','state','effectiveFrom']);
+  assert.deepEqual(Array.from(env.sheet.headers), ['changeId','state','effectiveFrom']);
 }
 
 // Unknown state and impossible append-only transitions fail closed.
