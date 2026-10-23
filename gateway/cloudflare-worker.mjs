@@ -139,6 +139,13 @@ function mapMetaMessage(message) {
       message.interactive.button_reply &&
       typeof message.interactive.button_reply.title === 'string'
     ? message.interactive.button_reply.title
+    : message &&
+      message.type === 'interactive' &&
+      message.interactive &&
+      message.interactive.type === 'list_reply' &&
+      message.interactive.list_reply &&
+      typeof message.interactive.list_reply.title === 'string'
+    ? message.interactive.list_reply.title
     : null;
 
   const buttonPayload = message &&
@@ -153,6 +160,13 @@ function mapMetaMessage(message) {
       message.interactive.button_reply &&
       typeof message.interactive.button_reply.id === 'string'
     ? message.interactive.button_reply.id
+    : message &&
+      message.type === 'interactive' &&
+      message.interactive &&
+      message.interactive.type === 'list_reply' &&
+      message.interactive.list_reply &&
+      typeof message.interactive.list_reply.id === 'string'
+    ? message.interactive.list_reply.id
     : null;
 
   const timestampSeconds = message && message.timestamp !== undefined
@@ -171,7 +185,10 @@ function mapMetaMessage(message) {
     messageType: message && message.type === 'interactive' &&
       message.interactive && message.interactive.type === 'button_reply'
       ? 'INTERACTIVE_BUTTON'
-      : type,
+      : message && message.type === 'interactive' &&
+        message.interactive && message.interactive.type === 'list_reply'
+        ? 'INTERACTIVE_LIST'
+        : type,
     text: text,
     buttonPayload: buttonPayload
   };
