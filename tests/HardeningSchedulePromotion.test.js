@@ -176,6 +176,46 @@ const now = '2026-10-23T08:00';
   assert.equal(env.writes, 0);
 }
 
+// Multiple due changes are promoted in effective-date order.
+{
+  const env = setup({ changes: [
+    change('earlier', '2026-10-21T00:00', schedule(false, '08:00', '14:00')),
+    change('later', '2026-10-22T00:00', schedule(true, '11:00', '18:00'))
+  ] });
+  const result = env.service.activateDue(cc, now);
+  assert.equal(result.ok, true);
+  assert.equal(env.writes, 2);
+  assert.equal(env.settings.work_start, '11:00');
+  assert.equal(env.settings.work_end, '18:00');
+  assert.equal(env.events.filter(e => e.state === 'COMPLETED').length, 2);
+}
+
+// Promoted records are excluded from projection; PREPARED blocks projection.
+{
+  const env = setup();
+  const filtered = env.service.filterPromotedRecords(
+    [{ changeId: 'done' }, { changeId: 'not-done' }],
+    [{ changeId: 'done', state: 'COMPLETED', effectiveFrom: '2026-10-23T00:00', detail: {} }]
+  );
+  assert.equal(filtered.ok, true);
+  assert.deepEqual(filtered.data.map(r => r.changeId), ['not-done']);
+  const blocked = env.service.filterPromotedRecords(
+    [{ changeId: 'pending' }],
+    [{ changeId: 'pending', state: 'PREPARED', effectiveFrom: '2026-10-23T00:00', detail: {} }]
+  );
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.error.code, 'SCHEDULE_PROMOTION_IN_PROGRESS');
+}
+
+// Malformed recurring payload fails closed.
+{
+  const env = setup({ changes: [change('bad', '2026-10-23T00:00', { days: {}, workWindow: {} })] });
+  const result = env.service.activateDue(cc, now);
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, 'SCHEDULE_CHANGE_SOURCE_INVALID');
+  assert.equal(env.writes, 0);
+}
+
 // Unreadable ledger blocks promotion.
 {
   const env = setup({ changes: [change('due', '2026-10-23T00:00', schedule(false))], ledgerReadFail: true });
@@ -185,4 +225,4 @@ const now = '2026-10-23T08:00';
   assert.equal(env.writes, 0);
 }
 
-console.log('SETTINGS-SCHEDULE-PROMOTION-v1 tests: PASS (8 scenarios)');
+console.log('SETTINGS-SCHEDULE-PROMOTION-v1 tests: PASS (11 scenarios)');
