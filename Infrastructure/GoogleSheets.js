@@ -195,16 +195,21 @@ const GoogleSheets = {
     var lastColumn = sheet.getLastColumn();
     if (lastRow < 2 || lastColumn < 1) throw new Error('SETTINGS_NOT_CONFIGURED');
     var headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
-    var values = sheet.getRange(2, 1, 1, lastColumn).getValues()[0];
     var keys = Object.keys(fields || {});
     if (!keys.length) return { updated: 0 };
+    var indexes = [];
     for (var i = 0; i < keys.length; i++) {
       var index = headers.indexOf(keys[i]);
       if (index < 0) throw new Error('SETTINGS_COLUMN_NOT_FOUND: ' + keys[i]);
-      values[index] = fields[keys[i]];
+      indexes.push(index + 1);
     }
-    // Preserve unrelated fields by writing the row with unchanged values.
-    sheet.getRange(2, 1, 1, lastColumn).setValues([values]);
+    // Point-write only the explicitly authorized cells. This preserves all
+    // unrelated formulas, formatting, and values in the Settings row.
+    for (var j = 0; j < keys.length; j++) {
+      var cell = sheet.getRange(2, indexes[j]);
+      if (typeof fields[keys[j]] === 'string') cell.setNumberFormat('@');
+      cell.setValue(fields[keys[j]]);
+    }
     return { updated: keys.length };
   },
 
