@@ -191,6 +191,56 @@ const assert = require('assert');
     assert.strictEqual(forwarded[2].event.buttonPayload, 'HAMZAWE_START_BOOKING');
     assert.strictEqual(forwarded[2].event.text, 'حجز موعد');
 
+    const listBody = JSON.stringify({
+      object: 'whatsapp_business_account',
+      entry: [{
+        changes: [{
+          value: {
+            messages: [{
+              from: '9647001234567',
+              id: 'wamid.worker-list-1',
+              timestamp: '1779000004',
+              type: 'interactive',
+              interactive: {
+                type: 'list_reply',
+                list_reply: {
+                  id: 'DOCTOR_TEMPORARY_AVAILABILITY',
+                  title: 'إغلاق / فتح مؤقت',
+                  description: 'اختر نوع الإجراء'
+                }
+              }
+            }]
+          }
+        }]
+      }]
+    });
+
+    const listSignature =
+      'sha256=' +
+      await workerModule.hmacHex(
+        env.META_APP_SECRET,
+        new TextEncoder().encode(listBody)
+      );
+
+    const listPost = await worker.fetch(
+      new Request('https://gateway.example/webhook', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-hub-signature-256': listSignature
+        },
+        body: listBody
+      }),
+      env
+    );
+
+    assert.strictEqual(listPost.status, 200);
+    assert.strictEqual((await listPost.json()).forwardedMessages, 1);
+    assert.strictEqual(forwarded.length, 4);
+    assert.strictEqual(forwarded[3].event.messageType, 'INTERACTIVE_LIST');
+    assert.strictEqual(forwarded[3].event.buttonPayload, 'DOCTOR_TEMPORARY_AVAILABILITY');
+    assert.strictEqual(forwarded[3].event.text, 'إغلاق / فتح مؤقت');
+
     const badPost = await worker.fetch(
       new Request('https://gateway.example/webhook', {
         method: 'POST',
@@ -247,7 +297,7 @@ const assert = require('assert');
       forwardedMessages: 0,
       ignoredStatuses: 1
     });
-    assert.strictEqual(forwarded.length, 3);
+    assert.strictEqual(forwarded.length, 4);
 
     console.log('PASS: Cloudflare Worker gateway — health, Meta verification, signature, forwarding, HMAC envelope, and status isolation');
   } finally {
