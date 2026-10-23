@@ -33,10 +33,14 @@ function doPost(e) {
       return ContentService.createTextOutput('OK');
     }
 
+    // Interactive lists are valid inbound user messages just like text and
+    // reply buttons. The adapter has already validated and canonicalized the
+    // transport row ID; do not discard it at the webhook allowlist boundary.
     if (parsed.messageType &&
         parsed.messageType !== 'TEXT' &&
         parsed.messageType !== 'BUTTON' &&
-        parsed.messageType !== 'INTERACTIVE_BUTTON') {
+        parsed.messageType !== 'INTERACTIVE_BUTTON' &&
+        parsed.messageType !== 'INTERACTIVE_LIST') {
       LogRepository.write({
         timestamp: Clock.now(),
         command: 'WEBHOOK_UNSUPPORTED_MESSAGE',
