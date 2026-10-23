@@ -92,6 +92,19 @@ const SchedulePromotionService = {
     // Resolve cancellation at now; malformed records are rejected by canonical projection.
     var activeResult = EffectiveScheduleService._activeRecords(changesResult.data, parsedNow.data.stamp);
     if (!activeResult.ok) return activeResult;
+    // Validate every active recurring source, including future records, before
+    // allowing the horizon to proceed. A malformed future record is not safe
+    // to ignore because it may become the next baseline.
+    for (var v = 0; v < activeResult.data.length; v++) {
+      var sourceRecord = activeResult.data[v];
+      if (sourceRecord.changeKind !== ScheduleChangeRepository.KIND.RECURRING) continue;
+      var sourceBoundary = EffectiveScheduleService.parseLocalDateTime(sourceRecord.effectiveFrom);
+      if (!sourceBoundary.ok || sourceBoundary.data.minutes !== 0) {
+        return Result.fail('SCHEDULE_CHANGE_SOURCE_INVALID', 'Recurring change has invalid effectiveFrom boundary', { changeId: sourceRecord.changeId, effectiveFrom: sourceRecord.effectiveFrom });
+      }
+      var sourcePayload = this._scheduleFromPayload(sourceRecord);
+      if (!sourcePayload.ok) return sourcePayload;
+    }
     // Detect manual/out-of-band Settings drift against the latest completed
     // promotion only. Older completed entries naturally differ after a later
     // promotion and must not be misclassified as drift.
