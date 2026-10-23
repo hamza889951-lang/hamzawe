@@ -69,6 +69,22 @@ const AvailabilityHorizonMaintainer = {
       }
       var controlContext = ccResult.data;
 
+      // Activate due recurring schedule changes before taking the source
+      // snapshot. ensureHorizon already owns the script-wide lock; do not
+      // acquire it again from SchedulePromotionService.
+      var promotionNow = Utilities.formatDate(
+        Clock.now(), SchedulePromotionService.TIMEZONE, "yyyy-MM-dd'T'HH:mm"
+      );
+      var promotionResult = SchedulePromotionService.activateDue(controlContext, promotionNow);
+      if (!promotionResult.ok) {
+        LogRepository.write({
+          timestamp: Clock.now(), command: 'GENERATE_AVAILABILITY', phone: '',
+          slotId: '', stage: 'END', success: false, durationMs: null,
+          error: JSON.stringify({ reason: promotionResult.error.code, stage: 'SCHEDULE_PROMOTION' })
+        });
+        return promotionResult;
+      }
+
       // ── Step 2: Load Settings (once) ──
       var settingsResult;
       try {
@@ -132,7 +148,22 @@ const AvailabilityHorizonMaintainer = {
         });
         return listResult;
       }
-      var records = listResult.data;
+      var ledgerSnapshotResult = SchedulePromotionLedgerRepository.listByScopeResult(
+        scopeResult.data.doctorId, scopeResult.data.clinicId
+      );
+      if (!ledgerSnapshotResult.ok) {
+        LogRepository.write({
+          timestamp: Clock.now(), command: 'GENERATE_AVAILABILITY', phone: '',
+          slotId: '', stage: 'END', success: false, durationMs: null,
+          error: JSON.stringify({ reason: ledgerSnapshotResult.error.code, stage: 'SCHEDULE_PROMOTION_LEDGER' })
+        });
+        return ledgerSnapshotResult;
+      }
+      var filteredRecordsResult = SchedulePromotionService.filterPromotedRecords(
+        listResult.data, ledgerSnapshotResult.data
+      );
+      if (!filteredRecordsResult.ok) return filteredRecordsResult;
+      var records = filteredRecordsResult.data;
 
       // ── Step 4a: Validate slot_generation_days (M4-D fail-closed) ──
       var targetDays = parseInt(settings.slot_generation_days, 10);
