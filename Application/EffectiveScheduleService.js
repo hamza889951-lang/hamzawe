@@ -64,11 +64,20 @@ const EffectiveScheduleService = {
     );
     if (!listResult.ok) return listResult;
 
+    var ledgerResult = SchedulePromotionLedgerRepository.listByScopeResult(
+      scopeResult.data.doctorId, scopeResult.data.clinicId
+    );
+    if (!ledgerResult.ok) return ledgerResult;
+    var unpromoted = SchedulePromotionService.filterPromotedRecords(
+      listResult.data, ledgerResult.data
+    );
+    if (!unpromoted.ok) return unpromoted;
+
     return this.projectFromSources(
       scopeResult.data,
       atResult.data,
       baselineResult.data,
-      listResult.data
+      unpromoted.data
     );
   },
 
