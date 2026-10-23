@@ -242,7 +242,7 @@ const tooManyRows = adapter.sendInteractiveList(
   'اختبار',
   { buttonTitle: 'فتح القائمة', sections: [{ title: 'اختبار', rows: Array.from({length: 11}, function(_, i) {
     return { id: 'ROW_' + i, title: 'خيار ' + i };
-  })] }
+  }) }] }
 );
 assert.strictEqual(tooManyRows.ok, false, 'Lists over Meta row limit must fail closed');
 
