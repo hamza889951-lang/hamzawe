@@ -194,32 +194,10 @@ const EnhancedReportRenderer = {
       lines.push(rate.metric + ': ' + this._summaryRateText(rate));
     }
 
-    if (model.insights && model.insights.length) {
-      lines.push('');
-      lines.push('— INSIGHTS —');
-      for (var a = 0; a < model.insights.length; a++) {
-        var ins = model.insights[a];
-        lines.push('• ' + ins.explanation);
-      }
-    }
-
-    if (model.managementNotes && model.managementNotes.length) {
-      lines.push('');
-      lines.push('— MANAGEMENT NOTES —');
-      for (var n = 0; n < model.managementNotes.length; n++) {
-        lines.push('• ' + model.managementNotes[n].note);
-      }
-    }
-
-    if (model.dataQualityWarnings && model.dataQualityWarnings.length) {
-      lines.push('');
-      lines.push('— DATA QUALITY —');
-      for (var w = 0; w < model.dataQualityWarnings.length; w++) {
-        var warn = model.dataQualityWarnings[w];
-        lines.push('• ' + warn.scope + (warn.metric ? ' ' + warn.metric : '') + ': ' + warn.detail);
-      }
-    }
-
+    // SUMMARY is deliberately concise: it shows the canonical metric and
+    // rate facts only. Insights, recommendations, and cohort/provenance
+    // diagnostics remain available in FULL, avoiding repeated explanatory
+    // paragraphs in the short administrative view.
     return Result.ok(lines.join('\n'));
   },
 
@@ -271,6 +249,10 @@ const EnhancedReportRenderer = {
       body = this._fmtPct(rate.value) + '%';
       if (rate.ruleStatus === 'EVALUATED' && rate.severity) {
         body += ' [' + rate.severity + ']';
+      } else if (rate.ruleStatus && rate.ruleStatus !== 'EVALUATED') {
+        // Keep the evaluation outcome visible without repeating the full
+        // insight/recommendation narrative in SUMMARY.
+        body += ' [' + rate.ruleStatus + ']';
       }
     } else {
       body = this._statusReason(rate.status, rate.reason);
