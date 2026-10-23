@@ -46,6 +46,8 @@ jobs:
           node --check tests/HardeningRetentionArchive.test.js
           node --check Reminderservice.js
           node --check tests/ReminderServiceReliability.test.js
+          node --check Webhook.js
+          node --check tests/HardeningWebhookInteractiveList.test.js
 
       - name: Targeted Calendar verification test
         shell: bash
@@ -91,6 +93,7 @@ jobs:
           node tests/HardeningWhatsAppAdapterInteractive.test.js
           node tests/HardeningMessagingPolicyInteractiveList.test.js
           node tests/HardeningWhatsAppCloudGatewayWorker.test.js
+          node tests/HardeningWebhookInteractiveList.test.js
 
       - name: Full hardening regression
         shell: bash
