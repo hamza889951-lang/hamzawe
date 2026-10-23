@@ -271,7 +271,7 @@ const WhatsAppAdapter = {
     }
 
     var doctorIntentMap = this.DOCTOR_INTERACTIVE_INTENT_TO_META_ID;
-    var seenIds = {};
+    var seenIds = Object.create(null);
     var totalRows = 0;
     var normalizedSections = [];
 
@@ -299,7 +299,10 @@ const WhatsAppAdapter = {
         }
 
         var transportId = doctorIntentMap[row.id] || row.id;
-        if (seenIds[transportId]) {
+        if (typeof transportId !== 'string' || !transportId || transportId.length > 200) {
+          return Result.fail('WHATSAPP_INTERACTIVE_LIST_INVALID', 'Transport row IDs must contain 1-200 characters');
+        }
+        if (Object.prototype.hasOwnProperty.call(seenIds, transportId)) {
           return Result.fail('WHATSAPP_INTERACTIVE_LIST_INVALID', 'List row IDs must be unique after transport mapping');
         }
         seenIds[transportId] = true;
