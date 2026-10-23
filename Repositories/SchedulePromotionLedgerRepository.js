@@ -6,7 +6,16 @@
 const SchedulePromotionLedgerRepository = {
   SHEET: 'SchedulePromotionLedger',
   HEADERS: ['eventId','changeId','doctorId','clinicId','effectiveFrom','state','beforeFingerprint','targetFingerprint','eventAt','detailJson'],
-  _ensure: function() { GoogleSheets.getOrCreateSheet(this.SHEET, this.HEADERS); },
+  _ensure: function() {
+    GoogleSheets.getOrCreateSheet(this.SHEET, this.HEADERS);
+    var actual = GoogleSheets.getHeaders(this.SHEET);
+    if (!actual || actual.length !== this.HEADERS.length) {
+      throw new Error('SCHEDULE_PROMOTION_LEDGER_SCHEMA_MISMATCH');
+    }
+    for (var i = 0; i < this.HEADERS.length; i++) {
+      if (actual[i] !== this.HEADERS[i]) throw new Error('SCHEDULE_PROMOTION_LEDGER_SCHEMA_MISMATCH');
+    }
+  },
   _scope: function(doctorId, clinicId) {
     return { doctorId: String(doctorId), clinicId: clinicId == null || clinicId === '' ? '' : String(clinicId) };
   },
