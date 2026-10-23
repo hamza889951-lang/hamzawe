@@ -197,19 +197,27 @@ const GoogleSheets = {
     var headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
     var keys = Object.keys(fields || {});
     if (!keys.length) return { updated: 0 };
+    var rowRange = sheet.getRange(2, 1, 1, lastColumn);
+    var values = rowRange.getValues()[0];
+    var formulas = typeof rowRange.getFormulas === 'function' ? rowRange.getFormulas()[0] : [];
+    // Preserve formulas in unrelated Settings cells while preparing a single
+    // row write, so a failure cannot leave only some schedule cells updated.
+    for (var f = 0; f < formulas.length; f++) {
+      if (formulas[f]) values[f] = formulas[f];
+    }
     var indexes = [];
     for (var i = 0; i < keys.length; i++) {
       var index = headers.indexOf(keys[i]);
       if (index < 0) throw new Error('SETTINGS_COLUMN_NOT_FOUND: ' + keys[i]);
-      indexes.push(index + 1);
+      indexes.push(index);
+      values[index] = fields[keys[i]];
     }
-    // Point-write only the explicitly authorized cells. This preserves all
-    // unrelated formulas, formatting, and values in the Settings row.
+    // Keep only the intended schedule cells as literal text. Formatting is
+    // set before the one-row write; unrelated cells retain their formats.
     for (var j = 0; j < keys.length; j++) {
-      var cell = sheet.getRange(2, indexes[j]);
-      if (typeof fields[keys[j]] === 'string') cell.setNumberFormat('@');
-      cell.setValue(fields[keys[j]]);
+      if (typeof fields[keys[j]] === 'string') sheet.getRange(2, indexes[j] + 1).setNumberFormat('@');
     }
+    rowRange.setValues([values]);
     return { updated: keys.length };
   },
 
