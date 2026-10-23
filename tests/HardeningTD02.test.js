@@ -264,6 +264,16 @@ function createSandbox() {
   load('SettingsRepository.js', 'SettingsRepository');
   load('Application/DoctorScheduleReadService.js', 'DoctorScheduleReadService');
   load('Repositories/ScheduleChangeRepository.js', 'ScheduleChangeRepository');
+  // This CAS-009 test isolates horizon determinism; promotion behavior has
+  // dedicated tests and is injected as a no-op for these historical fixtures.
+  sandbox.SchedulePromotionLedgerRepository = {
+    listByScopeResult: function() { return sandbox.Result.ok([]); }
+  };
+  sandbox.SchedulePromotionService = {
+    TIMEZONE: 'Asia/Baghdad',
+    activateDue: function() { return sandbox.Result.ok({ promoted: 0 }); },
+    filterPromotedRecords: function(records) { return sandbox.Result.ok(records); }
+  };
   load('Application/EffectiveScheduleService.js', 'EffectiveScheduleService');
   load('LogRepository.js', 'LogRepository');
   sandbox.LogRepository.write = function(entry) { state.logs.push(entry); };
