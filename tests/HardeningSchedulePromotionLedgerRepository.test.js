@@ -77,4 +77,31 @@ function load(headers = HEADERS, rows = []) {
   assert.deepEqual(env.sheet.headers, ['changeId','state','effectiveFrom']);
 }
 
-console.log('SchedulePromotionLedgerRepository tests: PASS (3 scenarios)');
+// Unknown state and impossible append-only transitions fail closed.
+{
+  const env = load(HEADERS, [
+    { eventId: 'e1', changeId: 'c1', doctorId: 'doctor-1', clinicId: '',
+      effectiveFrom: '2026-10-23T00:00', state: 'MAYBE',
+      beforeFingerprint: 'before', targetFingerprint: 'target',
+      eventAt: '2026-10-23T05:00:00.000Z', detailJson: '{}' }
+  ]);
+  const rows = env.repo.listByScopeResult('doctor-1', null);
+  assert.equal(rows.ok, true);
+  const state = env.repo.latestByChangeId(rows.data);
+  assert.equal(state.ok, false);
+  assert.equal(state.error.code, 'SCHEDULE_PROMOTION_LEDGER_INVALID');
+}
+{
+  const base = { doctorId: 'doctor-1', clinicId: '', effectiveFrom: '2026-10-23T00:00',
+    beforeFingerprint: 'before', targetFingerprint: 'target', eventAt: '2026-10-23T05:00:00.000Z', detail: {} };
+  const events = [
+    { ...base, eventId: 'e1', changeId: 'c1', state: 'PREPARED' },
+    { ...base, eventId: 'e2', changeId: 'c1', state: 'PREPARED' }
+  ];
+  const env = load();
+  const result = env.repo.latestByChangeId(events);
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, 'SCHEDULE_PROMOTION_LEDGER_INVALID');
+}
+
+console.log('SchedulePromotionLedgerRepository tests: PASS (5 scenarios)');
