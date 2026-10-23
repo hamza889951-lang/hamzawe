@@ -436,6 +436,16 @@ const DoctorScheduleCommandService = {
       return Result.fail('CHANGE_NOT_CANCELLABLE', 'A cancellation record cannot be cancelled');
     }
 
+    if (target.changeKind === ScheduleChangeRepository.KIND.RECURRING &&
+        typeof target.effectiveFrom === 'string' &&
+        EffectiveScheduleService.compareStamps(target.effectiveFrom, asOf.data.stamp) <= 0) {
+      return Result.fail(
+        'CHANGE_ALREADY_EFFECTIVE_NOT_CANCELLABLE',
+        'A recurring change cannot be cancelled at or after its effective boundary; submit a compensating recurring schedule change',
+        { targetChangeId: target.changeId, effectiveFrom: target.effectiveFrom }
+      );
+    }
+
     if (target.changeKind === ScheduleChangeRepository.KIND.RECURRING) {
       var promotionLedger = SchedulePromotionLedgerRepository.listByScopeResult(scope.doctorId, scope.clinicId);
       if (!promotionLedger.ok) return promotionLedger;
