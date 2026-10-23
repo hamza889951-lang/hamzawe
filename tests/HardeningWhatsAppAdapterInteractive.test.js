@@ -188,6 +188,44 @@ menuRows.forEach(function(row) {
   assert.strictEqual(parsed.message, row.id, 'List row routing mismatch for ' + row.id);
 });
 
+const submenuRows = [
+  { id: 'TEMPORARY_CLOSE', title: 'إغلاق مؤقت' },
+  { id: 'TEMPORARY_OPEN', title: 'فتح استثنائي' },
+  { id: 'BACK_TO_MENU', title: 'رجوع إلى اللوحة' }
+];
+sentBodies.length = 0;
+const submenuSend = adapter.sendInteractiveList(
+  '9647001111111',
+  'اختر الإجراء المؤقت',
+  { buttonTitle: 'اختر الإجراء', sections: [{ title: 'الإجراء المؤقت', rows: submenuRows }] }
+);
+assert.strictEqual(submenuSend.ok, true);
+assert.strictEqual(sentBodies[0].interactive.action.sections[0].rows.length, 3);
+submenuRows.forEach(function(row) {
+  const parsed = adapter.parseIncomingPayload({
+    postData: {
+      contents: JSON.stringify({
+        gatewayVersion: 'v1',
+        gatewayTimestampMs: Date.now(),
+        event: {
+          channel: 'WHATSAPP',
+          provider: 'META_CLOUD',
+          eventType: 'MESSAGE',
+          messageId: 'wamid.SUBMENU.' + row.id,
+          phone: '9647001111111',
+          timestampMs: Date.now(),
+          messageType: 'INTERACTIVE_LIST',
+          text: row.title,
+          buttonPayload: expected[row.id]
+        },
+        signature: 'TEST'
+      })
+    }
+  });
+  assert.ok(parsed, 'Inbound submenu parser rejected ' + row.id);
+  assert.strictEqual(parsed.message, row.id, 'Submenu row routing mismatch for ' + row.id);
+});
+
 const duplicateList = adapter.sendInteractiveList(
   '9647001111111',
   'اختبار',
