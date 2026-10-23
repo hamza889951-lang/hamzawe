@@ -92,6 +92,6 @@ assert.ok(fullText.includes('CANCELLATION_RATE: 28.57%'));
 console.log('HardeningReportSummaryRenderer.test.js: PASS');
 } catch (error) {
   console.error('FAIL: HardeningReportSummaryRenderer.test.js :: ' +
-    (error && error.stack ? error.stack : String(error)));
+    (error && error.stack ? error.stack.replace(/\s+/g, ' ') : String(error)));
   process.exitCode = 1;
 }
