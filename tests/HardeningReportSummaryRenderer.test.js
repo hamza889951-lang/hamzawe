@@ -69,7 +69,7 @@ try {
 const summaryResult = sandbox.EnhancedReportRenderer.render(summary);
 assert.strictEqual(summaryResult.ok, true);
 const summaryText = summaryResult.data;
-assert.ok(summaryText.includes('CANCELLATION_RATE: 28.57% [INSUFFICIENT_SAMPLE]'));
+assert.ok(summaryText.includes('CANCELLATION_RATE: 28.57% [INSUFFICIENT_SAMPLE]'), summaryText);
 assert.ok(summaryText.includes('CONFIRMED_APPOINTMENTS: 1'));
 assert.ok(!summaryText.includes('— INSIGHTS —'));
 assert.ok(!summaryText.includes('— MANAGEMENT NOTES —'));
