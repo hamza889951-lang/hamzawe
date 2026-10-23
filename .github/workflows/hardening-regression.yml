@@ -50,6 +50,7 @@ jobs:
           node --check SettingsRepository.js
           node --check Repositories/ScheduleChangeRepository.js
           node --check Repositories/SchedulePromotionLedgerRepository.js
+          node --check tests/HardeningSchedulePromotionLedgerRepository.test.js
           node --check Application/SchedulePromotionService.js
           node --check Application/EffectiveScheduleService.js
           node --check AvailabilityHorizonMaintainer.js
@@ -101,6 +102,12 @@ jobs:
           node tests/HardeningMessagingPolicyInteractiveList.test.js
           node tests/HardeningWhatsAppCloudGatewayWorker.test.js
           node tests/HardeningWebhookInteractiveList.test.js
+
+      - name: Targeted Schedule Promotion Ledger repository schema test
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tests/HardeningSchedulePromotionLedgerRepository.test.js
 
       - name: Targeted Settings Schedule Promotion contract and recovery test
         shell: bash

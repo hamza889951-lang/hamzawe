@@ -7,8 +7,15 @@ const SchedulePromotionLedgerRepository = {
   SHEET: 'SchedulePromotionLedger',
   HEADERS: ['eventId','changeId','doctorId','clinicId','effectiveFrom','state','beforeFingerprint','targetFingerprint','eventAt','detailJson'],
   _ensure: function() {
-    GoogleSheets.getOrCreateSheet(this.SHEET, this.HEADERS);
-    var actual = GoogleSheets.getHeaders(this.SHEET);
+    var sheet = GoogleSheets.getOrCreateSheet(this.SHEET, this.HEADERS);
+    if (!sheet || typeof sheet.getLastColumn !== 'function' || typeof sheet.getRange !== 'function') {
+      throw new Error('SCHEDULE_PROMOTION_LEDGER_SHEET_UNAVAILABLE');
+    }
+    var lastColumn = sheet.getLastColumn();
+    if (lastColumn !== this.HEADERS.length) {
+      throw new Error('SCHEDULE_PROMOTION_LEDGER_SCHEMA_MISMATCH');
+    }
+    var actual = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
     if (!actual || actual.length !== this.HEADERS.length) {
       throw new Error('SCHEDULE_PROMOTION_LEDGER_SCHEMA_MISMATCH');
     }
@@ -66,10 +73,22 @@ const SchedulePromotionLedgerRepository = {
   },
   latestByChangeId: function(events) {
     var latest = {};
+    var allowedStates = { PREPARED: true, COMPLETED: true, FAILED: true };
     for (var i = 0; i < events.length; i++) {
       var e = events[i];
-      if (!e || !e.changeId || !e.state || e.detail && e.detail.__malformed) {
-        return Result.fail('SCHEDULE_PROMOTION_LEDGER_INVALID', 'Promotion ledger contains malformed event');
+      if (!e || !e.eventId || !e.changeId || !e.doctorId ||
+          !allowedStates[e.state] || !e.effectiveFrom ||
+          !e.targetFingerprint || e.detail && e.detail.__malformed) {
+        return Result.fail('SCHEDULE_PROMOTION_LEDGER_INVALID', 'Promotion ledger contains malformed or unsupported event');
+      }
+      var previous = latest[e.changeId];
+      if (previous && previous.state === 'COMPLETED') {
+        return Result.fail('SCHEDULE_PROMOTION_LEDGER_INVALID', 'Completed promotion has a later ledger event', { changeId: e.changeId });
+      }
+      if (previous && previous.state === 'PREPARED' && e.state === 'PREPARED') {
+        // Repeated preparation is not a valid state transition. Recovery must
+        // append COMPLETED, or leave the one PREPARED event for the next retry.
+        return Result.fail('SCHEDULE_PROMOTION_LEDGER_INVALID', 'Duplicate PREPARED events are ambiguous', { changeId: e.changeId });
       }
       latest[e.changeId] = e;
     }

@@ -69,7 +69,7 @@ const SchedulePromotionService = {
     });
     return Result.ok(filtered);
   },
-  activateDue: function(controlContext, nowStamp) {
+  _activateDueInternal: function(controlContext, nowStamp) {
     var scope = EffectiveScheduleService._scopeFromControlContext(controlContext);
     if (!scope.ok) return scope;
     var parsedNow = EffectiveScheduleService.parseLocalDateTime(nowStamp);
@@ -214,5 +214,15 @@ const SchedulePromotionService = {
       this._log('SUCCEEDED', true, rec.changeId, { effectiveFrom: rec.effectiveFrom });
     }
     return Result.ok({ promoted: due.length, effectiveAt: parsedNow.data.stamp });
+  },
+  activateDue: function(controlContext, nowStamp) {
+    var result = this._activateDueInternal(controlContext, nowStamp);
+    if (!result || !result.ok) {
+      var error = result && result.error ? result.error : {};
+      this._log('FAILED', false, error.details && error.details.changeId, {
+        code: error.code || 'UNKNOWN_PROMOTION_FAILURE'
+      });
+    }
+    return result;
   }
 };
