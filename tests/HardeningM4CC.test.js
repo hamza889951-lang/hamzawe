@@ -189,6 +189,14 @@ function createSandbox() {
   load('SettingsRepository.js', 'SettingsRepository');
   load('Application/DoctorScheduleReadService.js', 'DoctorScheduleReadService');
   load('Repositories/ScheduleChangeRepository.js', 'ScheduleChangeRepository');
+  // Promotion lifecycle has dedicated tests; isolate this suite's frozen M4-C contracts.
+  sandbox.SchedulePromotionLedgerRepository = {
+    listByScopeResult: function() { return sandbox.Result.ok([]); },
+    latestByChangeId: function() { return sandbox.Result.ok({}); }
+  };
+  sandbox.SchedulePromotionService = {
+    filterPromotedRecords: function(records) { return sandbox.Result.ok(records); }
+  };
   load('Application/EffectiveScheduleService.js', 'EffectiveScheduleService');
   load('LogRepository.js', 'LogRepository');
   sandbox.LogRepository.write = function(entry) {

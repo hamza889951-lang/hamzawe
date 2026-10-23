@@ -144,6 +144,15 @@ function createSandbox() {
   load('SettingsRepository.js', 'SettingsRepository');
   load('Application/DoctorScheduleReadService.js', 'DoctorScheduleReadService');
   load('Repositories/ScheduleChangeRepository.js', 'ScheduleChangeRepository');
+  // This legacy M4-C suite isolates schedule-intent semantics. Promotion
+  // lifecycle is covered by HardeningSchedulePromotion.test.js.
+  sandbox.SchedulePromotionLedgerRepository = {
+    listByScopeResult: function() { return sandbox.Result.ok([]); },
+    latestByChangeId: function() { return sandbox.Result.ok({}); }
+  };
+  sandbox.SchedulePromotionService = {
+    filterPromotedRecords: function(records) { return sandbox.Result.ok(records); }
+  };
   load('Application/EffectiveScheduleService.js', 'EffectiveScheduleService');
   load('LogRepository.js', 'LogRepository');
   sandbox.LogRepository.write = function(entry) {

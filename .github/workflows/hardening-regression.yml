@@ -47,6 +47,13 @@ jobs:
           node --check Reminderservice.js
           node --check tests/ReminderServiceReliability.test.js
           node --check Webhook.js
+          node --check SettingsRepository.js
+          node --check Repositories/ScheduleChangeRepository.js
+          node --check Repositories/SchedulePromotionLedgerRepository.js
+          node --check Application/SchedulePromotionService.js
+          node --check Application/EffectiveScheduleService.js
+          node --check AvailabilityHorizonMaintainer.js
+          node --check tests/HardeningSchedulePromotion.test.js
           node --check tests/HardeningWebhookInteractiveList.test.js
 
       - name: Targeted Calendar verification test
@@ -94,6 +101,12 @@ jobs:
           node tests/HardeningMessagingPolicyInteractiveList.test.js
           node tests/HardeningWhatsAppCloudGatewayWorker.test.js
           node tests/HardeningWebhookInteractiveList.test.js
+
+      - name: Targeted Settings Schedule Promotion contract and recovery test
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tests/HardeningSchedulePromotion.test.js
 
       - name: Full hardening regression
         shell: bash

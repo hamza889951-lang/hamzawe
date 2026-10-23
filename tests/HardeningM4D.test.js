@@ -162,6 +162,27 @@ function createSandbox() {
   load('SettingsRepository.js', 'SettingsRepository');
   load('Application/DoctorScheduleReadService.js', 'DoctorScheduleReadService');
   load('Repositories/ScheduleChangeRepository.js', 'ScheduleChangeRepository');
+  // Horizon promotion is tested separately; keep M4-D's existing materializer
+  // fixtures deterministic and inject an empty, healthy promotion ledger.
+  sandbox.SchedulePromotionLedgerRepository = {
+    listByScopeResult: function() { return sandbox.Result.ok([]); }
+  };
+  sandbox.SchedulePromotionService = {
+    TIMEZONE: 'Asia/Baghdad',
+    activateDue: function() { return sandbox.Result.ok({ promoted: 0 }); },
+    filterPromotedRecords: function(records) { return sandbox.Result.ok(records); }
+  };
+  sandbox.Utilities = {
+    formatDate: function(date) {
+      const d = new Date(date);
+      const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Baghdad', year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
+      }).formatToParts(d);
+      const get = type => parts.find(p => p.type === type).value;
+      return get('year') + '-' + get('month') + '-' + get('day') + 'T' + get('hour') + ':' + get('minute');
+    }
+  };
   load('Application/EffectiveScheduleService.js', 'EffectiveScheduleService');
   load('LogRepository.js', 'LogRepository');
   sandbox.LogRepository.write = function(entry) { state.logs.push(entry); };

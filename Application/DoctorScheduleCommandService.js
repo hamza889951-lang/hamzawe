@@ -436,6 +436,21 @@ const DoctorScheduleCommandService = {
       return Result.fail('CHANGE_NOT_CANCELLABLE', 'A cancellation record cannot be cancelled');
     }
 
+    if (target.changeKind === ScheduleChangeRepository.KIND.RECURRING) {
+      var promotionLedger = SchedulePromotionLedgerRepository.listByScopeResult(scope.doctorId, scope.clinicId);
+      if (!promotionLedger.ok) return promotionLedger;
+      var promotionStates = SchedulePromotionLedgerRepository.latestByChangeId(promotionLedger.data);
+      if (!promotionStates.ok) return promotionStates;
+      var promotionState = promotionStates.data[target.changeId];
+      if (promotionState && (promotionState.state === 'PREPARED' || promotionState.state === 'COMPLETED')) {
+        return Result.fail(
+          'PROMOTED_SCHEDULE_CHANGE_NOT_CANCELLABLE',
+          'A recurring change that has entered promotion cannot be cancelled; submit a new compensating recurring schedule change',
+          { targetChangeId: target.changeId, promotionState: promotionState.state }
+        );
+      }
+    }
+
     for (i = 0; i < records.length; i++) {
       if (records[i].changeKind === ScheduleChangeRepository.KIND.CANCEL &&
           records[i].targetChangeId === target.changeId) {
