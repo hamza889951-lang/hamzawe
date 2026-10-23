@@ -12,13 +12,15 @@ const WhatsAppAdapter = {
     GATEWAY_SECRET: 'WHATSAPP_GATEWAY_SECRET'
   },
 
-  MESSAGE_TYPES: { TEXT: 'TEXT', BUTTON: 'BUTTON', INTERACTIVE_BUTTON: 'INTERACTIVE_BUTTON' },
+  MESSAGE_TYPES: { TEXT: 'TEXT', BUTTON: 'BUTTON', INTERACTIVE_BUTTON: 'INTERACTIVE_BUTTON', INTERACTIVE_LIST: 'INTERACTIVE_LIST' },
 
   // Provider-neutral Doctor Interaction Intent -> Meta transport ID.
   // The inverse mapping is applied on inbound callbacks below.
   DOCTOR_INTERACTIVE_INTENT_TO_META_ID: {
     VIEW_SCHEDULE: 'DOCTOR_VIEW_SCHEDULE',
     CHANGE_SCHEDULE: 'DOCTOR_CHANGE_SCHEDULE',
+    TEMPORARY_AVAILABILITY: 'DOCTOR_TEMPORARY_AVAILABILITY',
+    BACK_TO_MENU: 'DOCTOR_BACK_TO_MENU',
     MORE: 'DOCTOR_MORE',
     REPORTS: 'DOCTOR_REPORTS',
     REPORT_PERIOD_DAILY: 'DOCTOR_REPORT_PERIOD_DAILY',
@@ -69,7 +71,8 @@ const WhatsAppAdapter = {
       if (event.messageType === this.MESSAGE_TYPES.TEXT) {
         canonicalMessage = event.text || '';
       } else if (event.messageType === this.MESSAGE_TYPES.BUTTON ||
-                 event.messageType === this.MESSAGE_TYPES.INTERACTIVE_BUTTON) {
+                 event.messageType === this.MESSAGE_TYPES.INTERACTIVE_BUTTON ||
+                 event.messageType === this.MESSAGE_TYPES.INTERACTIVE_LIST) {
         var buttonMap = {
           HAMZAWE_CONFIRM: '1',
           HAMZAWE_CHANGE: '2',
@@ -82,6 +85,8 @@ const WhatsAppAdapter = {
           // DoctorControlInteractionService and are not domain commands.
           DOCTOR_VIEW_SCHEDULE: 'VIEW_SCHEDULE',
           DOCTOR_CHANGE_SCHEDULE: 'CHANGE_SCHEDULE',
+          DOCTOR_TEMPORARY_AVAILABILITY: 'TEMPORARY_AVAILABILITY',
+          DOCTOR_BACK_TO_MENU: 'BACK_TO_MENU',
           DOCTOR_MORE: 'MORE',
           DOCTOR_REPORTS: 'REPORTS',
           DOCTOR_REPORT_PERIOD_DAILY: 'REPORT_PERIOD_DAILY',
@@ -239,6 +244,94 @@ const WhatsAppAdapter = {
         type: 'button',
         body: { text: text },
         action: { buttons: normalizedButtons }
+      }
+    });
+  },
+
+  /**
+   * Send a WhatsApp interactive list. Meta reply-button messages are limited
+   * to three buttons; a list is the supported transport for the five-option
+   * Doctor Control menu. Validation is fail-closed before any network call.
+   */
+  sendInteractiveList: function(phone, text, list) {
+    if (!phone || typeof phone !== 'string') {
+      return Result.fail('WHATSAPP_RECIPIENT_INVALID', 'A recipient phone is required');
+    }
+    if (typeof text !== 'string' || !text || text.length > 1024) {
+      return Result.fail('WHATSAPP_MESSAGE_INVALID', 'Interactive list body must contain 1-1024 characters');
+    }
+    if (!list || typeof list !== 'object' ||
+        typeof list.buttonTitle !== 'string' ||
+        !list.buttonTitle.trim() ||
+        list.buttonTitle.length > 20 ||
+        !Array.isArray(list.sections) ||
+        list.sections.length < 1 ||
+        list.sections.length > 10) {
+      return Result.fail('WHATSAPP_INTERACTIVE_LIST_INVALID', 'Interactive list requires a button title and 1-10 sections');
+    }
+
+    var doctorIntentMap = this.DOCTOR_INTERACTIVE_INTENT_TO_META_ID;
+    var seenIds = Object.create(null);
+    var totalRows = 0;
+    var normalizedSections = [];
+
+    for (var sectionIndex = 0; sectionIndex < list.sections.length; sectionIndex++) {
+      var section = list.sections[sectionIndex];
+      if (!section || typeof section !== 'object' ||
+          typeof section.title !== 'string' ||
+          !section.title.trim() ||
+          section.title.length > 24 ||
+          !Array.isArray(section.rows) ||
+          section.rows.length < 1 ||
+          section.rows.length > 10) {
+        return Result.fail('WHATSAPP_INTERACTIVE_LIST_INVALID', 'Each section requires a title and 1-10 rows');
+      }
+
+      var normalizedRows = [];
+      for (var rowIndex = 0; rowIndex < section.rows.length; rowIndex++) {
+        var row = section.rows[rowIndex];
+        if (!row || typeof row !== 'object' ||
+            typeof row.id !== 'string' || !row.id.trim() || row.id.length > 200 ||
+            typeof row.title !== 'string' || !row.title.trim() || row.title.length > 24 ||
+            (row.description !== undefined &&
+             (typeof row.description !== 'string' || row.description.length > 72))) {
+          return Result.fail('WHATSAPP_INTERACTIVE_LIST_INVALID', 'Each row requires a valid id and a title of at most 24 characters');
+        }
+
+        var transportId = doctorIntentMap[row.id] || row.id;
+        if (typeof transportId !== 'string' || !transportId || transportId.length > 200) {
+          return Result.fail('WHATSAPP_INTERACTIVE_LIST_INVALID', 'Transport row IDs must contain 1-200 characters');
+        }
+        if (Object.prototype.hasOwnProperty.call(seenIds, transportId)) {
+          return Result.fail('WHATSAPP_INTERACTIVE_LIST_INVALID', 'List row IDs must be unique after transport mapping');
+        }
+        seenIds[transportId] = true;
+        totalRows++;
+        normalizedRows.push({
+          id: transportId,
+          title: row.title,
+          ...(row.description !== undefined ? { description: row.description } : {})
+        });
+      }
+      normalizedSections.push({ title: section.title, rows: normalizedRows });
+    }
+
+    if (totalRows > 10) {
+      return Result.fail('WHATSAPP_INTERACTIVE_LIST_INVALID', 'Interactive lists may contain at most ten rows total');
+    }
+
+    return this._postMessage({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: phone,
+      type: 'interactive',
+      interactive: {
+        type: 'list',
+        body: { text: text },
+        action: {
+          button: list.buttonTitle,
+          sections: normalizedSections
+        }
       }
     });
   },

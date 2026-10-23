@@ -27,6 +27,33 @@ const MessagingPolicyService = {
   sendReply: function(phone, text, deliveryOptions) {
     deliveryOptions = deliveryOptions || {};
 
+    if (deliveryOptions.interactiveList) {
+      var listSend = WhatsAppAdapter.sendInteractiveList(
+        phone,
+        text,
+        deliveryOptions.interactiveList
+      );
+      if (listSend.ok) return listSend;
+
+      try {
+        LogRepository.write({
+          timestamp: Clock.now(),
+          command: 'WHATSAPP_INTERACTIVE_LIST_REPLY_FAILED',
+          phone: phone,
+          slotId: '',
+          stage: 'PRESENTATION',
+          success: false,
+          durationMs: null,
+          error: JSON.stringify(listSend.error)
+        });
+      } catch (e) {}
+
+      if (deliveryOptions.fallbackToText !== false) {
+        return WhatsAppAdapter.sendText(phone, text);
+      }
+      return listSend;
+    }
+
     if (Array.isArray(deliveryOptions.interactiveButtons) &&
         deliveryOptions.interactiveButtons.length > 0) {
       var interactiveSend = WhatsAppAdapter.sendInteractiveButtons(

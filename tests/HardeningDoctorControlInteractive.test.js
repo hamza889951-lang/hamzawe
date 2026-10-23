@@ -164,11 +164,19 @@ function assertMainMenu(result) {
   assert.strictEqual(result.ok, true);
   assert.strictEqual(result.data.controlState, 'DOCTOR_MENU');
   assert.strictEqual(
-    JSON.stringify(result.data.deliveryOptions.interactiveButtons.map(function(button) {
-      return button.id;
+    JSON.stringify(result.data.deliveryOptions.interactiveList.sections[0].rows.map(function(row) {
+      return row.id;
     })),
-    JSON.stringify(['VIEW_SCHEDULE', 'CHANGE_SCHEDULE', 'REPORTS'])
+    JSON.stringify([
+      'VIEW_SCHEDULE',
+      'CHANGE_SCHEDULE',
+      'TEMPORARY_AVAILABILITY',
+      'CANCEL_CHANGE',
+      'REPORTS'
+    ])
   );
+  assert.strictEqual(result.data.deliveryOptions.interactiveButtons, undefined);
+  assert.strictEqual(result.data.deliveryOptions.fallbackToText, true);
 }
 
 resetMenu();
@@ -191,12 +199,53 @@ let more = service.handle(controlContext(), 'MORE');
 assert.strictEqual(more.ok, true);
 assert.strictEqual(more.data.controlState, 'DOCTOR_MENU');
 assert.strictEqual(
-  JSON.stringify(more.data.deliveryOptions.interactiveButtons.map(function(button) {
-    return button.id;
+  JSON.stringify(more.data.deliveryOptions.interactiveList.sections[0].rows.map(function(row) {
+    return row.id;
   })),
-  JSON.stringify(['TEMPORARY_CLOSE', 'TEMPORARY_OPEN', 'CANCEL_CHANGE'])
+  JSON.stringify(['TEMPORARY_CLOSE', 'TEMPORARY_OPEN', 'BACK_TO_MENU'])
 );
 assert.strictEqual(state.session.state, 'DOCTOR_MENU');
+
+resetMenu();
+let combinedTemporary = service.handle(controlContext(), 'TEMPORARY_AVAILABILITY');
+assert.strictEqual(combinedTemporary.ok, true);
+assert.strictEqual(combinedTemporary.data.controlState, 'DOCTOR_MENU');
+assert.strictEqual(
+  JSON.stringify(combinedTemporary.data.deliveryOptions.interactiveList.sections[0].rows.map(function(row) {
+    return row.id;
+  })),
+  JSON.stringify(['TEMPORARY_CLOSE', 'TEMPORARY_OPEN', 'BACK_TO_MENU'])
+);
+
+resetMenu();
+const originalPromptCancelList = service._promptCancelList;
+service._promptCancelList = function() {
+  return context.Result.ok({ route: 'CANCEL_CHANGE', controlState: 'DOCTOR_AWAITING_INPUT' });
+};
+let cancelChange = service.handle(controlContext(), 'CANCEL_CHANGE');
+assert.strictEqual(cancelChange.ok, true);
+assert.strictEqual(cancelChange.data.route, 'CANCEL_CHANGE');
+service._promptCancelList = originalPromptCancelList;
+
+resetMenu();
+let reports = service.handle(controlContext(), 'REPORTS');
+assert.strictEqual(reports.ok, true);
+assert.strictEqual(
+  JSON.stringify(reports.data.deliveryOptions.interactiveButtons.map(function(button) {
+    return button.id;
+  })),
+  JSON.stringify(['REPORT_PERIOD_DAILY', 'REPORT_PERIOD_WEEKLY', 'REPORT_PERIOD_MONTHLY'])
+);
+
+resetMenu();
+let temporaryOpen = service.handle(controlContext(), 'TEMPORARY_OPEN');
+assert.strictEqual(temporaryOpen.ok, true);
+assert.strictEqual(temporaryOpen.data.controlState, 'DOCTOR_AWAITING_INPUT');
+assert.strictEqual(state.session.draft.doctor_draft_kind, 'TEMPORARY_OPEN');
+
+resetMenu();
+let backToMenu = service.handle(controlContext(), 'BACK_TO_MENU');
+assertMainMenu(backToMenu);
 
 resetMenu();
 let legacyClose = service.handle(controlContext(), '3');
@@ -328,4 +377,4 @@ assert.strictEqual(state.session.draft.doctor_draft_effective_from, '2026-10-20T
 assert.strictEqual(state.session.draft.doctor_draft_effective_to, '2026-10-21T00:00');
 assert.strictEqual(state.session.state, 'DOCTOR_AWAITING_CONFIRMATION');
 
-console.log('PASS: Doctor Control Interactive Intents — menu, More navigation, legacy convergence, and confirmation/cancellation');
+console.log('PASS: Doctor Control Interactive Intents — five-option list menu, temporary submenu, reports, legacy convergence, and confirmation/cancellation');

@@ -83,6 +83,15 @@ jobs:
           set -euo pipefail
           node tests/ReminderServiceReliability.test.js
 
+      - name: Targeted Doctor Control interactive menu / transport tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tests/HardeningDoctorControlInteractive.test.js
+          node tests/HardeningWhatsAppAdapterInteractive.test.js
+          node tests/HardeningMessagingPolicyInteractiveList.test.js
+          node tests/HardeningWhatsAppCloudGatewayWorker.test.js
+
       - name: Full hardening regression
         shell: bash
         run: |

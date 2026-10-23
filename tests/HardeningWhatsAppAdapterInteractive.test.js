@@ -72,6 +72,9 @@ adapter._verifyGatewayEnvelope = function() {
 const expected = {
   VIEW_SCHEDULE: 'DOCTOR_VIEW_SCHEDULE',
   CHANGE_SCHEDULE: 'DOCTOR_CHANGE_SCHEDULE',
+  TEMPORARY_AVAILABILITY: 'DOCTOR_TEMPORARY_AVAILABILITY',
+  BACK_TO_MENU: 'DOCTOR_BACK_TO_MENU',
+  REPORTS: 'DOCTOR_REPORTS',
   MORE: 'DOCTOR_MORE',
   TEMPORARY_CLOSE: 'DOCTOR_TEMPORARY_CLOSE',
   TEMPORARY_OPEN: 'DOCTOR_EXCEPTION_OPEN',
@@ -136,7 +139,114 @@ Object.keys(expected).forEach(function(intent) {
   );
 });
 
+// The five-option main menu must use a list message; Meta reply-button
+// messages are limited to three buttons. Verify outbound IDs and inbound
+// list_reply normalization against the exact transport payload.
+const menuRows = [
+  { id: 'VIEW_SCHEDULE', title: 'عرض جدول الدوام' },
+  { id: 'CHANGE_SCHEDULE', title: 'تغيير جدول الدوام' },
+  { id: 'TEMPORARY_AVAILABILITY', title: 'إغلاق / فتح مؤقت' },
+  { id: 'CANCEL_CHANGE', title: 'إلغاء تغيير مجدول' },
+  { id: 'REPORTS', title: 'التقارير' }
+];
+sentBodies.length = 0;
+const listSend = adapter.sendInteractiveList(
+  '9647001111111',
+  'اختر من لوحة الطبيب',
+  { buttonTitle: 'فتح القائمة', sections: [{ title: 'لوحة الطبيب', rows: menuRows }] }
+);
+assert.strictEqual(listSend.ok, true);
+assert.strictEqual(sentBodies.length, 1);
+assert.strictEqual(sentBodies[0].type, 'interactive');
+assert.strictEqual(sentBodies[0].interactive.type, 'list');
+assert.strictEqual(sentBodies[0].interactive.action.button, 'فتح القائمة');
+assert.strictEqual(sentBodies[0].interactive.action.sections[0].rows.length, 5);
+
+menuRows.forEach(function(row) {
+  const transportId = expected[row.id];
+  const parsed = adapter.parseIncomingPayload({
+    postData: {
+      contents: JSON.stringify({
+        gatewayVersion: 'v1',
+        gatewayTimestampMs: Date.now(),
+        event: {
+          channel: 'WHATSAPP',
+          provider: 'META_CLOUD',
+          eventType: 'MESSAGE',
+          messageId: 'wamid.LIST.' + row.id,
+          phone: '9647001111111',
+          timestampMs: Date.now(),
+          messageType: 'INTERACTIVE_LIST',
+          text: row.title,
+          buttonPayload: transportId
+        },
+        signature: 'TEST'
+      })
+    }
+  });
+  assert.ok(parsed, 'Inbound list parser rejected ' + row.id);
+  assert.strictEqual(parsed.message, row.id, 'List row routing mismatch for ' + row.id);
+});
+
+const submenuRows = [
+  { id: 'TEMPORARY_CLOSE', title: 'إغلاق مؤقت' },
+  { id: 'TEMPORARY_OPEN', title: 'فتح استثنائي' },
+  { id: 'BACK_TO_MENU', title: 'رجوع إلى اللوحة' }
+];
+sentBodies.length = 0;
+const submenuSend = adapter.sendInteractiveList(
+  '9647001111111',
+  'اختر الإجراء المؤقت',
+  { buttonTitle: 'اختر الإجراء', sections: [{ title: 'الإجراء المؤقت', rows: submenuRows }] }
+);
+assert.strictEqual(submenuSend.ok, true);
+assert.strictEqual(sentBodies[0].interactive.action.sections[0].rows.length, 3);
+submenuRows.forEach(function(row) {
+  const parsed = adapter.parseIncomingPayload({
+    postData: {
+      contents: JSON.stringify({
+        gatewayVersion: 'v1',
+        gatewayTimestampMs: Date.now(),
+        event: {
+          channel: 'WHATSAPP',
+          provider: 'META_CLOUD',
+          eventType: 'MESSAGE',
+          messageId: 'wamid.SUBMENU.' + row.id,
+          phone: '9647001111111',
+          timestampMs: Date.now(),
+          messageType: 'INTERACTIVE_LIST',
+          text: row.title,
+          buttonPayload: expected[row.id]
+        },
+        signature: 'TEST'
+      })
+    }
+  });
+  assert.ok(parsed, 'Inbound submenu parser rejected ' + row.id);
+  assert.strictEqual(parsed.message, row.id, 'Submenu row routing mismatch for ' + row.id);
+});
+
+const duplicateList = adapter.sendInteractiveList(
+  '9647001111111',
+  'اختبار',
+  { buttonTitle: 'فتح القائمة', sections: [{ title: 'اختبار', rows: [
+    { id: 'REPORTS', title: 'التقارير' },
+    { id: 'REPORTS', title: 'تقارير أخرى' }
+  ] }] }
+);
+assert.strictEqual(duplicateList.ok, false, 'Duplicate list IDs must fail closed');
+assert.strictEqual(duplicateList.error.code, 'WHATSAPP_INTERACTIVE_LIST_INVALID');
+
+const tooManyRows = adapter.sendInteractiveList(
+  '9647001111111',
+  'اختبار',
+  { buttonTitle: 'فتح القائمة', sections: [{ title: 'اختبار', rows: Array.from({length: 11}, function(_, i) {
+    return { id: 'ROW_' + i, title: 'خيار ' + i };
+  }) }] }
+);
+assert.strictEqual(tooManyRows.ok, false, 'Lists over Meta row limit must fail closed');
+
 console.log(
   'PASS: Doctor Control interactive transport round-trip — ' +
-  Object.keys(expected).length + ' intents verified'
+  Object.keys(expected).length + ' button intents and five-option list routing verified'
 );

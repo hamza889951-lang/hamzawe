@@ -98,22 +98,31 @@ const DoctorControlInteractionService = {
   // ─────────────────────────────────────────────────────────
 
   _menuText: function() {
-    return 'قائمة تحكم الطبيب:\n' +
+    return 'قائمة تحكم الطبيب: اختر أحد الخيارات الخمسة من القائمة التفاعلية.\n' +
+      'عند تعذّر استخدام القائمة، استخدم الأوامر النصية البديلة:\n' +
       '1) عرض جدول الدوام الحالي\n' +
       '2) تغيير الجدول الأسبوعي\n' +
       '3) إغلاق مؤقت\n' +
       '4) فتح استثنائي ليوم مغلق\n' +
       '5) إلغاء تغيير مجدول\n' +
-      'زر «التقارير» لعرض تقارير الأداء، أو أرسل «المزيد» لبقية العمليات.\n' +
-      'أرسل رقم الخيار.';
+      'أو اكتب «التقارير» لعرض التقارير.\n' +
+      'الإغلاق والفتح المؤقتان يظهران كخيار واحد في القائمة التفاعلية، ثم تختار الإجراء المطلوب.';
   },
 
-  _menuButtons: function() {
-    return [
-      { id: 'VIEW_SCHEDULE', title: 'عرض الجدول' },
-      { id: 'CHANGE_SCHEDULE', title: 'تغيير الجدول' },
-      { id: 'REPORTS', title: 'التقارير' }
-    ];
+  _menuList: function() {
+    return {
+      buttonTitle: 'فتح القائمة',
+      sections: [{
+        title: 'لوحة الطبيب',
+        rows: [
+          { id: 'VIEW_SCHEDULE', title: 'عرض جدول الدوام' },
+          { id: 'CHANGE_SCHEDULE', title: 'تغيير جدول الدوام' },
+          { id: 'TEMPORARY_AVAILABILITY', title: 'إغلاق / فتح مؤقت' },
+          { id: 'CANCEL_CHANGE', title: 'إلغاء تغيير مجدول' },
+          { id: 'REPORTS', title: 'التقارير' }
+        ]
+      }]
+    };
   },
 
   _showReportPeriods: function(phone, prefix) {
@@ -164,20 +173,18 @@ const DoctorControlInteractionService = {
     });
   },
 
-  _moreMenuText: function() {
-    return 'المزيد من عمليات لوحة الطبيب:\n' +
-      '3) إغلاق مؤقت\n' +
-      '4) فتح استثنائي ليوم مغلق\n' +
-      '5) إلغاء تغيير مجدول\n' +
-      'أرسل رقم الخيار.';
-  },
-
-  _moreMenuButtons: function() {
-    return [
-      { id: 'TEMPORARY_CLOSE', title: 'إغلاق مؤقت' },
-      { id: 'TEMPORARY_OPEN', title: 'فتح استثنائي' },
-      { id: 'CANCEL_CHANGE', title: 'إلغاء تغيير' }
-    ];
+  _temporaryAvailabilityMenu: function() {
+    return {
+      buttonTitle: 'اختر الإجراء',
+      sections: [{
+        title: 'الإجراء المؤقت',
+        rows: [
+          { id: 'TEMPORARY_CLOSE', title: 'إغلاق مؤقت' },
+          { id: 'TEMPORARY_OPEN', title: 'فتح استثنائي' },
+          { id: 'BACK_TO_MENU', title: 'رجوع إلى اللوحة' }
+        ]
+      }]
+    };
   },
 
   _showMenu: function(phone, prefix) {
@@ -191,13 +198,13 @@ const DoctorControlInteractionService = {
       reply: (prefix ? prefix + '\n\n' : '') + this._menuText(),
       controlState: Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_MENU,
       deliveryOptions: {
-        interactiveButtons: this._menuButtons(),
+        interactiveList: this._menuList(),
         fallbackToText: true
       }
     });
   },
 
-  _showMoreMenu: function(phone, prefix) {
+  _showTemporaryAvailabilityMenu: function(phone, prefix) {
     var set = ConversationRepository.setDoctorControlSession(
       phone,
       Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_MENU,
@@ -205,13 +212,18 @@ const DoctorControlInteractionService = {
     );
     if (!set.ok) return set;
     return Result.ok({
-      reply: (prefix ? prefix + '\n\n' : '') + this._moreMenuText(),
+      reply: (prefix ? prefix + '\n\n' : '') + 'اختر الإجراء المؤقت: إغلاق مؤقت أو فتح استثنائي. لا ينفّذ الاختيار أي تغيير قبل استكمال المعاينة والتأكيد.',
       controlState: Config.VOCABULARY.CONVERSATION_STATE.DOCTOR_MENU,
       deliveryOptions: {
-        interactiveButtons: this._moreMenuButtons(),
+        interactiveList: this._temporaryAvailabilityMenu(),
         fallbackToText: true
       }
     });
+  },
+
+  // Backward compatibility for previously displayed MORE buttons.
+  _showMoreMenu: function(phone, prefix) {
+    return this._showTemporaryAvailabilityMenu(phone, prefix);
   },
 
   _handleMenu: function(controlContext, phone, text) {
@@ -237,6 +249,12 @@ const DoctorControlInteractionService = {
         'وللفترة المحددة أرسل: 2026-09-20 10:00 | 2026-09-20 12:00\n' +
         '(النهاية غير مشمولة — [من، إلى))\n' +
         'أرسل 0 للرجوع.');
+    }
+    if (text === 'TEMPORARY_AVAILABILITY' || text === 'إغلاق / فتح مؤقت') {
+      return this._showTemporaryAvailabilityMenu(phone);
+    }
+    if (text === 'BACK_TO_MENU' || text === 'رجوع') {
+      return this._showMenu(phone);
     }
     if (text === 'TEMPORARY_CLOSE') {
       return this._startTemporaryCloseGuided(phone);
