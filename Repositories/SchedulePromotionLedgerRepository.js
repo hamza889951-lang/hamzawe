@@ -7,8 +7,15 @@ const SchedulePromotionLedgerRepository = {
   SHEET: 'SchedulePromotionLedger',
   HEADERS: ['eventId','changeId','doctorId','clinicId','effectiveFrom','state','beforeFingerprint','targetFingerprint','eventAt','detailJson'],
   _ensure: function() {
-    GoogleSheets.getOrCreateSheet(this.SHEET, this.HEADERS);
-    var actual = GoogleSheets.getHeaders(this.SHEET);
+    var sheet = GoogleSheets.getOrCreateSheet(this.SHEET, this.HEADERS);
+    if (!sheet || typeof sheet.getLastColumn !== 'function' || typeof sheet.getRange !== 'function') {
+      throw new Error('SCHEDULE_PROMOTION_LEDGER_SHEET_UNAVAILABLE');
+    }
+    var lastColumn = sheet.getLastColumn();
+    if (lastColumn !== this.HEADERS.length) {
+      throw new Error('SCHEDULE_PROMOTION_LEDGER_SCHEMA_MISMATCH');
+    }
+    var actual = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
     if (!actual || actual.length !== this.HEADERS.length) {
       throw new Error('SCHEDULE_PROMOTION_LEDGER_SCHEMA_MISMATCH');
     }
