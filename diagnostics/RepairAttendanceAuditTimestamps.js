@@ -327,5 +327,21 @@ var HAMZAWE_ATTENDANCE_AUDIT_TIMESTAMP_REPAIR = {
 };
 
 function runHamzaweAttendanceAuditTimestampRepair() {
-  return HAMZAWE_ATTENDANCE_AUDIT_TIMESTAMP_REPAIR.run();
+  var result;
+  try {
+    result = HAMZAWE_ATTENDANCE_AUDIT_TIMESTAMP_REPAIR.run();
+  } catch (error) {
+    result = {
+      ok: false,
+      code: 'REPAIR_UNHANDLED_EXCEPTION',
+      message: error && error.message ? error.message : String(error),
+      stack: error && error.stack ? String(error.stack) : null,
+      writesMayHaveOccurred: false
+    };
+  }
+  // Apps Script's execution transcript does not display a function's return
+  // object. Emit the exact guard/result so a completed run cannot look like
+  // a silent no-op when preflight intentionally fails closed.
+  Logger.log('HAMZAWE_ATTENDANCE_AUDIT_TIMESTAMP_REPAIR_RESULT=' + JSON.stringify(result));
+  return result;
 }
