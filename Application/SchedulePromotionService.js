@@ -43,6 +43,14 @@ const SchedulePromotionService = {
   _latestStates: function(events) {
     return SchedulePromotionLedgerRepository.latestByChangeId(events);
   },
+  filterPromotedRecords: function(records, ledgerEvents) {
+    var states = this._latestStates(ledgerEvents || []);
+    if (!states.ok) return states;
+    var filtered = (records || []).filter(function(rec) {
+      return !(states.data[rec.changeId] && states.data[rec.changeId].state === 'COMPLETED');
+    });
+    return Result.ok(filtered);
+  },
   activateDue: function(controlContext, nowStamp) {
     var scope = EffectiveScheduleService._scopeFromControlContext(controlContext);
     if (!scope.ok) return scope;
@@ -66,6 +74,23 @@ const SchedulePromotionService = {
     // Resolve cancellation at now; malformed records are rejected by canonical projection.
     var activeResult = EffectiveScheduleService._activeRecords(changesResult.data, parsedNow.data.stamp);
     if (!activeResult.ok) return activeResult;
+    // Detect manual/out-of-band Settings drift against the latest completed
+    // promotion only. Older completed entries naturally differ after a later
+    // promotion and must not be misclassified as drift.
+    var latestCompleted = null;
+    Object.keys(states).forEach(function(id) {
+      var event = states[id];
+      if (event.state === 'COMPLETED' &&
+          (!latestCompleted || event.effectiveFrom > latestCompleted.effectiveFrom)) latestCompleted = event;
+    });
+    if (latestCompleted) {
+      var currentForDrift = this._scheduleFromSettings(settingsResult.data);
+      if (!currentForDrift.ok) return currentForDrift;
+      if (this.fingerprint(currentForDrift.data) !== latestCompleted.targetFingerprint) {
+        return Result.fail('SCHEDULE_PROMOTION_BASELINE_DRIFT', 'Settings no longer match the latest completed promotion; manual/out-of-band change requires review', { changeId: latestCompleted.changeId });
+      }
+    }
+
     var due = activeResult.data.filter(function(r) {
       return r.changeKind === ScheduleChangeRepository.KIND.RECURRING &&
         typeof r.effectiveFrom === 'string' && r.effectiveFrom <= parsedNow.data.stamp &&
@@ -111,11 +136,6 @@ const SchedulePromotionService = {
           return Result.fail('SCHEDULE_PROMOTION_RECOVERY_AMBIGUOUS', 'Settings match neither prepared before nor target fingerprint; refusing overwrite', { changeId: rec.changeId });
         }
       } else if (state && state.state === 'COMPLETED') {
-        // A completed record must still match the current Settings baseline at
-        // the point of processing; otherwise manual edits or out-of-order state are ambiguous.
-        if (currentFingerprint !== state.targetFingerprint) {
-          return Result.fail('SCHEDULE_PROMOTION_BASELINE_DRIFT', 'Settings changed after promotion; refusing to silently replay history', { changeId: rec.changeId });
-        }
         continue;
       } else if (state && state.state !== 'FAILED') {
         return Result.fail('SCHEDULE_PROMOTION_LEDGER_INVALID', 'Unexpected promotion ledger state', { changeId: rec.changeId, state: state.state });
