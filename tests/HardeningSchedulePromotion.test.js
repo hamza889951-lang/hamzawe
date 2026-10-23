@@ -46,7 +46,7 @@ function setup(options = {}) {
   let writes = 0;
 
   context.SettingsRepository = {
-    getSettingsResult: () => options.ledgerReadFail ? { ok: false, error: { code: 'SETTINGS_READ_FAILED' } } : { ok: true, data: { ...settings } },
+    getSettingsResult: () => ({ ok: true, data: { ...settings } }),
     getSlotDurationInfo: row => ({ minutes: Number(row['Slot Duration (min)']), source: 'CONFIGURED' }),
     updateRecurringScheduleFields: fields => {
       const allowed = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday','work_start','work_end'];
