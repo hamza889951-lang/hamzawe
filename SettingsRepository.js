@@ -106,7 +106,7 @@ const SettingsRepository = {
     for (let i = 0; i < allowed.length; i++) {
       const key = allowed[i];
       if (key === 'work_start' || key === 'work_end') {
-        if (typeof fields[key] !== 'string' || !/^\\d{2}:\\d{2}$/.test(fields[key])) {
+        if (typeof fields[key] !== 'string' || !/^\d{2}:\d{2}$/.test(fields[key])) {
           return Result.fail('INVALID_SCHEDULE_PROMOTION', 'Invalid clock field: ' + key);
         }
       } else if (fields[key] !== true && fields[key] !== false) {
