@@ -34,8 +34,8 @@ const full = {
   },
   m2: {
     rates: {
-      CANCELLATION_RATE: { status: 'AVAILABLE', value: 0.2857, reason: null },
-      CHANGE_RATE: { status: 'AVAILABLE', value: 0.1429, reason: null }
+      CANCELLATION_RATE: { status: 'AVAILABLE', value: 28.57, reason: null },
+      CHANGE_RATE: { status: 'AVAILABLE', value: 14.29, reason: null }
     },
     rules: {
       CANCELLATION_RATE: { status: 'INSUFFICIENT_SAMPLE', reason: 'sample below minimum', trend: null },
@@ -57,8 +57,8 @@ const summary = {
     { metric: 'OFFICIAL_CANCELLATIONS', status: 'AVAILABLE', value: 2 }
   ],
   rates: [
-    { metric: 'CANCELLATION_RATE', status: 'AVAILABLE', value: 0.2857, ruleStatus: 'INSUFFICIENT_SAMPLE', severity: null, trend: { available: false } },
-    { metric: 'CHANGE_RATE', status: 'AVAILABLE', value: 0.1429, ruleStatus: 'INSUFFICIENT_SAMPLE', severity: null, trend: { available: false } }
+    { metric: 'CANCELLATION_RATE', status: 'AVAILABLE', value: 28.57, ruleStatus: 'INSUFFICIENT_SAMPLE', severity: null, trend: { available: false } },
+    { metric: 'CHANGE_RATE', status: 'AVAILABLE', value: 14.29, ruleStatus: 'INSUFFICIENT_SAMPLE', severity: null, trend: { available: false } }
   ],
   insights: [{ explanation: 'Detailed sample explanation.' }],
   managementNotes: [{ note: 'Monitor future samples.' }],
