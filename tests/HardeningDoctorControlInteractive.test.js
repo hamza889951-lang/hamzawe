@@ -218,6 +218,16 @@ assert.strictEqual(
 );
 
 resetMenu();
+const originalPromptCancelList = service._promptCancelList;
+service._promptCancelList = function() {
+  return context.Result.ok({ route: 'CANCEL_CHANGE', controlState: 'DOCTOR_AWAITING_INPUT' });
+};
+let cancelChange = service.handle(controlContext(), 'CANCEL_CHANGE');
+assert.strictEqual(cancelChange.ok, true);
+assert.strictEqual(cancelChange.data.route, 'CANCEL_CHANGE');
+service._promptCancelList = originalPromptCancelList;
+
+resetMenu();
 let reports = service.handle(controlContext(), 'REPORTS');
 assert.strictEqual(reports.ok, true);
 assert.strictEqual(
