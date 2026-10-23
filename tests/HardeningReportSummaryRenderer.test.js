@@ -65,6 +65,7 @@ const summary = {
   dataQualityWarnings: [{ scope: 'M2_COHORT', detail: '15 unattributable evidence rows' }]
 };
 
+try {
 const summaryResult = sandbox.EnhancedReportRenderer.render(summary);
 assert.strictEqual(summaryResult.ok, true);
 const summaryText = summaryResult.data;
@@ -89,3 +90,8 @@ assert.ok(fullText.includes('Monitor future samples.'));
 assert.ok(fullText.includes('CANCELLATION_RATE: 28.57%'));
 
 console.log('HardeningReportSummaryRenderer.test.js: PASS');
+} catch (error) {
+  console.error('FAIL: HardeningReportSummaryRenderer.test.js :: ' +
+    (error && error.stack ? error.stack : String(error)));
+  process.exitCode = 1;
+}
