@@ -43,6 +43,18 @@ const SchedulePromotionService = {
   _latestStates: function(events) {
     return SchedulePromotionLedgerRepository.latestByChangeId(events);
   },
+  _log: function(stage, success, changeId, details) {
+    try {
+      LogRepository.write({
+        timestamp: Clock.now(), command: 'SCHEDULE_PROMOTION', phone: '', slotId: '',
+        stage: stage, success: !!success, durationMs: null,
+        error: JSON.stringify({ changeId: changeId || null, details: details || null })
+      });
+    } catch (ignored) {
+      // Logging failure must not change promotion state; caller still fails
+      // closed on persistence/read/verification failures.
+    }
+  },
   filterPromotedRecords: function(records, ledgerEvents) {
     var states = this._latestStates(ledgerEvents || []);
     if (!states.ok) return states;
@@ -117,6 +129,7 @@ const SchedulePromotionService = {
 
     for (var j = 0; j < due.length; j++) {
       var rec = due[j];
+      this._log('START', true, rec.changeId, { effectiveFrom: rec.effectiveFrom });
       var targetResult = this._scheduleFromPayload(rec);
       if (!targetResult.ok) return targetResult;
       var target = this._canonical(targetResult.data);
@@ -139,6 +152,7 @@ const SchedulePromotionService = {
           });
           if (!recovered.ok) return recovered;
           states[rec.changeId] = recovered.data;
+          this._log('RECOVERED', true, rec.changeId, { method: 'TARGET_FINGERPRINT_MATCH' });
           continue;
         }
         if (currentFingerprint !== state.beforeFingerprint) {
@@ -184,6 +198,7 @@ const SchedulePromotionService = {
       });
       if (!completed.ok) return completed;
       states[rec.changeId] = completed.data;
+      this._log('SUCCEEDED', true, rec.changeId, { effectiveFrom: rec.effectiveFrom });
     }
     return Result.ok({ promoted: due.length, effectiveAt: parsedNow.data.stamp });
   }
