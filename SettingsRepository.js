@@ -88,6 +88,39 @@ const SettingsRepository = {
    * @param {Object} [settings]
    * @returns {{minutes: number, source: string}}
    */
+  /**
+   * Update only the recurring weekly schedule fields. Does not alter slot
+   * duration, horizon, clinic identity, or any unrelated Settings cell.
+   * Caller must already hold the script-wide lock.
+   */
+  updateRecurringScheduleFields(fields) {
+    const allowed = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday','work_start','work_end'];
+    if (!fields || typeof fields !== 'object') {
+      return Result.fail('INVALID_SCHEDULE_PROMOTION', 'Schedule fields are required');
+    }
+    const keys = Object.keys(fields).sort();
+    const expected = allowed.slice().sort();
+    if (keys.length !== expected.length || keys.some((k, i) => k !== expected[i])) {
+      return Result.fail('INVALID_SCHEDULE_PROMOTION', 'Promotion must provide exactly the seven weekday flags and work_start/work_end');
+    }
+    for (let i = 0; i < allowed.length; i++) {
+      const key = allowed[i];
+      if (key === 'work_start' || key === 'work_end') {
+        if (typeof fields[key] !== 'string' || !/^\\d{2}:\\d{2}$/.test(fields[key])) {
+          return Result.fail('INVALID_SCHEDULE_PROMOTION', 'Invalid clock field: ' + key);
+        }
+      } else if (fields[key] !== true && fields[key] !== false) {
+        return Result.fail('INVALID_SCHEDULE_PROMOTION', 'Invalid weekday flag: ' + key);
+      }
+    }
+    try {
+      GoogleSheets.updateFirstDataRowFields(Config.VOCABULARY.SHEETS.SETTINGS, fields);
+      return Result.ok({ updatedFields: allowed.length });
+    } catch (e) {
+      return Result.fail('SETTINGS_WRITE_FAILED', 'Failed to update recurring schedule fields', e.message || String(e));
+    }
+  },
+
   getSlotDurationInfo(settings) {
     try {
       let row = settings;
