@@ -18,7 +18,7 @@ function setup(options = {}) {
       _scopeFromControlContext: () => ({ ok: true, data: { doctorId: 'doctor-1', clinicId: null } }),
       parseLocalDateTime: stamp => {
         if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(stamp)) return { ok: false, error: { code: 'INVALID_LOCAL_DATETIME' } };
-        return { ok: true, data: { stamp } };
+        return { ok: true, data: { stamp, minutes: Number(stamp.slice(11, 13)) * 60 + Number(stamp.slice(14, 16)) } };
       },
       _activeRecords: (records, at) => {
         const cancelled = new Set(records.filter(r => r.changeKind === 'CANCEL' && r.effectiveFrom <= at).map(r => r.targetChangeId));
