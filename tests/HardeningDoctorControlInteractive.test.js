@@ -238,6 +238,16 @@ assert.strictEqual(
 );
 
 resetMenu();
+let temporaryOpen = service.handle(controlContext(), 'TEMPORARY_OPEN');
+assert.strictEqual(temporaryOpen.ok, true);
+assert.strictEqual(temporaryOpen.data.controlState, 'DOCTOR_AWAITING_INPUT');
+assert.strictEqual(state.session.draft.doctor_draft_kind, 'TEMPORARY_OPEN');
+
+resetMenu();
+let backToMenu = service.handle(controlContext(), 'BACK_TO_MENU');
+assertMainMenu(backToMenu);
+
+resetMenu();
 let legacyClose = service.handle(controlContext(), '3');
 assert.strictEqual(legacyClose.ok, true);
 assert.strictEqual(legacyClose.data.controlState, 'DOCTOR_AWAITING_INPUT');
