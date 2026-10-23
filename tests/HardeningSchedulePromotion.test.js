@@ -17,7 +17,7 @@ function setup(options = {}) {
       DAY_KEYS: ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'],
       _scopeFromControlContext: () => ({ ok: true, data: { doctorId: 'doctor-1', clinicId: null } }),
       parseLocalDateTime: stamp => {
-        if (!/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}$/.test(stamp)) return { ok: false, error: { code: 'INVALID_LOCAL_DATETIME' } };
+        if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(stamp)) return { ok: false, error: { code: 'INVALID_LOCAL_DATETIME' } };
         return { ok: true, data: { stamp } };
       },
       _activeRecords: (records, at) => {
@@ -28,7 +28,7 @@ function setup(options = {}) {
     ScheduleChangeRepository: { KIND: { RECURRING: 'RECURRING', TEMPORARY_CLOSE: 'TEMPORARY_CLOSE', TEMPORARY_OPEN: 'TEMPORARY_OPEN', CANCEL: 'CANCEL' } },
     DoctorScheduleCommandService: {
       _validateWorkWindow: w => {
-        if (!w || !/^\\d{2}:\\d{2}$/.test(w.start) || !/^\\d{2}:\\d{2}$/.test(w.end) || w.end <= w.start) return { ok: false };
+        if (!w || !/^\d{2}:\d{2}$/.test(w.start) || !/^\d{2}:\d{2}$/.test(w.end) || w.end <= w.start) return { ok: false };
         return { ok: true, data: { start: w.start, end: w.end } };
       }
     }
@@ -87,7 +87,7 @@ function setup(options = {}) {
     }
   };
   vm.createContext(context);
-  vm.runInContext(source + '\\nthis.service = SchedulePromotionService;', context);
+  vm.runInContext(source + '\nthis.service = SchedulePromotionService;', context);
   return { service: context.service, context, get settings(){ return settings; }, get events(){ return events; }, get writes(){ return writes; } };
 }
 
