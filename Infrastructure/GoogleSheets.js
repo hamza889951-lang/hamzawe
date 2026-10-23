@@ -184,6 +184,30 @@ const GoogleSheets = {
     return true;
   },
 
+  /**
+   * Update only named fields in the first data row of a single-row settings
+   * sheet. Requires every requested column to exist; never changes headers
+   * or unrelated cells. Caller must hold the script-wide lock.
+   */
+  updateFirstDataRowFields: function(sheetName, fields) {
+    var sheet = this._getSheet(sheetName);
+    var lastRow = sheet.getLastRow();
+    var lastColumn = sheet.getLastColumn();
+    if (lastRow < 2 || lastColumn < 1) throw new Error('SETTINGS_NOT_CONFIGURED');
+    var headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+    var values = sheet.getRange(2, 1, 1, lastColumn).getValues()[0];
+    var keys = Object.keys(fields || {});
+    if (!keys.length) return { updated: 0 };
+    for (var i = 0; i < keys.length; i++) {
+      var index = headers.indexOf(keys[i]);
+      if (index < 0) throw new Error('SETTINGS_COLUMN_NOT_FOUND: ' + keys[i]);
+      values[index] = fields[keys[i]];
+    }
+    // Preserve unrelated fields by writing the row with unchanged values.
+    sheet.getRange(2, 1, 1, lastColumn).setValues([values]);
+    return { updated: keys.length };
+  },
+
   appendRow: function(sheetName, rowObject) {
     var sheet = this._getSheet(sheetName);
     var headers = sheet.getDataRange().getValues()[0];
