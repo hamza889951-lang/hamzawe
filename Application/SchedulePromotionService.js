@@ -46,6 +46,12 @@ const SchedulePromotionService = {
   filterPromotedRecords: function(records, ledgerEvents) {
     var states = this._latestStates(ledgerEvents || []);
     if (!states.ok) return states;
+    var pending = Object.keys(states.data).filter(function(id) {
+      return states.data[id].state === 'PREPARED';
+    });
+    if (pending.length) {
+      return Result.fail('SCHEDULE_PROMOTION_IN_PROGRESS', 'A recurring schedule promotion is incomplete; source projection is blocked until recovery', { changeIds: pending });
+    }
     var filtered = (records || []).filter(function(rec) {
       return !(states.data[rec.changeId] && states.data[rec.changeId].state === 'COMPLETED');
     });
@@ -83,7 +89,10 @@ const SchedulePromotionService = {
       if (event.state === 'COMPLETED' &&
           (!latestCompleted || event.effectiveFrom > latestCompleted.effectiveFrom)) latestCompleted = event;
     });
-    if (latestCompleted) {
+    var hasPrepared = Object.keys(states).some(function(id) {
+      return states[id].state === 'PREPARED';
+    });
+    if (latestCompleted && !hasPrepared) {
       var currentForDrift = this._scheduleFromSettings(settingsResult.data);
       if (!currentForDrift.ok) return currentForDrift;
       if (this.fingerprint(currentForDrift.data) !== latestCompleted.targetFingerprint) {
